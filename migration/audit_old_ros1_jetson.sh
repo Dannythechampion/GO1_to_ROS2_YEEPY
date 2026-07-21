@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-output_dir="${1:-$HOME/migration_audit}"
-catkin_ws="${CATKIN_WS:-$HOME/catkin_ws}"
+output_dir="${1:-/mnt/t500/migration_audit}"
+catkin_ws="${CATKIN_WS:-/mnt/t500/go1_project_data/catkin_ws}"
 mkdir -p "$output_dir"
 output_file="$output_dir/old_ros1_jetson.txt"
 

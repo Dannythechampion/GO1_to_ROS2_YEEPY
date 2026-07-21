@@ -4,13 +4,31 @@
 옮길 때 실제로 실행할 순서다. 각 Gate가 통과하기 전에는 다음 단계로 넘어가지
 않는다.
 
+이 저장소는 ROS1 패키지 전체를 변환한 결과가 아니다. 현재 범위는 다음과 같다.
+
+| 기존 ROS1 패키지 | 상태 | ROS2 처리 |
+|---|---|---|
+| `FAST_LIO` | 교체 | 고정 커밋의 `FAST_LIO_ROS2` 사용 |
+| `unitree_ros_to_real` | 교체 | 안전 필터를 포함한 `go1_driver` 사용 |
+| `sentry_nav` | 일부 대체 | `omx_navigation`과 Nav2로 필요한 기능만 구성 |
+| `velocity_smoother_ema` | 교체 예정 | `nav2_velocity_smoother`로 대체 후 검증 |
+| `vision_opencv` | 불필요 | Humble 배포판의 `cv_bridge` 사용 |
+| `FAST_LIO_LOCALIZATION` | 보류 | ROS2 저장소와 커밋을 고정하고 검증하기 전까지 미포함 |
+| `pcd2pgm` | 보류 | ROS2 적용 방법 검증 전까지 미포함 |
+| `go1_imu_pub` | 확인 필요 | `go1_driver` 상태/IMU 통합 여부를 확인한 뒤 포팅 결정 |
+| `stereo_split` | 조건부 보류 | 카메라 사용이 확정될 때만 ROS2로 포팅 |
+| `orb_slam3_ros` | 보류 | 현재 마이그레이션 범위에서 제외 |
+| `unitree_legged_sdk` | 재빌드 | 아카이브의 v3.8.6 전체를 ARM64/Python 3.10용으로 재빌드 |
+
+`보류`와 `확인 필요` 항목은 현재 빌드·배포 대상이 아니다.
+
 기본 경로:
 
 ```text
-프로젝트:          ~/projects/go1_ros2_project
-ROS2 workspace:    ~/go1_ros2_ws
-Unitree SDK:       ~/go1_sdk/unitree_legged_sdk
-Livox SDK2:        ~/go1_third_party/Livox-SDK2
+프로젝트:          /mnt/t500/go1_ros2_project
+ROS2 workspace:    /mnt/t500/go1_ros2_ws
+Unitree SDK:       /mnt/t500/go1_sdk/unitree_legged_sdk
+Livox SDK2:        /mnt/t500/go1_third_party/Livox-SDK2
 ```
 
 ## 0. 프로젝트 가져오기
@@ -18,10 +36,10 @@ Livox SDK2:        ~/go1_third_party/Livox-SDK2
 권장 방법은 비공개 Git 저장소를 clone하는 것이다.
 
 ```bash
-mkdir -p ~/projects
-cd ~/projects
+mkdir -p /mnt/t500
+cd /mnt/t500
 git clone <PRIVATE_GIT_URL> go1_ros2_project
-cd ~/projects/go1_ros2_project
+cd /mnt/t500/go1_ros2_project
 ```
 
 Git 원격 저장소가 아직 없다면 PC에서 임시로 프로젝트를 전송할 수 있지만,
@@ -30,7 +48,7 @@ Git 원격 저장소가 아직 없다면 PC에서 임시로 프로젝트를 전�
 ## 1. 새 Jetson 기준선 확인
 
 ```bash
-cd ~/projects/go1_ros2_project
+cd /mnt/t500/go1_ros2_project
 chmod +x migration/*.sh
 ./migration/audit_new_jetson.sh
 ```
@@ -39,7 +57,7 @@ Gate 1:
 
 ```bash
 grep -E 'VERSION_ID|VERSION_CODENAME|aarch64|Python 3' \
-  ~/migration_audit/new_jetson_system.txt
+  /mnt/t500/migration_audit/new_jetson_system.txt
 ```
 
 필수 조건:
@@ -50,12 +68,16 @@ aarch64
 충분한 디스크 여유 공간
 ```
 
-## 2. ROS2 Humble 설치
+## 2. 기존 ROS2 Humble 확인 및 보완
+
+새 Jetson에는 ROS2 Humble Desktop이 이미 설치되어 있다. 아래 스크립트는
+기존 `/opt/ros/humble`을 유지하고 Nav2, 개발 도구 등 누락 의존성만 보완한다.
+Humble이 없는 호환 장비에서만 Desktop과 ROS apt source를 새로 설치한다.
 
 ```bash
-cd ~/projects/go1_ros2_project
+cd /mnt/t500/go1_ros2_project
 ./migration/bootstrap_ros2_humble.sh
-source ~/go1_ros2_env.bash
+source /mnt/t500/go1_ros2_env.bash
 ```
 
 Gate 2:
@@ -69,10 +91,10 @@ vcs --help >/dev/null
 
 ## 3. 고정된 외부 ROS2 소스 가져오기
 
-`~/go1_ros2_ws/src`가 비어 있을 때 먼저 실행한다.
+`/mnt/t500/go1_ros2_ws/src`가 비어 있을 때 먼저 실행한다.
 
 ```bash
-cd ~/projects/go1_ros2_project
+cd /mnt/t500/go1_ros2_project
 ./migration/import_ros2_dependencies.sh
 ```
 
@@ -86,15 +108,15 @@ livox_ros_driver2 13eb05e4e6dd7a765b934d0c5fd6236676a57b49
 Gate 3:
 
 ```bash
-vcs status ~/go1_ros2_ws/src
-git -C ~/go1_ros2_ws/src/FAST_LIO_ROS2 rev-parse HEAD
-git -C ~/go1_ros2_ws/src/livox_ros_driver2 rev-parse HEAD
+vcs status /mnt/t500/go1_ros2_ws/src
+git -C /mnt/t500/go1_ros2_ws/src/FAST_LIO_ROS2 rev-parse HEAD
+git -C /mnt/t500/go1_ros2_ws/src/livox_ros_driver2 rev-parse HEAD
 ```
 
 ## 4. Livox-SDK2 설치
 
 ```bash
-cd ~/projects/go1_ros2_project
+cd /mnt/t500/go1_ros2_project
 ./migration/install_livox_sdk2.sh
 ```
 
@@ -102,7 +124,7 @@ Gate 4:
 
 ```bash
 test -f /usr/local/lib/liblivox_lidar_sdk_static.a
-git -C ~/go1_third_party/Livox-SDK2 rev-parse HEAD
+git -C /mnt/t500/go1_third_party/Livox-SDK2 rev-parse HEAD
 ```
 
 예상 SDK2 커밋:
@@ -116,15 +138,15 @@ f5d9375f84efe2b15bc0a052d3e18482ed13adf4
 외부 의존성을 import한 다음 실행한다.
 
 ```bash
-cd ~/projects/go1_ros2_project
+cd /mnt/t500/go1_ros2_project
 ./migration/stage_local_ros2_packages.sh
 ```
 
 배치되는 패키지:
 
 ```text
-~/go1_ros2_ws/src/go1_driver
-~/go1_ros2_ws/src/omx_navigation
+/mnt/t500/go1_ros2_ws/src/go1_driver
+/mnt/t500/go1_ros2_ws/src/omx_navigation
 ```
 
 기존 `GO-_project_data/catkin_ws/src`는 ROS2 workspace에 복사하지 않는다.
@@ -132,14 +154,14 @@ cd ~/projects/go1_ros2_project
 ## 6. Livox ROS2 및 FAST-LIO 빌드
 
 ```bash
-cd ~/projects/go1_ros2_project
+cd /mnt/t500/go1_ros2_project
 ./migration/build_livox_fastlio.sh
 ```
 
 Gate 6:
 
 ```bash
-source ~/go1_ros2_ws/install/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
 ros2 pkg prefix livox_ros_driver2
 ros2 pkg prefix fast_lio
 ```
@@ -149,13 +171,15 @@ ros2 pkg prefix fast_lio
 
 ## 7. Unitree Go1 Python wrapper 재빌드
 
-현재 프로젝트에 보존된 실제 ROS1 SDK 스냅샷을 사용한다.
+ROS1 아카이브 커밋 `f18fa0fe1f9e6cdcdabb83e89b628b9bb7ad7b40`에
+보존된 `unitree_legged_sdk v3.8.6` 전체 스냅샷을 사용한다. ARM64 라이브러리와
+Python wrapper를 Python 3.10용으로 함께 재빌드하며 v3.5.1 파일을 섞지 않는다.
 
 ```bash
-cd ~/projects/go1_ros2_project
+cd /mnt/t500/go1_ros2_project
 ./migration/build_unitree_go1_wrapper.sh \
-  "$HOME/projects/go1_project_data/catkin_ws/src/unitree_legged_sdk"
-source ~/go1_sdk/setup_unitree_sdk.bash
+  "/mnt/t500/go1_project_data/catkin_ws/src/unitree_legged_sdk"
+source /mnt/t500/go1_sdk/setup_unitree_sdk.bash
 ```
 
 Gate 7:
@@ -174,7 +198,7 @@ PY
 ## 8. 자체 ROS2 패키지 빌드
 
 ```bash
-cd ~/go1_ros2_ws
+cd /mnt/t500/go1_ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
@@ -196,7 +220,7 @@ colcon test-result --verbose
 Go1 Ethernet을 연결하지 않은 상태에서도 실행할 수 있다.
 
 ```bash
-cd ~/projects/go1_ros2_project
+cd /mnt/t500/go1_ros2_project
 ./migration/verify_go1_driver_dry_run.sh
 ```
 
@@ -235,14 +259,14 @@ ping -c 3 192.168.1.148
 ## 11. MID-360 단독 검증
 
 ```bash
-source ~/go1_ros2_ws/install/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
 ros2 launch livox_ros_driver2 msg_MID360_launch.py
 ```
 
 다른 터미널:
 
 ```bash
-source ~/go1_ros2_ws/install/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
 ros2 topic type /livox/lidar
 ros2 topic type /livox/imu
 ros2 topic hz /livox/lidar
@@ -257,7 +281,7 @@ Gate 11: 두 토픽이 연속 발행되고 CustomMsg/timestamp가 FAST-LIO 입�
 로봇을 정지한 채 IMU 초기화를 수행한다.
 
 ```bash
-source ~/go1_ros2_ws/install/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
 ros2 launch fast_lio mapping.launch.py config_file:=mid360.yaml
 ```
 
@@ -308,8 +332,8 @@ ros2 topic echo /go1/cmd_vel_applied
 - 속도 제한 `0.20 m/s`, yaw `0.40 rad/s` 이하
 
 ```bash
-source ~/go1_sdk/setup_unitree_sdk.bash
-source ~/go1_ros2_ws/install/setup.bash
+source /mnt/t500/go1_sdk/setup_unitree_sdk.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
 ros2 launch go1_driver go1_driver.launch.py arm:=true
 ```
 

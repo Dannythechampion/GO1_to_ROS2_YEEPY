@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source_root="$(cd -- "$script_dir/.." && pwd)"
-export_dir="${1:-$HOME/go1_ros2_project_export}"
+export_dir="${1:-/mnt/t500/go1_ros2_project_export}"
 
 if [[ -e "$export_dir" ]]; then
   printf 'ERROR: export target already exists; refusing to overwrite: %s\n' \
@@ -122,8 +122,8 @@ The original Go1 ROS1 source snapshot is stored in the separate
 here before deploying:
 
 ```text
-URL: <PRIVATE_ROS1_ARCHIVE_URL>
-COMMIT: <ROS1_ARCHIVE_COMMIT>
+URL: https://github.com/Dannythechampion/GO-_project_data.git
+COMMIT: f18fa0fe1f9e6cdcdabb83e89b628b9bb7ad7b40
 ```
 
 Only calibration, network values, maps, Unitree SDK baseline and documented
@@ -133,6 +133,11 @@ EOF
 {
   printf 'exported_at=%s\n' "$(date --iso-8601=seconds)"
   printf 'source_layout=%s\n' 'OMX-AI ROS2 selective export'
+  printf 'ros1_archive_url=%s\n' \
+    'https://github.com/Dannythechampion/GO-_project_data.git'
+  printf 'ros1_archive_commit=%s\n' \
+    'f18fa0fe1f9e6cdcdabb83e89b628b9bb7ad7b40'
+  printf 'unitree_sdk_version=%s\n' 'v3.8.6'
   printf 'unitree_arm64_library_sha256=%s\n' \
     "$(sha256sum "$source_root/GO-_project_data/catkin_ws/src/unitree_legged_sdk/lib/cpp/arm64/libunitree_legged_sdk.a" | awk '{print $1}')"
   printf 'unitree_wrapper_source_sha256=%s\n' \

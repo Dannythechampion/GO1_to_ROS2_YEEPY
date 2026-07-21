@@ -35,7 +35,7 @@ class Go1Driver(Node):
         self.declare_parameter("invert_lateral", False)
         self.declare_parameter(
             "sdk_path",
-            "/home/unicon/go1_sdk/unitree_legged_sdk/lib/python/arm64",
+            "/mnt/t500/go1_sdk/unitree_legged_sdk/lib/python/arm64",
         )
         self.declare_parameter("robot_ip", "192.168.123.161")
         self.declare_parameter("robot_port", 8082)

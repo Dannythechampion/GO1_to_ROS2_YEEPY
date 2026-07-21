@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repos_file="${1:-$script_dir/ros2.repos}"
-workspace="${GO1_ROS2_WS:-$HOME/go1_ros2_ws}"
+workspace="${GO1_ROS2_WS:-/mnt/t500/go1_ros2_ws}"
 src_dir="$workspace/src"
 
 if [[ ! -r /opt/ros/humble/setup.bash ]]; then

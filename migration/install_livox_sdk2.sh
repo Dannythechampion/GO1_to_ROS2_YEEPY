@@ -3,7 +3,7 @@ set -euo pipefail
 
 readonly repository_url="https://github.com/Livox-SDK/Livox-SDK2.git"
 readonly expected_commit="f5d9375f84efe2b15bc0a052d3e18482ed13adf4"
-third_party_root="${GO1_THIRD_PARTY:-$HOME/go1_third_party}"
+third_party_root="${GO1_THIRD_PARTY:-/mnt/t500/go1_third_party}"
 source_dir="$third_party_root/Livox-SDK2"
 build_dir="$source_dir/build"
 

@@ -17,7 +17,7 @@
     invert_lateral: false
 
     # This must point at a wrapper rebuilt for the new Jetson's Python ABI.
-    sdk_path: /home/unicon/go1_sdk/unitree_legged_sdk/lib/python/arm64
+    sdk_path: /mnt/t500/go1_sdk/unitree_legged_sdk/lib/python/arm64
     robot_ip: 192.168.123.161
     robot_port: 8082
     local_port: 8080

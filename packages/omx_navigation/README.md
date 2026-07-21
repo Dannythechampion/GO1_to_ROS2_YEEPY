@@ -28,9 +28,10 @@ sudo apt update
 sudo apt install ros-humble-navigation2 ros-humble-nav2-bringup \
   ros-humble-slam-toolbox ros-humble-rviz2
 
-mkdir -p ~/omx_ws/src
-cp -r /path/to/OMX-AI ~/omx_ws/src/omx_navigation
-cd ~/omx_ws
+mkdir -p /mnt/t500/go1_ros2_ws/src
+cp -a /mnt/t500/go1_ros2_project/packages/omx_navigation \
+  /mnt/t500/go1_ros2_ws/src/omx_navigation
+cd /mnt/t500/go1_ros2_ws
 source /opt/ros/humble/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install
@@ -55,15 +56,15 @@ RViz에서 LiDAR, TF, Map이 정상 표시되는지 확인하고 상단의 **2D 
 지도 저장:
 
 ```bash
-mkdir -p ~/maps
-ros2 run nav2_map_server map_saver_cli -f ~/maps/omx_map
+mkdir -p /mnt/t500/maps
+ros2 run nav2_map_server map_saver_cli -f /mnt/t500/maps/omx_map
 ```
 
 ## 2. 저장한 지도에서 내비게이션
 
 ```bash
 ros2 launch omx_navigation rviz_navigation.launch.py \
-  slam:=false map:=$HOME/maps/omx_map.yaml
+  slam:=false map:=/mnt/t500/maps/omx_map.yaml
 ```
 
 이 모드에서는 먼저 RViz의 **2D Pose Estimate**로 로봇의 실제 초기 위치와 방향을

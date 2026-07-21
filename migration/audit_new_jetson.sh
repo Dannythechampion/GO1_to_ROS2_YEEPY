@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-output_dir="${1:-$HOME/migration_audit}"
+output_dir="${1:-/mnt/t500/migration_audit}"
 mkdir -p "$output_dir"
 output_file="$output_dir/new_jetson_system.txt"
 

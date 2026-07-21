@@ -9,8 +9,8 @@ physical robot.
 Copy this package into the ROS2 workspace and build it.
 
 ```bash
-cp -a go1_ros2_driver ~/go1_ros2_ws/src/go1_driver
-cd ~/go1_ros2_ws
+cp -a /mnt/t500/go1_ros2_project/packages/go1_driver /mnt/t500/go1_ros2_ws/src/go1_driver
+cd /mnt/t500/go1_ros2_ws
 source /opt/ros/humble/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install --packages-select go1_driver
@@ -45,5 +45,7 @@ ready.
 ros2 launch go1_driver go1_driver.launch.py arm:=true
 ```
 
-The configured `sdk_path` must contain a matching
+The configured `sdk_path` is under `/mnt/t500/go1_sdk`. It must contain the
+archived Unitree SDK v3.8.6 rebuilt for Python 3.10; do not mix v3.5.1 files.
+It must contain a matching
 `robot_interface.cpython-<ABI>-aarch64-linux-gnu.so`.

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-workspace="${GO1_ROS2_WS:-$HOME/go1_ros2_ws}"
+workspace="${GO1_ROS2_WS:-/mnt/t500/go1_ros2_ws}"
 log_dir="$workspace/log/dry_run_verification"
 driver_log="$log_dir/go1_driver.log"
 driver_pid=""

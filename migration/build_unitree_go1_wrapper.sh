@@ -2,13 +2,14 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  printf 'Usage: %s /absolute/path/to/unitree_legged_sdk\n' "$0" >&2
+  printf 'Usage: %s /mnt/t500/go1_project_data/catkin_ws/src/unitree_legged_sdk\n' "$0" >&2
   exit 2
 fi
 
 source_dir="$(readlink -f "$1")"
-target_root="${GO1_SDK_ROOT:-$HOME/go1_sdk}"
+target_root="${GO1_SDK_ROOT:-/mnt/t500/go1_sdk}"
 target_dir="$target_root/unitree_legged_sdk"
+readonly expected_sdk_version="v3.8.6"
 readonly expected_arm64_library_sha256="4ec2f384271ecc6cc4266e10b888d5bb076d73f10ee680436718c26d1d865a6d"
 readonly expected_wrapper_source_sha256="d98151de542eacb74532af6aba35d79b36bed9398c8de09c0aaa1724aad049b7"
 
@@ -18,8 +19,16 @@ if [[ "$(uname -m)" != "aarch64" ]]; then
   exit 1
 fi
 
+if ! grep -Fxq '# v3.8.6' "$source_dir/README.md"; then
+  printf 'ERROR: expected Unitree SDK %s archive snapshot.\n' \
+    "$expected_sdk_version" >&2
+  printf 'Do not mix v3.5.1 libraries or sources with the v3.8.6 wrapper.\n' >&2
+  exit 1
+fi
+
 required_sources=(
   CMakeLists.txt
+  README.md
   python_wrapper/CMakeLists.txt
   python_wrapper/python_interface.cpp
   lib/cpp/arm64/libunitree_legged_sdk.a
@@ -122,6 +131,7 @@ chmod +x "$env_file"
 
 {
   printf 'source=%s\n' "$source_dir"
+  printf 'sdk_version=%s\n' "$expected_sdk_version"
   printf 'built_at=%s\n' "$(date --iso-8601=seconds)"
   printf 'architecture=%s\n' "$(uname -m)"
   printf 'python=%s\n' "$(python3 --version 2>&1)"

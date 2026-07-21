@@ -39,10 +39,10 @@ Livox MID-360
 권장 디렉터리 구조:
 
 ```text
-~/go1_project_data/             # 기존 ROS1 자료, 읽기 전용
+/mnt/t500/go1_project_data/     # 기존 ROS1 자료, 읽기 전용
 └── catkin_ws/src/
 
-~/go1_ros2_ws/                  # 새 ROS2 워크스페이스
+/mnt/t500/go1_ros2_ws/          # 새 ROS2 워크스페이스
 ├── src/
 │   ├── livox_ros_driver2/
 │   ├── FAST_LIO_ROS2/
@@ -75,7 +75,9 @@ wsl bash "/mnt/c/Users/kimgk/OneDrive/문서/OMX-AI/migration/create_ros2_git_ex
 
 ## 3. 먼저 확정할 시스템 조합
 
-ROS2 패키지를 설치하기 전에 새 Jetson에서 다음 결과를 기록한다.
+새 Jetson에는 ROS2 Humble Desktop이 이미 설치되어 있다. 재설치하지 말고 먼저
+다음 결과와 기존 설치 상태를 기록한 뒤, 누락된 개발 도구와 런타임 의존성만
+보완한다.
 
 ```bash
 uname -m
@@ -111,7 +113,7 @@ chmod +x migration/audit_new_jetson.sh
 기본 결과 경로:
 
 ```text
-~/migration_audit/new_jetson_system.txt
+/mnt/t500/migration_audit/new_jetson_system.txt
 ```
 
 기존 ROS1 Jetson에도 접근할 수 있다면 다음 스크립트로 패키지와 중요 데이터
@@ -122,10 +124,10 @@ chmod +x migration/audit_old_ros1_jetson.sh
 ./migration/audit_old_ros1_jetson.sh
 ```
 
-기존 catkin workspace가 `~/catkin_ws`가 아니라면:
+기존 catkin workspace가 `/mnt/t500/go1_project_data/catkin_ws`가 아니라면:
 
 ```bash
-CATKIN_WS=/absolute/path/to/catkin_ws \
+CATKIN_WS=/mnt/t500/go1_project_data/catkin_ws \
   ./migration/audit_old_ros1_jetson.sh
 ```
 
@@ -163,28 +165,32 @@ GO-_project_data/catkin_ws/UPSTREAMS.md
 
 ## 5. ROS1 패키지의 ROS2 처리 방침
 
-| 기존 구성 | ROS2 처리 방침 |
-|---|---|
-| `FAST_LIO` | `Ericsii/FAST_LIO_ROS2`로 교체 |
-| `livox_ros_driver2` | ROS2/Humble 모드로 새로 빌드 |
-| `FAST_LIO_LOCALIZATION` | 그대로 복사하지 않음. ROS2 포팅 또는 별도 localization 구성 결정 |
-| `sentry_nav`, `move_base` | Nav2로 교체 |
-| `velocity_smoother_ema` | 우선 `nav2_velocity_smoother` 사용 |
-| `unitree_ros_to_real` | ROS2 Go1 드라이버 검증 또는 전용 C++/Python bridge 구현 |
-| `go1_imu_pub` | `rclcpp`/`rclpy`와 ROS2 `sensor_msgs/msg/Imu`로 포팅 |
-| `stereo_split` | 필요할 때 ROS2 `image_transport` 기반으로 포팅 |
-| `vision_opencv` | 소스 복사 대신 ROS2 배포판의 `cv_bridge` 사용 |
-| `orb_slam3_ros` | 실제 사용이 필요할 경우에만 ROS2 wrapper를 별도 선정 |
-| `pcd2pgm_package` | ROS 독립 변환기로 유지하거나 ROS2용 변환 절차로 교체 |
-| PCD/PGM/YAML/RViz | 데이터와 튜닝 값은 보존하고 경로와 형식만 조정 |
+| 기존 구성 | 상태 | ROS2 처리 방침 |
+|---|---|---|
+| `FAST_LIO` | 교체 | 고정 커밋의 `Ericsii/FAST_LIO_ROS2` 사용 |
+| `livox_ros_driver2` | 재빌드 | ROS2/Humble 모드로 새로 빌드 |
+| `FAST_LIO_LOCALIZATION` | 보류 | ROS2 저장소와 커밋 고정 및 실기 검증 전까지 미포함 |
+| `sentry_nav`, `move_base` | 일부 대체 | `omx_navigation`과 Nav2로 필요한 기능만 구성 |
+| `velocity_smoother_ema` | 교체 예정 | `nav2_velocity_smoother` 적용 후 동작 검증 |
+| `unitree_ros_to_real` | 교체 | 안전 필터를 포함한 새 `go1_driver` 사용 |
+| `go1_imu_pub` | 확인 필요 | `go1_driver` 상태/IMU 통합 여부 확인 후 포팅 결정 |
+| `stereo_split` | 조건부 보류 | 카메라 사용이 확정될 때만 ROS2 `image_transport` 기반 포팅 |
+| `vision_opencv` | 불필요 | 소스 복사 없이 Humble 배포판의 `cv_bridge` 사용 |
+| `orb_slam3_ros` | 보류 | 현재 마이그레이션 범위에서 제외 |
+| `pcd2pgm_package` | 보류 | ROS2 적용 방법 검증 전까지 미포함 |
+| `unitree_legged_sdk` | 재빌드 | 아카이브 v3.8.6 전체를 ARM64/Python 3.10용으로 재빌드 |
+| PCD/PGM/YAML/RViz | 데이터 이전 | 데이터와 튜닝 값은 보존하고 경로와 형식만 조정 |
+
+`보류`와 `확인 필요` 항목은 현재 colcon 빌드 및 Jetson 배포 범위에 포함하지
+않는다.
 
 ---
 
 ## 6. ROS2 워크스페이스 생성
 
 ```bash
-mkdir -p ~/go1_ros2_ws/src
-cd ~/go1_ros2_ws
+mkdir -p /mnt/t500/go1_ros2_ws/src
+cd /mnt/t500/go1_ros2_ws
 source /opt/ros/humble/setup.bash
 ```
 
@@ -252,10 +258,10 @@ chmod +x migration/stage_local_ros2_packages.sh
 설치 예시:
 
 ```bash
-cd ~/go1_ros2_ws/src
+cd /mnt/t500/go1_ros2_ws/src
 git clone https://github.com/Livox-SDK/livox_ros_driver2.git
 
-cd ~/go1_ros2_ws/src/livox_ros_driver2
+cd /mnt/t500/go1_ros2_ws/src/livox_ros_driver2
 git rev-parse HEAD
 ```
 
@@ -280,7 +286,7 @@ Livox-SDK2와 드라이버의 공식 의존성을 설치한 후 Humble 모드로
 
 ```bash
 source /opt/ros/humble/setup.bash
-cd ~/go1_ros2_ws/src/livox_ros_driver2
+cd /mnt/t500/go1_ros2_ws/src/livox_ros_driver2
 ./build.sh humble
 ```
 
@@ -306,7 +312,7 @@ FAST-LIO에서는 point별 timestamp가 필요하므로 MID-360을 CustomMsg 방
 실행하는 구성을 우선 사용한다.
 
 ```bash
-source ~/go1_ros2_ws/install/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
 ros2 launch livox_ros_driver2 msg_MID360_launch.py
 ```
 
@@ -337,10 +343,10 @@ ros2 topic echo /livox/imu --once
 - <https://github.com/Ericsii/FAST_LIO_ROS2.git>
 
 ```bash
-cd ~/go1_ros2_ws/src
+cd /mnt/t500/go1_ros2_ws/src
 git clone --recursive https://github.com/Ericsii/FAST_LIO_ROS2.git
 
-cd ~/go1_ros2_ws/src/FAST_LIO_ROS2
+cd /mnt/t500/go1_ros2_ws/src/FAST_LIO_ROS2
 git submodule update --init --recursive
 git rev-parse HEAD
 ```
@@ -361,9 +367,9 @@ git rev-parse HEAD
 빌드:
 
 ```bash
-cd ~/go1_ros2_ws
+cd /mnt/t500/go1_ros2_ws
 source /opt/ros/humble/setup.bash
-source ~/go1_ros2_ws/install/setup.bash 2>/dev/null || true
+source /mnt/t500/go1_ros2_ws/install/setup.bash 2>/dev/null || true
 
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install --packages-up-to fast_lio
@@ -440,8 +446,9 @@ ros2 run tf2_ros tf2_echo base_link lidar
 
 ### 10.1 반드시 구분할 내용
 
-공식 `unitree_legged_sdk v3.5.1`에는 Python wrapper가 없다. 기존 프로젝트에
-보관된 SDK는 README와 디렉터리 구조상 v3.8.6 계열이며 다음 항목을 포함한다.
+이 마이그레이션의 유일한 SDK 기준은 ROS1 아카이브 커밋
+`f18fa0fe1f9e6cdcdabb83e89b628b9bb7ad7b40`에 보관된
+`unitree_legged_sdk v3.8.6` 전체 스냅샷이다. 다음 항목을 함께 사용한다.
 
 ```text
 python_wrapper/python_interface.cpp
@@ -463,7 +470,7 @@ lib/python/arm64/robot_interface.cpython-38-aarch64-linux-gnu.so
 - Python ABI 문제를 제거할 수 있다.
 - 장기 운용과 배포에는 이 경로를 우선 고려한다.
 
-v3.5.1의 라이브러리와 v3.8.x의 wrapper 소스를 임의로 섞지 않는다. SDK
+v3.5.1의 라이브러리나 소스와 v3.8.6 wrapper를 임의로 섞지 않는다. SDK
 버전 사이에서 UDP 생성자와 command/state 구조가 다를 수 있다.
 
 ---
@@ -488,30 +495,22 @@ sudo apt install -y \
 
 ### 11.2 기존에 사용한 SDK 소스 준비
 
-가능하면 `GO-_project_data`에 보관된 SDK를 새 Jetson으로 복사한다.
+`GO-_project_data`의 고정 커밋에 보관된 SDK만 새 Jetson으로 복사한다.
 
 ```bash
-mkdir -p ~/go1_sdk
-cp -a /path/to/go1_project_data/catkin_ws/src/unitree_legged_sdk \
-  ~/go1_sdk/
-cd ~/go1_sdk/unitree_legged_sdk
+mkdir -p /mnt/t500/go1_sdk
+cp -a /mnt/t500/go1_project_data/catkin_ws/src/unitree_legged_sdk \
+  /mnt/t500/go1_sdk/
+cd /mnt/t500/go1_sdk/unitree_legged_sdk
 ```
 
-또는 기존 설치 기록의 커밋을 사용한다.
-
-```bash
-cd ~/go1_sdk
-git clone --recursive \
-  https://github.com/unitreerobotics/unitree_legged_sdk.git
-cd unitree_legged_sdk
-git checkout 4539a6c10dfbc9781cea6fcb7d51bc6ddc6f71e1
-git submodule update --init --recursive
-```
+임의의 최신 SDK나 v3.5.1 checkout으로 대체하지 않는다. 자동 빌드 스크립트는
+README 버전 표기와 보관된 ARM64 라이브러리/wrapper 해시를 모두 확인한다.
 
 ### 11.3 빌드
 
 ```bash
-cd ~/go1_sdk/unitree_legged_sdk
+cd /mnt/t500/go1_sdk/unitree_legged_sdk
 rm -rf build
 
 cmake -S . -B build \
@@ -528,10 +527,10 @@ cmake --build build -j"$(nproc)"
 ```bash
 chmod +x migration/build_unitree_go1_wrapper.sh
 ./migration/build_unitree_go1_wrapper.sh \
-  "$HOME/projects/go1_project_data/catkin_ws/src/unitree_legged_sdk"
+  "/mnt/t500/go1_project_data/catkin_ws/src/unitree_legged_sdk"
 ```
 
-스크립트는 원본을 변경하지 않고 `~/go1_sdk/unitree_legged_sdk`에 복사한 후
+스크립트는 원본을 변경하지 않고 `/mnt/t500/go1_sdk/unitree_legged_sdk`에 복사한 후
 다음을 검사한다.
 
 - 실행 아키텍처가 `aarch64`인지
@@ -544,7 +543,7 @@ chmod +x migration/build_unitree_go1_wrapper.sh
 결과 확인:
 
 ```bash
-ls -lh ~/go1_sdk/unitree_legged_sdk/lib/python/arm64/
+ls -lh /mnt/t500/go1_sdk/unitree_legged_sdk/lib/python/arm64/
 python3-config --extension-suffix
 ```
 
@@ -578,7 +577,7 @@ find_package(pybind11 CONFIG REQUIRED)
 다시 빌드한다.
 
 ```bash
-cd ~/go1_sdk/unitree_legged_sdk
+cd /mnt/t500/go1_sdk/unitree_legged_sdk
 rm -rf build
 
 cmake -S . -B build \
@@ -593,7 +592,7 @@ cmake --build build -j"$(nproc)"
 ### 11.5 로봇에 연결하지 않는 import 검사
 
 ```bash
-export UNITREE_SDK_ROOT="$HOME/go1_sdk/unitree_legged_sdk"
+export UNITREE_SDK_ROOT="/mnt/t500/go1_sdk/unitree_legged_sdk"
 export PYTHONPATH="$UNITREE_SDK_ROOT/lib/python/arm64:${PYTHONPATH:-}"
 
 python3 - <<'PY'
@@ -643,8 +642,8 @@ ldd "$UNITREE_SDK_ROOT"/lib/python/arm64/robot_interface*.so
 패키지다. 새 워크스페이스에 다음과 같이 넣는다.
 
 ```bash
-cp -a /path/to/OMX-AI/go1_ros2_driver ~/go1_ros2_ws/src/go1_driver
-cd ~/go1_ros2_ws
+cp -a /mnt/t500/go1_ros2_project/packages/go1_driver /mnt/t500/go1_ros2_ws/src/go1_driver
+cd /mnt/t500/go1_ros2_ws
 source /opt/ros/humble/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install --packages-select go1_driver
@@ -867,7 +866,7 @@ FAST-LIO odometry만으로는 재부팅 후 기존 지도에서의 전역 위치
 워크스페이스 전체 빌드:
 
 ```bash
-cd ~/go1_ros2_ws
+cd /mnt/t500/go1_ros2_ws
 source /opt/ros/humble/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install
@@ -877,7 +876,7 @@ source install/setup.bash
 소스 수정 후 문제가 발생했을 때만 생성물을 정리한다.
 
 ```bash
-cd ~/go1_ros2_ws
+cd /mnt/t500/go1_ros2_ws
 rm -rf build install log
 colcon build --symlink-install
 ```

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-workspace="${GO1_ROS2_WS:-$HOME/go1_ros2_ws}"
+workspace="${GO1_ROS2_WS:-/mnt/t500/go1_ros2_ws}"
 livox_dir="$workspace/src/livox_ros_driver2"
 fast_lio_dir="$workspace/src/FAST_LIO_ROS2"
 
