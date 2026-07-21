@@ -1,0 +1,9 @@
+repositories:
+  unitree_legged_sdk_go1_reference:
+    type: git
+    url: https://github.com/unitreerobotics/unitree_legged_sdk.git
+    version: 4539a6c10dfbc9781cea6fcb7d51bc6ddc6f71e1
+  unitree_ros2_to_real_eloquent_reference:
+    type: git
+    url: https://github.com/unitreerobotics/unitree_ros2_to_real.git
+    version: ce02fdfcdabae9d91dd545aa1388d9354f89e923

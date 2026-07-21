@@ -1,0 +1,22 @@
+# colcon/catkin outputs
+build/
+install/
+log/
+devel/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# ROS data and runtime output
+*.bag
+*.db3
+*.mcap
+*.log
+
+# Editors
+.vscode/
+.idea/

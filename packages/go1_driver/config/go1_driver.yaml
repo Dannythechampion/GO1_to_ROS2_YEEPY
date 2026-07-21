@@ -1,0 +1,24 @@
+/**:
+  ros__parameters:
+    # Keep false until all dry-run gates pass on the new Jetson.
+    arm: false
+    cmd_vel_topic: /cmd_vel
+    applied_topic: /go1/cmd_vel_applied
+    state_topic: /go1/control_state
+    publish_rate: 100.0
+    cmd_timeout: 0.35
+
+    # hypot(vx, vy) is limited without changing the requested direction.
+    max_linear_speed: 0.20
+    max_yaw_speed: 0.40
+    linear_deadband: 0.025
+    yaw_deadband: 0.04
+    holonomic: true
+    invert_lateral: false
+
+    # This must point at a wrapper rebuilt for the new Jetson's Python ABI.
+    sdk_path: /home/unicon/go1_sdk/unitree_legged_sdk/lib/python/arm64
+    robot_ip: 192.168.123.161
+    robot_port: 8082
+    local_port: 8080
+    shutdown_stand_repeats: 30
