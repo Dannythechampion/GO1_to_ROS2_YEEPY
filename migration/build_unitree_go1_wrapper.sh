@@ -71,6 +71,9 @@ done
 
 mkdir -p "$target_root"
 cp -a "$source_dir" "$target_dir"
+# Archives copied from Windows or read-only media can preserve directory modes
+# that prevent CMake and sed from creating files in the working copy.
+chmod -R u+rwX "$target_dir"
 
 wrapper_cmake="$target_dir/python_wrapper/CMakeLists.txt"
 if grep -q 'add_subdirectory(third-party/pybind11)' "$wrapper_cmake"; then
