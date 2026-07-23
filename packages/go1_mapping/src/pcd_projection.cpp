@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <charconv>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -80,6 +82,73 @@ void remove_nonfinite_xyz(pcl::PointCloud<pcl::PointXYZI> & cloud)
   cloud.is_dense = true;
 }
 
+// ASCII policy: one point per non-comment line; blank/comment lines and a
+// whitespace-delimited trailing # comment are ignored.
+void validate_ascii_records(
+  std::istream & input,
+  const std::size_t expected_records,
+  const std::size_t expected_scalars)
+{
+  constexpr std::size_t kMaximumAsciiRecordBytes = 65536U;
+  std::size_t record_count = 0U;
+  std::string line;
+  line.reserve(256U);
+  const auto consume_record = [&](std::string value) {
+      if (!value.empty() && value.back() == '\r') {
+        value.pop_back();
+      }
+      std::istringstream tokens(value);
+      std::string token;
+      std::size_t scalar_count = 0U;
+      bool saw_scalar = false;
+      while (tokens >> token) {
+        if (!token.empty() && token.front() == '#') {
+          break;
+        }
+        saw_scalar = true;
+        if (scalar_count >= expected_scalars) {
+          throw std::invalid_argument("ASCII PCD record has extra scalar tokens");
+        }
+        char * end = nullptr;
+        errno = 0;
+        std::strtod(token.c_str(), &end);
+        if (end == token.c_str() || *end != '\0' || errno == ERANGE) {
+          throw std::invalid_argument("ASCII PCD scalar token is not numeric");
+        }
+        ++scalar_count;
+      }
+      if (!saw_scalar) {
+        return;
+      }
+      if (scalar_count != expected_scalars) {
+        throw std::invalid_argument("ASCII PCD record has too few scalar tokens");
+      }
+      if (record_count >= expected_records) {
+        throw std::invalid_argument("ASCII PCD has extra point records");
+      }
+      ++record_count;
+    };
+
+  char character = '\0';
+  while (input.get(character)) {
+    if (character == '\n') {
+      consume_record(line);
+      line.clear();
+    } else {
+      if (line.size() >= kMaximumAsciiRecordBytes) {
+        throw std::length_error("ASCII PCD record exceeds 64 KiB");
+      }
+      line.push_back(character);
+    }
+  }
+  if (!line.empty()) {
+    consume_record(line);
+  }
+  if (record_count != expected_records) {
+    throw std::invalid_argument("ASCII PCD point record count does not match POINTS");
+  }
+}
+
 }  // namespace
 
 std::size_t point_payload_bytes(const std::size_t point_count)
@@ -149,6 +218,8 @@ PcdHeaderMetadata preflight_pcd_header(
   std::vector<std::size_t> field_sizes;
   std::vector<std::string> field_types;
   std::vector<std::size_t> field_counts;
+  bool saw_count = false;
+  std::optional<std::string> version;
   std::optional<std::size_t> width;
   std::optional<std::size_t> height;
   std::optional<std::size_t> points;
@@ -181,7 +252,15 @@ PcdHeaderMetadata preflight_pcd_header(
             throw std::invalid_argument("empty PCD header declaration: " + key);
           }
         };
-      if (key == "FIELDS") {
+      if (key == "VERSION") {
+        require_unique_declaration(version.has_value());
+        if (tokens.size() != 1U ||
+          (tokens.front() != ".7" && tokens.front() != "0.7"))
+        {
+          throw std::invalid_argument("PCD VERSION must be .7 or 0.7");
+        }
+        version = tokens.front();
+      } else if (key == "FIELDS") {
         require_unique_declaration(!field_names.empty());
         field_names = tokens;
       } else if (key == "SIZE") {
@@ -193,7 +272,8 @@ PcdHeaderMetadata preflight_pcd_header(
         require_unique_declaration(!field_types.empty());
         field_types = tokens;
       } else if (key == "COUNT") {
-        require_unique_declaration(!field_counts.empty());
+        require_unique_declaration(saw_count);
+        saw_count = true;
         for (const auto & item : tokens) {
           field_counts.push_back(parse_size_token(item, "COUNT"));
         }
@@ -259,13 +339,20 @@ PcdHeaderMetadata preflight_pcd_header(
     throw std::invalid_argument("PCD file is shorter than its parsed header");
   }
 
+  if (!version) {
+    throw std::invalid_argument("PCD VERSION declaration is required");
+  }
   const std::size_t field_count = field_names.size();
+  if (!saw_count) {
+    field_counts.assign(field_count, 1U);
+  }
   if (field_count == 0U || field_sizes.size() != field_count ||
     field_types.size() != field_count || field_counts.size() != field_count)
   {
     throw std::invalid_argument("PCD FIELDS/SIZE/TYPE/COUNT lengths must match");
   }
   std::size_t raw_point_step = 0U;
+  std::size_t scalar_count = 0U;
   bool has_x = false;
   bool has_y = false;
   bool has_z = false;
@@ -295,6 +382,7 @@ PcdHeaderMetadata preflight_pcd_header(
     const std::size_t field_bytes = checked_multiply_bytes(
       field_sizes[index], field_counts[index]);
     raw_point_step = checked_add_bytes(raw_point_step, field_bytes);
+    scalar_count = checked_add_bytes(scalar_count, field_counts[index]);
     const bool required_compatible = field_types[index] == "F" &&
       field_sizes[index] == 4U && field_counts[index] == 1U;
     if (field_names[index] == "x") {
@@ -311,13 +399,11 @@ PcdHeaderMetadata preflight_pcd_header(
     throw std::invalid_argument("PCD x/y/z/intensity must be FLOAT32 with COUNT 1");
   }
 
+  if (!width || !height || !points) {
+    throw std::invalid_argument("PCD WIDTH, HEIGHT, and POINTS are required");
+  }
   std::optional<std::size_t> dimensions;
-  if (width.has_value() != height.has_value()) {
-    throw std::invalid_argument("PCD WIDTH and HEIGHT must appear together");
-  }
-  if (width && height) {
-    dimensions = checked_multiply_bytes(*width, *height);
-  }
+  dimensions = checked_multiply_bytes(*width, *height);
   if (points && dimensions && *points != *dimensions) {
     throw std::invalid_argument("PCD POINTS does not equal WIDTH * HEIGHT");
   }
@@ -331,9 +417,7 @@ PcdHeaderMetadata preflight_pcd_header(
   const std::size_t decoded_bytes = point_payload_bytes(point_count);
   std::size_t compressed_bytes = 0U;
   if (*encoding == PcdDataEncoding::Ascii) {
-    if (point_count > 0U && file_bytes == header_bytes) {
-      throw std::invalid_argument("ASCII PCD payload is truncated");
-    }
+    validate_ascii_records(input, point_count, scalar_count);
   } else if (*encoding == PcdDataEncoding::Binary) {
     const std::size_t expected_file_bytes = checked_add_bytes(header_bytes, raw_decoded_bytes);
     if (file_bytes != expected_file_bytes) {

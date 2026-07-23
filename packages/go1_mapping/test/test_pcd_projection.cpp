@@ -147,6 +147,111 @@ TEST(PcdProjection, PreflightRejectsOversizedPcdBeforeCloudAllocation)
     std::length_error);
 }
 
+TEST(PcdProjection, AcceptsOmittedCountAndLfOrCrlfAsciiRecords)
+{
+  std::string lf = schema_header("ascii", 2U);
+  const auto count_position = lf.find("COUNT 1 1 1 1\n");
+  lf.erase(count_position, std::string("COUNT 1 1 1 1\n").size());
+  lf = "  # leading comment\n" + lf;
+  lf.replace(lf.find("VERSION"), std::string("VERSION").size(), "  VERSION");
+  lf += "0 0 0 1 # first point\n1 2 3 4\n";
+  std::istringstream lf_stream(lf);
+  const auto lf_metadata = go1_mapping::preflight_pcd_header(
+    lf_stream, lf.size(), 0U);
+  EXPECT_EQ(lf_metadata.point_count, 2U);
+  EXPECT_EQ(lf_metadata.raw_point_step, 16U);
+
+  std::string crlf;
+  for (const char character : lf) {
+    if (character == '\n') {
+      crlf += "\r\n";
+    } else {
+      crlf.push_back(character);
+    }
+  }
+  std::istringstream crlf_stream(crlf);
+  EXPECT_NO_THROW(go1_mapping::preflight_pcd_header(
+    crlf_stream, crlf.size(), 0U));
+}
+
+TEST(PcdProjection, RejectsDuplicateOrPartialHeaderDeclarations)
+{
+  std::string partial_count = schema_header("ascii");
+  const auto count_position = partial_count.find("COUNT 1 1 1 1");
+  partial_count.replace(count_position, std::string("COUNT 1 1 1 1").size(), "COUNT 1 1");
+  partial_count += "0 0 0 1\n";
+  std::istringstream partial_stream(partial_count);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      partial_stream, partial_count.size(), 0U),
+    std::invalid_argument);
+
+  std::string duplicate_count = schema_header("ascii");
+  duplicate_count.insert(duplicate_count.find("WIDTH"), "COUNT 1 1 1 1\n");
+  duplicate_count += "0 0 0 1\n";
+  std::istringstream duplicate_count_stream(duplicate_count);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      duplicate_count_stream, duplicate_count.size(), 0U),
+    std::invalid_argument);
+
+  std::string duplicate_version = schema_header("ascii");
+  duplicate_version.insert(duplicate_version.find("FIELDS"), "VERSION 0.7\n");
+  duplicate_version += "0 0 0 1\n";
+  std::istringstream duplicate_version_stream(duplicate_version);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      duplicate_version_stream, duplicate_version.size(), 0U),
+    std::invalid_argument);
+
+  std::string duplicate_width = schema_header("ascii");
+  duplicate_width.insert(duplicate_width.find("HEIGHT"), "WIDTH 1\n");
+  duplicate_width += "0 0 0 1\n";
+  std::istringstream duplicate_width_stream(duplicate_width);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      duplicate_width_stream, duplicate_width.size(), 0U),
+    std::invalid_argument);
+}
+
+TEST(PcdProjection, ValidatesExactAsciiRecordAndScalarCounts)
+{
+  std::string valid = schema_header("ascii", 2U) +
+    "0 0 0 1\n1 2 3 4\n  # trailing comment\n";
+  std::istringstream valid_stream(valid);
+  EXPECT_NO_THROW(go1_mapping::preflight_pcd_header(
+    valid_stream, valid.size(), 0U));
+
+  std::string truncated = schema_header("ascii", 2U) + "0 0 0 1\n";
+  std::istringstream truncated_stream(truncated);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      truncated_stream, truncated.size(), 0U),
+    std::invalid_argument);
+
+  std::string extra_record = schema_header("ascii") +
+    "0 0 0 1\n1 2 3 4\n";
+  std::istringstream extra_record_stream(extra_record);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      extra_record_stream, extra_record.size(), 0U),
+    std::invalid_argument);
+
+  std::string extra_token = schema_header("ascii") + "0 0 0 1 5\n";
+  std::istringstream extra_token_stream(extra_token);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      extra_token_stream, extra_token.size(), 0U),
+    std::invalid_argument);
+
+  std::string invalid_token = schema_header("ascii") + "0 0 nope 1\n";
+  std::istringstream invalid_token_stream(invalid_token);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      invalid_token_stream, invalid_token.size(), 0U),
+    std::invalid_argument);
+}
+
 TEST(PcdProjection, AcceptsValidPcdLayoutsBeforeLoad)
 {
   std::string ascii = schema_header("ascii") + "0 0 0 1\n";
@@ -195,7 +300,7 @@ TEST(PcdProjection, RejectsInvalidPcdSchemaAndPayloadsBeforeLoad)
     std::invalid_argument);
 
   const std::string overflow =
-    "FIELDS x y z intensity\nSIZE 4 4 4 4\nTYPE F F F F\n"
+    "VERSION 0.7\nFIELDS x y z intensity\nSIZE 4 4 4 4\nTYPE F F F F\n"
     "COUNT 18446744073709551615 1 1 1\n"
     "WIDTH 1\nHEIGHT 1\nPOINTS 1\nDATA ascii\n";
   std::istringstream overflow_stream(overflow);
