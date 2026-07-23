@@ -20,3 +20,6 @@ venv/
 # Editors
 .vscode/
 .idea/
+
+# Local isolated development worktrees
+.worktrees/
