@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+set -eo pipefail
+
+export ROS_DOMAIN_ID=100
+source /opt/ros/humble/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
 set -euo pipefail
 
 mode="${1:-preflight}"
@@ -6,10 +11,6 @@ if [[ "$mode" != "preflight" && "$mode" != "localized" ]]; then
   printf 'Usage: %s [preflight|localized]\n' "$0" >&2
   exit 2
 fi
-
-export ROS_DOMAIN_ID=100
-source /opt/ros/humble/setup.bash
-source /mnt/t500/go1_ros2_ws/install/setup.bash
 
 tmp_output="$(mktemp)"
 trap 'rm -f "$tmp_output"' EXIT

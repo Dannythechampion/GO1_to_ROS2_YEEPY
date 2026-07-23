@@ -8,6 +8,7 @@ CONFIG = (
     / "config"
     / "fast_lio_mid360_navigation.yaml"
 )
+README = Path(__file__).parents[1] / "README.md"
 
 
 def test_navigation_profile_disables_heavy_outputs():
@@ -31,3 +32,10 @@ def test_navigation_profile_keeps_live_mid360_inputs_and_online_extrinsic():
     assert params["common"]["imu_topic"] == "/livox/imu"
     assert params["preprocess"]["scan_rate"] == 10
     assert params["mapping"]["extrinsic_est_en"] is True
+
+
+def test_readme_launches_fast_lio_with_low_load_navigation_profile():
+    readme = README.read_text(encoding="utf-8")
+    assert "config_file:=fast_lio_mid360_navigation.yaml" in readme
+    assert "config_path:=" in readme
+    assert "pcd_save_en: false" in readme

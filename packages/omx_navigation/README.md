@@ -72,10 +72,14 @@ ros2 launch livox_ros_driver2 msg_MID360_launch.py
 export ROS_DOMAIN_ID=100
 source /opt/ros/humble/setup.bash
 source /mnt/t500/go1_ros2_ws/install/setup.bash
-ros2 launch fast_lio mapping.launch.py config_file:=mid360.yaml rviz:=false
+ros2 launch fast_lio mapping.launch.py \
+  config_path:=/mnt/t500/go1_ros2_ws/install/omx_navigation/share/omx_navigation/config \
+  config_file:=fast_lio_mid360_navigation.yaml \
+  rviz:=false
 ```
 
-FAST-LIO 자체 RViz와 PCD 저장은 이 시험에서 사용하지 않습니다.
+FAST-LIO 자체 RViz와 PCD 저장은 이 시험에서 사용하지 않습니다. 저부하 프로필은
+`map_en: false`, `dense_publish_en: false`, `pcd_save_en: false`로 설정되어 있습니다.
 
 ### 3. 기존 지도 AMCL, Nav2, 저부하 RViz
 
