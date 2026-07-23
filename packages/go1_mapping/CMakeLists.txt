@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.8)
 project(go1_mapping)
 
+if(POLICY CMP0074)
+  cmake_policy(SET CMP0074 NEW)
+endif()
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -15,39 +19,55 @@ find_package(PCL REQUIRED COMPONENTS common io filters)
 
 ament_python_install_package(${PROJECT_NAME})
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pcd_chunk_buffer.cpp"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pcd_chunk_writer.cpp"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pcd_projection.cpp"
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pcd_to_grid.cpp")
+set(mapping_targets)
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pcd_chunk_buffer.cpp")
   add_library(pcd_chunk_buffer src/pcd_chunk_buffer.cpp)
+  target_compile_features(pcd_chunk_buffer PUBLIC cxx_std_17)
   target_include_directories(pcd_chunk_buffer PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
     ${PCL_INCLUDE_DIRS})
   target_link_libraries(pcd_chunk_buffer ${PCL_LIBRARIES})
+  list(APPEND mapping_targets pcd_chunk_buffer)
+endif()
 
+if(TARGET pcd_chunk_buffer
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pcd_chunk_writer.cpp")
   add_executable(pcd_chunk_writer src/pcd_chunk_writer.cpp)
+  target_compile_features(pcd_chunk_writer PRIVATE cxx_std_17)
   target_link_libraries(pcd_chunk_writer pcd_chunk_buffer ${PCL_LIBRARIES})
   ament_target_dependencies(
     pcd_chunk_writer rclcpp sensor_msgs std_srvs pcl_conversions)
+  list(APPEND mapping_targets pcd_chunk_writer)
+endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pcd_projection.cpp")
   add_library(pcd_projection src/pcd_projection.cpp)
+  target_compile_features(pcd_projection PUBLIC cxx_std_17)
   target_include_directories(pcd_projection PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
     ${PCL_INCLUDE_DIRS})
   target_link_libraries(pcd_projection ${PCL_LIBRARIES})
+  list(APPEND mapping_targets pcd_projection)
+endif()
 
+if(TARGET pcd_projection
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pcd_to_grid.cpp")
   add_executable(pcd_to_grid src/pcd_to_grid.cpp)
+  target_compile_features(pcd_to_grid PRIVATE cxx_std_17)
   target_link_libraries(pcd_to_grid pcd_projection ${PCL_LIBRARIES})
+  list(APPEND mapping_targets pcd_to_grid)
+endif()
 
+if(mapping_targets)
   install(TARGETS
-    pcd_chunk_buffer pcd_chunk_writer pcd_projection pcd_to_grid
+    ${mapping_targets}
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION lib/${PROJECT_NAME})
 endif()
-
 if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include")
   install(DIRECTORY include/ DESTINATION include)
 endif()
@@ -78,6 +98,17 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_configs test/test_configs.py)
+
+  if(TARGET pcd_chunk_buffer
+     AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pcd_chunk_buffer.cpp")
+    ament_add_gtest(
+      test_pcd_chunk_buffer test/test_pcd_chunk_buffer.cpp)
+    target_include_directories(test_pcd_chunk_buffer PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${PCL_INCLUDE_DIRS})
+    target_link_libraries(
+      test_pcd_chunk_buffer pcd_chunk_buffer ${PCL_LIBRARIES})
+  endif()
 endif()
 
 ament_package()
