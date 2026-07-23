@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <istream>
 #include <string>
 #include <vector>
 
@@ -15,8 +16,34 @@ namespace go1_mapping
 {
 
 // Match the session writer's 256 MiB retained PointXYZI payload budget.
-// PCL filter workspaces are additional, short-lived allocations.
 inline constexpr std::size_t kMaximumMergedCloudBytes = 268435456U;
+// Bound all modeled live buffers to 2 GiB on the Jetson, including a
+// conservative six-payload VoxelGrid input/output/workspace allowance.
+inline constexpr std::size_t kProcessMemoryBudgetBytes = 2147483648ULL;
+inline constexpr std::size_t kVoxelFilterPayloadCopies = 6U;
+
+enum class MemoryPhase
+{
+  LoadChunk,
+  FilterChunk,
+  AppendChunk,
+  FilterMerged
+};
+
+struct AggregateMemoryState
+{
+  std::size_t merged_bytes;
+  std::size_t incoming_bytes;
+  std::size_t file_bytes;
+  std::size_t combined_bytes;
+};
+
+struct PcdHeaderMetadata
+{
+  std::size_t point_count;
+  std::size_t decoded_bytes;
+  std::size_t file_bytes;
+};
 
 struct ProjectionBounds
 {
@@ -50,19 +77,34 @@ struct PublicationOperations
 
 ProjectionBounds z_bounds(double sensor_height_m);
 
+std::size_t point_payload_bytes(std::size_t point_count);
+
 std::size_t checked_merged_point_count(
   std::size_t existing_points,
   std::size_t incoming_points,
   std::size_t max_bytes = kMaximumMergedCloudBytes);
 
-pcl::PointCloud<pcl::PointXYZI> finite_xyz_copy(
-  const pcl::PointCloud<pcl::PointXYZI> & cloud,
-  std::size_t max_bytes = kMaximumMergedCloudBytes);
+std::size_t estimated_peak_bytes(
+  MemoryPhase phase,
+  AggregateMemoryState state);
+
+void enforce_memory_budget(
+  MemoryPhase phase,
+  AggregateMemoryState state,
+  std::size_t budget_bytes = kProcessMemoryBudgetBytes);
+
+PcdHeaderMetadata preflight_pcd_header(
+  std::istream & input,
+  std::size_t file_bytes,
+  std::size_t retained_merged_bytes,
+  std::size_t budget_bytes = kProcessMemoryBudgetBytes);
+
 
 pcl::PointCloud<pcl::PointXYZI> voxel_filter_finite(
-  const pcl::PointCloud<pcl::PointXYZI> & cloud,
+  pcl::PointCloud<pcl::PointXYZI> cloud,
   double voxel_size,
-  std::size_t max_bytes = kMaximumMergedCloudBytes);
+  std::size_t retained_merged_bytes = 0U,
+  std::size_t budget_bytes = kProcessMemoryBudgetBytes);
 
 Grid project_occupied(
   const pcl::PointCloud<pcl::PointXYZI> & cloud,

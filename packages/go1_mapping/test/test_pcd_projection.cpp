@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <limits>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -110,6 +111,48 @@ TEST(PcdProjection, RejectsMergeGrowthBeforeAllocation)
       std::numeric_limits<std::size_t>::max(), 1U,
       std::numeric_limits<std::size_t>::max()),
     std::length_error);
+}
+
+TEST(PcdProjection, PreflightRejectsOversizedPcdBeforeCloudAllocation)
+{
+  std::istringstream header(
+    "# .PCD v0.7\nVERSION 0.7\nFIELDS x y z intensity\n"
+    "SIZE 4 4 4 4\nTYPE F F F F\nCOUNT 1 1 1 1\n"
+    "WIDTH 100000000\nHEIGHT 1\nPOINTS 100000000\nDATA binary_compressed\n");
+
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(header, 512U, 0U, 1048576U),
+    std::length_error);
+}
+
+TEST(PcdProjection, AccountsForEveryConcurrentAllocationState)
+{
+  using go1_mapping::AggregateMemoryState;
+  using go1_mapping::MemoryPhase;
+  const AggregateMemoryState state{
+    100U, 200U, 50U, 300U};
+
+  EXPECT_EQ(go1_mapping::estimated_peak_bytes(MemoryPhase::LoadChunk, state), 550U);
+  EXPECT_EQ(go1_mapping::estimated_peak_bytes(MemoryPhase::FilterChunk, state), 1300U);
+  EXPECT_EQ(go1_mapping::estimated_peak_bytes(MemoryPhase::AppendChunk, state), 600U);
+  EXPECT_EQ(go1_mapping::estimated_peak_bytes(MemoryPhase::FilterMerged, state), 600U);
+  EXPECT_THROW(
+    go1_mapping::estimated_peak_bytes(
+      MemoryPhase::LoadChunk,
+      AggregateMemoryState{
+        std::numeric_limits<std::size_t>::max(), 1U, 0U, 0U}),
+    std::length_error);
+
+  for (const auto phase : {
+      MemoryPhase::LoadChunk, MemoryPhase::FilterChunk,
+      MemoryPhase::AppendChunk, MemoryPhase::FilterMerged})
+  {
+    const std::size_t required = go1_mapping::estimated_peak_bytes(phase, state);
+    EXPECT_NO_THROW(go1_mapping::enforce_memory_budget(phase, state, required));
+    EXPECT_THROW(
+      go1_mapping::enforce_memory_budget(phase, state, required - 1U),
+      std::length_error);
+  }
 }
 
 TEST(PcdProjection, RollsBackEveryPublicationTransition)

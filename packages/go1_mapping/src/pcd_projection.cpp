@@ -1,9 +1,14 @@
 #include "go1_mapping/pcd_projection.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <limits>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
+#include <string>
+#include <system_error>
 
 #include <pcl/filters/voxel_grid.h>
 
@@ -33,7 +38,52 @@ std::size_t checked_dimension(const double extent, const double resolution)
   return static_cast<std::size_t>(cells);
 }
 
+std::size_t checked_add_bytes(const std::size_t left, const std::size_t right)
+{
+  if (right > std::numeric_limits<std::size_t>::max() - left) {
+    throw std::length_error("aggregate memory estimate overflows size_t");
+  }
+  return left + right;
+}
+
+std::size_t checked_multiply_bytes(const std::size_t left, const std::size_t right)
+{
+  if (left != 0U && right > std::numeric_limits<std::size_t>::max() / left) {
+    throw std::length_error("aggregate memory estimate overflows size_t");
+  }
+  return left * right;
+}
+
+std::size_t parse_size_token(const std::string & token, const char * const field)
+{
+  if (token.empty()) {
+    throw std::invalid_argument(std::string("PCD header missing value for ") + field);
+  }
+  std::size_t value = 0;
+  const auto result = std::from_chars(token.data(), token.data() + token.size(), value);
+  if (result.ec != std::errc{} || result.ptr != token.data() + token.size()) {
+    throw std::invalid_argument(std::string("invalid PCD header value for ") + field);
+  }
+  return value;
+}
+
+void remove_nonfinite_xyz(pcl::PointCloud<pcl::PointXYZI> & cloud)
+{
+  const auto new_end = std::remove_if(
+    cloud.points.begin(), cloud.points.end(),
+    [](const pcl::PointXYZI & point) {return !finite_point(point);});
+  cloud.points.erase(new_end, cloud.points.end());
+  cloud.width = static_cast<std::uint32_t>(cloud.size());
+  cloud.height = 1U;
+  cloud.is_dense = true;
+}
+
 }  // namespace
+
+std::size_t point_payload_bytes(const std::size_t point_count)
+{
+  return checked_multiply_bytes(point_count, sizeof(pcl::PointXYZI));
+}
 
 std::size_t checked_merged_point_count(
   const std::size_t existing_points,
@@ -50,28 +100,139 @@ std::size_t checked_merged_point_count(
   return existing_points + incoming_points;
 }
 
-pcl::PointCloud<pcl::PointXYZI> finite_xyz_copy(
-  const pcl::PointCloud<pcl::PointXYZI> & cloud,
-  const std::size_t max_bytes)
+std::size_t estimated_peak_bytes(
+  const MemoryPhase phase,
+  const AggregateMemoryState state)
 {
-  checked_merged_point_count(0U, cloud.size(), max_bytes);
-  pcl::PointCloud<pcl::PointXYZI> result;
-  result.header = cloud.header;
-  result.sensor_origin_ = cloud.sensor_origin_;
-  result.sensor_orientation_ = cloud.sensor_orientation_;
-  result.reserve(cloud.size());
-  for (const auto & point : cloud.points) {
-    if (finite_point(point)) {
-      result.push_back(point);
+  switch (phase) {
+    case MemoryPhase::LoadChunk:
+      return checked_add_bytes(
+        checked_add_bytes(
+          state.merged_bytes,
+          checked_multiply_bytes(2U, state.incoming_bytes)),
+        state.file_bytes);
+    case MemoryPhase::FilterChunk:
+      return checked_add_bytes(
+        state.merged_bytes,
+        checked_multiply_bytes(kVoxelFilterPayloadCopies, state.incoming_bytes));
+    case MemoryPhase::AppendChunk:
+      return checked_add_bytes(
+        checked_add_bytes(state.merged_bytes, state.incoming_bytes),
+        state.combined_bytes);
+    case MemoryPhase::FilterMerged:
+      return checked_multiply_bytes(kVoxelFilterPayloadCopies, state.merged_bytes);
+  }
+  throw std::invalid_argument("unknown aggregate memory phase");
+}
+
+void enforce_memory_budget(
+  const MemoryPhase phase,
+  const AggregateMemoryState state,
+  const std::size_t budget_bytes)
+{
+  if (estimated_peak_bytes(phase, state) > budget_bytes) {
+    throw std::length_error("modeled concurrent PCD memory exceeds the process budget");
+  }
+}
+
+PcdHeaderMetadata preflight_pcd_header(
+  std::istream & input,
+  const std::size_t file_bytes,
+  const std::size_t retained_merged_bytes,
+  const std::size_t budget_bytes)
+{
+  constexpr std::size_t kMaximumHeaderBytes = 65536U;
+  constexpr std::size_t kMaximumLineBytes = 4096U;
+  std::optional<std::size_t> width;
+  std::optional<std::size_t> height;
+  std::optional<std::size_t> points;
+  bool found_data = false;
+  std::size_t header_bytes = 0;
+  std::string line;
+  line.reserve(256U);
+
+  const auto consume_line = [&](std::string value) {
+      if (!value.empty() && value.back() == '\r') {
+        value.pop_back();
+      }
+      std::istringstream fields(value);
+      std::string key;
+      fields >> key;
+      if (key.empty() || key.front() == '#') {
+        return false;
+      }
+      std::string token;
+      if (key == "WIDTH" || key == "HEIGHT" || key == "POINTS") {
+        fields >> token;
+        const std::size_t parsed = parse_size_token(token, key.c_str());
+        if (key == "WIDTH") {
+          width = parsed;
+        } else if (key == "HEIGHT") {
+          height = parsed;
+        } else {
+          points = parsed;
+        }
+      } else if (key == "DATA") {
+        fields >> token;
+        if (token.empty()) {
+          throw std::invalid_argument("PCD DATA encoding is missing");
+        }
+        return true;
+      }
+      return false;
+    };
+
+  char character = '\0';
+  while (input.get(character)) {
+    if (++header_bytes > kMaximumHeaderBytes) {
+      throw std::length_error("PCD header exceeds 64 KiB");
+    }
+    if (character == '\n') {
+      found_data = consume_line(line);
+      line.clear();
+      if (found_data) {
+        break;
+      }
+    } else {
+      if (line.size() >= kMaximumLineBytes) {
+        throw std::length_error("PCD header line exceeds 4 KiB");
+      }
+      line.push_back(character);
     }
   }
-  result.is_dense = true;
-  return result;
+  if (!found_data && !line.empty()) {
+    found_data = consume_line(line);
+  }
+  if (!found_data) {
+    throw std::invalid_argument("PCD header has no DATA declaration");
+  }
+
+  std::optional<std::size_t> dimensions;
+  if (width.has_value() != height.has_value()) {
+    throw std::invalid_argument("PCD WIDTH and HEIGHT must appear together");
+  }
+  if (width && height) {
+    dimensions = checked_multiply_bytes(*width, *height);
+  }
+  if (points && dimensions && *points != *dimensions) {
+    throw std::invalid_argument("PCD POINTS does not equal WIDTH * HEIGHT");
+  }
+  const std::size_t point_count = points ? *points :
+    (dimensions ? *dimensions : throw std::invalid_argument("PCD point count is missing"));
+  checked_merged_point_count(0U, point_count);
+  const std::size_t decoded_bytes = point_payload_bytes(point_count);
+  enforce_memory_budget(
+    MemoryPhase::LoadChunk,
+    AggregateMemoryState{retained_merged_bytes, decoded_bytes, file_bytes, 0U},
+    budget_bytes);
+  return PcdHeaderMetadata{point_count, decoded_bytes, file_bytes};
 }
+
 pcl::PointCloud<pcl::PointXYZI> voxel_filter_finite(
-  const pcl::PointCloud<pcl::PointXYZI> & cloud,
+  pcl::PointCloud<pcl::PointXYZI> cloud,
   const double voxel_size,
-  const std::size_t max_bytes)
+  const std::size_t retained_merged_bytes,
+  const std::size_t budget_bytes)
 {
   const float leaf = static_cast<float>(voxel_size);
   if (!std::isfinite(voxel_size) || voxel_size <= 0.0 ||
@@ -79,15 +240,26 @@ pcl::PointCloud<pcl::PointXYZI> voxel_filter_finite(
   {
     throw std::invalid_argument("voxel size is outside the supported positive float range");
   }
-  const pcl::PointCloud<pcl::PointXYZI> finite_input = finite_xyz_copy(cloud, max_bytes);
+  checked_merged_point_count(0U, cloud.capacity());
+  const std::size_t input_bytes = point_payload_bytes(cloud.capacity());
+  enforce_memory_budget(
+    MemoryPhase::FilterChunk,
+    AggregateMemoryState{retained_merged_bytes, input_bytes, 0U, 0U},
+    budget_bytes);
+  remove_nonfinite_xyz(cloud);
+  if (cloud.empty()) {
+    return cloud;
+  }
   pcl::PointCloud<pcl::PointXYZI>::ConstPtr input_pointer(
-    &finite_input, [](const pcl::PointCloud<pcl::PointXYZI> *) {});
+    &cloud, [](const pcl::PointCloud<pcl::PointXYZI> *) {});
   pcl::VoxelGrid<pcl::PointXYZI> filter;
   filter.setInputCloud(input_pointer);
   filter.setLeafSize(leaf, leaf, leaf);
   pcl::PointCloud<pcl::PointXYZI> output;
   filter.filter(output);
-  return finite_xyz_copy(output, max_bytes);
+  checked_merged_point_count(0U, output.capacity());
+  remove_nonfinite_xyz(output);
+  return output;
 }
 
 void publish_artifacts(
