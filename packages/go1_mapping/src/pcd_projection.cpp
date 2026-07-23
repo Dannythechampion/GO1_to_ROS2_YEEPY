@@ -5,6 +5,8 @@
 #include <limits>
 #include <stdexcept>
 
+#include <pcl/filters/voxel_grid.h>
+
 namespace go1_mapping
 {
 namespace
@@ -32,6 +34,139 @@ std::size_t checked_dimension(const double extent, const double resolution)
 }
 
 }  // namespace
+
+std::size_t checked_merged_point_count(
+  const std::size_t existing_points,
+  const std::size_t incoming_points,
+  const std::size_t max_bytes)
+{
+  if (max_bytes < sizeof(pcl::PointXYZI)) {
+    throw std::invalid_argument("merged cloud byte ceiling is too small for one point");
+  }
+  const std::size_t max_points = max_bytes / sizeof(pcl::PointXYZI);
+  if (existing_points > max_points || incoming_points > max_points - existing_points) {
+    throw std::length_error("merged cloud exceeds the 256 MiB point payload ceiling");
+  }
+  return existing_points + incoming_points;
+}
+
+pcl::PointCloud<pcl::PointXYZI> finite_xyz_copy(
+  const pcl::PointCloud<pcl::PointXYZI> & cloud,
+  const std::size_t max_bytes)
+{
+  checked_merged_point_count(0U, cloud.size(), max_bytes);
+  pcl::PointCloud<pcl::PointXYZI> result;
+  result.header = cloud.header;
+  result.sensor_origin_ = cloud.sensor_origin_;
+  result.sensor_orientation_ = cloud.sensor_orientation_;
+  result.reserve(cloud.size());
+  for (const auto & point : cloud.points) {
+    if (finite_point(point)) {
+      result.push_back(point);
+    }
+  }
+  result.is_dense = true;
+  return result;
+}
+pcl::PointCloud<pcl::PointXYZI> voxel_filter_finite(
+  const pcl::PointCloud<pcl::PointXYZI> & cloud,
+  const double voxel_size,
+  const std::size_t max_bytes)
+{
+  const float leaf = static_cast<float>(voxel_size);
+  if (!std::isfinite(voxel_size) || voxel_size <= 0.0 ||
+    !std::isfinite(leaf) || leaf <= 0.0F)
+  {
+    throw std::invalid_argument("voxel size is outside the supported positive float range");
+  }
+  const pcl::PointCloud<pcl::PointXYZI> finite_input = finite_xyz_copy(cloud, max_bytes);
+  pcl::PointCloud<pcl::PointXYZI>::ConstPtr input_pointer(
+    &finite_input, [](const pcl::PointCloud<pcl::PointXYZI> *) {});
+  pcl::VoxelGrid<pcl::PointXYZI> filter;
+  filter.setInputCloud(input_pointer);
+  filter.setLeafSize(leaf, leaf, leaf);
+  pcl::PointCloud<pcl::PointXYZI> output;
+  filter.filter(output);
+  return finite_xyz_copy(output, max_bytes);
+}
+
+void publish_artifacts(
+  const std::vector<PublicationArtifact> & artifacts,
+  const PublicationOperations & operations)
+{
+  if (artifacts.empty()) {
+    throw std::invalid_argument("at least one artifact is required for publication");
+  }
+  if (!operations.link_no_replace || !operations.unlink_path ||
+    !operations.sync_directory)
+  {
+    throw std::invalid_argument("all publication operations are required");
+  }
+  for (std::size_t left = 0; left < artifacts.size(); ++left) {
+    if (artifacts[left].temporary.empty() || artifacts[left].final.empty() ||
+      artifacts[left].temporary == artifacts[left].final)
+    {
+      throw std::invalid_argument("publication paths must be non-empty and distinct");
+    }
+    for (std::size_t right = left + 1; right < artifacts.size(); ++right) {
+      if (artifacts[left].final == artifacts[right].final) {
+        throw std::invalid_argument("publication final paths must be unique");
+      }
+    }
+  }
+
+  std::size_t published_count = 0;
+  try {
+    for (const auto & artifact : artifacts) {
+      operations.link_no_replace(artifact.temporary, artifact.final);
+      // A built-in counter cannot allocate or throw: the new final is tracked immediately.
+      ++published_count;
+      operations.unlink_path(artifact.temporary);
+      const auto parent = artifact.final.has_parent_path() ?
+        artifact.final.parent_path() : std::filesystem::path{"."};
+      operations.sync_directory(parent);
+    }
+  } catch (...) {
+    while (published_count > 0) {
+      --published_count;
+      const auto & final_path = artifacts[published_count].final;
+      try {
+        operations.unlink_path(final_path);
+      } catch (...) {
+        // Best effort: preserve the original publication exception.
+      }
+      try {
+        const auto parent = final_path.has_parent_path() ?
+          final_path.parent_path() : std::filesystem::path{"."};
+        operations.sync_directory(parent);
+      } catch (...) {
+        // Best effort: preserve the original publication exception.
+      }
+    }
+    throw;
+  }
+}
+
+std::string yaml_quote(const std::string & value)
+{
+  std::string result;
+  if (value.size() > result.max_size() - 2U) {
+    throw std::length_error("YAML image filename is too long");
+  }
+  result.reserve(value.size() + 2U);
+  result.push_back('\'');
+  for (const unsigned char character : value) {
+    if (character < 0x20U || character == 0x7fU) {
+      throw std::invalid_argument("YAML image filename contains a control character");
+    }
+    if (character == '\'') {
+      result.push_back('\'');
+    }
+    result.push_back(static_cast<char>(character));
+  }
+  result.push_back('\'');
+  return result;
+}
 
 ProjectionBounds z_bounds(const double sensor_height_m)
 {

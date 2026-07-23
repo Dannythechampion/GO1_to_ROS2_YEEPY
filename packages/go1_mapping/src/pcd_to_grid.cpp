@@ -17,7 +17,6 @@
 #include <vector>
 
 #include <fcntl.h>
-#include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -132,20 +131,6 @@ std::vector<fs::path> find_chunks(const fs::path & input_dir)
   return chunks;
 }
 
-Cloud voxel_filter(const Cloud & input, const double voxel_size)
-{
-  Cloud output;
-  pcl::VoxelGrid<pcl::PointXYZI> filter;
-  filter.setInputCloud(input.makeShared());
-  const float leaf = static_cast<float>(voxel_size);
-  if (!std::isfinite(leaf) || leaf <= 0.0F) {
-    throw std::invalid_argument("voxel size is outside the supported float range");
-  }
-  filter.setLeafSize(leaf, leaf, leaf);
-  filter.filter(output);
-  return output;
-}
-
 Cloud merge_chunks(const std::vector<fs::path> & chunks, const double voxel_size)
 {
   Cloud merged;
@@ -154,19 +139,21 @@ Cloud merge_chunks(const std::vector<fs::path> & chunks, const double voxel_size
     if (pcl::io::loadPCDFile<pcl::PointXYZI>(chunk_path.string(), chunk) < 0) {
       throw std::runtime_error("failed to read PCD chunk: " + chunk_path.string());
     }
-    const Cloud filtered = voxel_filter(chunk, voxel_size);
-    if (merged.size() > std::numeric_limits<std::uint32_t>::max() ||
-      filtered.size() > merged.points.max_size() - merged.size() ||
-      filtered.size() > std::numeric_limits<std::uint32_t>::max() - merged.size())
+    const Cloud filtered = go1_mapping::voxel_filter_finite(chunk, voxel_size);
+    const std::size_t combined_size = go1_mapping::checked_merged_point_count(
+      merged.size(), filtered.size());
+    if (combined_size > std::numeric_limits<std::uint32_t>::max() ||
+      combined_size > merged.points.max_size())
     {
       throw std::length_error("merged point count exceeds PCL limits");
     }
+    merged.reserve(combined_size);
     merged += filtered;
   }
   if (merged.empty()) {
     throw std::invalid_argument("all input PCD chunks are empty");
   }
-  Cloud final_cloud = voxel_filter(merged, voxel_size);
+  Cloud final_cloud = go1_mapping::voxel_filter_finite(merged, voxel_size);
   if (final_cloud.empty()) {
     throw std::invalid_argument("voxel filtering produced an empty point cloud");
   }
@@ -203,20 +190,15 @@ public:
 
   ~TemporaryArtifact()
   {
-    if (active_) {
-      unlink(path_.c_str());
-    }
+    unlink(path_.c_str());
   }
 
   TemporaryArtifact(const TemporaryArtifact &) = delete;
   TemporaryArtifact & operator=(const TemporaryArtifact &) = delete;
 
   const fs::path & path() const noexcept {return path_;}
-  void release() noexcept {active_ = false;}
-
 private:
   fs::path path_;
-  bool active_{true};
 };
 
 void sync_file(const fs::path & path)
@@ -251,19 +233,6 @@ void sync_directory(const fs::path & path)
   }
 }
 
-void publish_no_replace(TemporaryArtifact & temporary, const fs::path & final_path)
-{
-  if (link(temporary.path().c_str(), final_path.c_str()) != 0) {
-    throw std::system_error(errno, std::generic_category(), "publish artifact without overwrite");
-  }
-  if (unlink(temporary.path().c_str()) != 0) {
-    const int unlink_error = errno;
-    unlink(final_path.c_str());
-    throw std::system_error(unlink_error, std::generic_category(), "unlink published temporary name");
-  }
-  temporary.release();
-}
-
 void write_pgm(const fs::path & path, const go1_mapping::Grid & grid)
 {
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
@@ -292,7 +261,7 @@ void write_yaml(
   if (!output) {
     throw std::runtime_error("failed to open temporary map YAML");
   }
-  output << "image: " << image_path.filename().string() << "\n"
+  output << "image: " << go1_mapping::yaml_quote(image_path.filename().string()) << "\n"
          << std::setprecision(17)
          << "resolution: " << grid.resolution << "\n"
          << "origin: [" << grid.origin_x << ", " << grid.origin_y << ", 0.0]\n"
@@ -311,23 +280,6 @@ void ensure_unused_outputs(const std::vector<fs::path> & outputs)
   for (const auto & output : outputs) {
     if (fs::exists(output)) {
       throw std::invalid_argument("refusing to overwrite existing output: " + output.string());
-    }
-  }
-}
-
-void rollback_published(const std::vector<fs::path> & published) noexcept
-{
-  std::set<fs::path> parents;
-  for (auto iterator = published.rbegin(); iterator != published.rend(); ++iterator) {
-    std::error_code ignored;
-    fs::remove(*iterator, ignored);
-    parents.insert(parent_or_current(*iterator));
-  }
-  for (const auto & parent : parents) {
-    try {
-      sync_directory(parent);
-    } catch (...) {
-      // Preserve the original publication failure; cleanup is best effort.
     }
   }
 }
@@ -380,21 +332,29 @@ int run(const int argc, char ** argv)
   sync_file(pgm_temporary.path());
   sync_file(yaml_temporary.path());
 
-  std::vector<fs::path> published;
-  try {
-    publish_no_replace(pcd_temporary, options.output_pcd);
-    published.push_back(options.output_pcd);
-    sync_directory(parent_or_current(options.output_pcd));
-    publish_no_replace(pgm_temporary, output_pgm);
-    published.push_back(output_pgm);
-    sync_directory(parent_or_current(output_pgm));
-    publish_no_replace(yaml_temporary, output_yaml);
-    published.push_back(output_yaml);
-    sync_directory(parent_or_current(output_yaml));
-  } catch (...) {
-    rollback_published(published);
-    throw;
-  }
+  const std::vector<go1_mapping::PublicationArtifact> artifacts{
+    {pcd_temporary.path(), options.output_pcd},
+    {pgm_temporary.path(), output_pgm},
+    {yaml_temporary.path(), output_yaml}};
+  go1_mapping::PublicationOperations publication_operations;
+  publication_operations.link_no_replace = [](
+    const fs::path & temporary, const fs::path & final_path)
+    {
+      if (link(temporary.c_str(), final_path.c_str()) != 0) {
+        throw std::system_error(
+                errno, std::generic_category(),
+                "publish artifact without overwrite");
+      }
+    };
+  publication_operations.unlink_path = [](const fs::path & path) {
+      if (unlink(path.c_str()) != 0) {
+        throw std::system_error(errno, std::generic_category(), "unlink artifact");
+      }
+    };
+  publication_operations.sync_directory = [](const fs::path & directory) {
+      sync_directory(directory);
+    };
+  go1_mapping::publish_artifacts(artifacts, publication_operations);
 
   std::cout << "Merged " << chunks.size() << " chunks into " << merged.size()
             << " filtered points; geometry reference: " << output_yaml << '\n';
