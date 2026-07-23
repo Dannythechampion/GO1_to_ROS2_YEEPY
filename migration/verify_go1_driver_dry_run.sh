@@ -8,10 +8,28 @@ driver_log="$log_dir/go1_driver.log"
 driver_pid=""
 
 cleanup() {
-  if [[ -n "$driver_pid" ]] && kill -0 "$driver_pid" 2>/dev/null; then
-    kill -INT "$driver_pid" 2>/dev/null || true
-    wait "$driver_pid" 2>/dev/null || true
+  if [[ -z "$driver_pid" ]]; then
+    return
   fi
+
+  local pid="$driver_pid"
+  driver_pid=""
+
+  # The launch process and its node run in a dedicated session so they can be
+  # stopped together. Bound the wait to avoid hanging after a successful test.
+  kill -INT -- "-$pid" 2>/dev/null || true
+  for _ in {1..50}; do
+    if ! kill -0 -- "-$pid" 2>/dev/null; then
+      wait "$pid" 2>/dev/null || true
+      return
+    fi
+    sleep 0.1
+  done
+
+  kill -TERM -- "-$pid" 2>/dev/null || true
+  sleep 1
+  kill -KILL -- "-$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -40,7 +58,7 @@ if ! ros2 pkg prefix go1_driver >/dev/null 2>&1; then
 fi
 
 mkdir -p "$log_dir"
-ros2 launch go1_driver go1_driver.launch.py arm:=false >"$driver_log" 2>&1 &
+setsid ros2 launch go1_driver go1_driver.launch.py arm:=false >"$driver_log" 2>&1 &
 driver_pid="$!"
 
 python3 "$script_dir/verify_go1_driver_dry_run.py"
