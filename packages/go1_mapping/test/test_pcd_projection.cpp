@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -7,6 +8,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -20,7 +23,11 @@ namespace
 
 using go1_mapping::Grid;
 using go1_mapping::ProjectionBounds;
-
+using PcdCloud = pcl::PointCloud<pcl::PointXYZI>;
+using VoxelFilterSignature = PcdCloud (*)(
+  PcdCloud &&, double, std::size_t, std::size_t);
+static_assert(std::is_same_v<
+  decltype(&go1_mapping::voxel_filter_finite), VoxelFilterSignature>);
 pcl::PointXYZI point(const float x, const float y, const float z)
 {
   pcl::PointXYZI result;
@@ -89,7 +96,7 @@ TEST(PcdProjection, RemovesNonFinitePointsEvenWhenCloudClaimsDense)
   cloud.push_back(point(
     1.0F, 2.0F, std::numeric_limits<float>::infinity()));
 
-  const auto filtered = go1_mapping::voxel_filter_finite(cloud, 0.10);
+  const auto filtered = go1_mapping::voxel_filter_finite(std::move(cloud), 0.10);
 
   ASSERT_EQ(filtered.size(), 1U);
   EXPECT_TRUE(std::isfinite(filtered.front().x));
@@ -113,6 +120,21 @@ TEST(PcdProjection, RejectsMergeGrowthBeforeAllocation)
     std::length_error);
 }
 
+std::string schema_header(const std::string & encoding, const std::size_t points = 1U)
+{
+  return
+    "# .PCD v0.7\nVERSION 0.7\nFIELDS x y z intensity\n"
+    "SIZE 4 4 4 4\nTYPE F F F F\nCOUNT 1 1 1 1\n" +
+    std::string("WIDTH ") + std::to_string(points) + "\nHEIGHT 1\nPOINTS " +
+    std::to_string(points) + "\nDATA " + encoding + "\n";
+}
+
+void append_little_u32(std::string & output, const std::uint32_t value)
+{
+  for (std::size_t shift = 0; shift < 32U; shift += 8U) {
+    output.push_back(static_cast<char>((value >> shift) & 0xffU));
+  }
+}
 TEST(PcdProjection, PreflightRejectsOversizedPcdBeforeCloudAllocation)
 {
   std::istringstream header(
@@ -125,12 +147,105 @@ TEST(PcdProjection, PreflightRejectsOversizedPcdBeforeCloudAllocation)
     std::length_error);
 }
 
+TEST(PcdProjection, AcceptsValidPcdLayoutsBeforeLoad)
+{
+  std::string ascii = schema_header("ascii") + "0 0 0 1\n";
+  std::istringstream ascii_stream(ascii);
+  const auto ascii_metadata = go1_mapping::preflight_pcd_header(
+    ascii_stream, ascii.size(), 0U);
+  EXPECT_EQ(ascii_metadata.encoding, go1_mapping::PcdDataEncoding::Ascii);
+  EXPECT_EQ(ascii_metadata.raw_point_step, 16U);
+  EXPECT_EQ(ascii_metadata.raw_decoded_bytes, 16U);
+
+  std::string binary = schema_header("binary") + std::string(16U, '\0');
+  std::istringstream binary_stream(binary);
+  const auto binary_metadata = go1_mapping::preflight_pcd_header(
+    binary_stream, binary.size(), 0U);
+  EXPECT_EQ(binary_metadata.encoding, go1_mapping::PcdDataEncoding::Binary);
+
+  std::string compressed = schema_header("binary_compressed");
+  append_little_u32(compressed, 4U);
+  append_little_u32(compressed, 16U);
+  compressed.append(4U, '\0');
+  std::istringstream compressed_stream(compressed);
+  const auto compressed_metadata = go1_mapping::preflight_pcd_header(
+    compressed_stream, compressed.size(), 0U);
+  EXPECT_EQ(
+    compressed_metadata.encoding,
+    go1_mapping::PcdDataEncoding::BinaryCompressed);
+  EXPECT_EQ(compressed_metadata.compressed_bytes, 4U);
+}
+
+TEST(PcdProjection, RejectsInvalidPcdSchemaAndPayloadsBeforeLoad)
+{
+  std::string unsupported = schema_header("future_codec");
+  std::istringstream unsupported_stream(unsupported);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      unsupported_stream, unsupported.size(), 0U),
+    std::invalid_argument);
+
+  std::string incompatible = schema_header("ascii");
+  const auto type_position = incompatible.find("TYPE F F F F");
+  incompatible.replace(type_position, 12U, "TYPE U F F F");
+  std::istringstream incompatible_stream(incompatible);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      incompatible_stream, incompatible.size(), 0U),
+    std::invalid_argument);
+
+  const std::string overflow =
+    "FIELDS x y z intensity\nSIZE 4 4 4 4\nTYPE F F F F\n"
+    "COUNT 18446744073709551615 1 1 1\n"
+    "WIDTH 1\nHEIGHT 1\nPOINTS 1\nDATA ascii\n";
+  std::istringstream overflow_stream(overflow);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(overflow_stream, overflow.size(), 0U),
+    std::length_error);
+
+  std::string truncated_binary = schema_header("binary") + std::string(8U, '\0');
+  std::istringstream truncated_binary_stream(truncated_binary);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      truncated_binary_stream, truncated_binary.size(), 0U),
+    std::invalid_argument);
+
+  std::string truncated_compressed = schema_header("binary_compressed");
+  append_little_u32(truncated_compressed, 4U);
+  append_little_u32(truncated_compressed, 16U);
+  truncated_compressed.append(2U, '\0');
+  std::istringstream truncated_compressed_stream(truncated_compressed);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      truncated_compressed_stream, truncated_compressed.size(), 0U),
+    std::invalid_argument);
+
+  std::string wrong_uncompressed = schema_header("binary_compressed");
+  append_little_u32(wrong_uncompressed, 4U);
+  append_little_u32(wrong_uncompressed, 32U);
+  wrong_uncompressed.append(4U, '\0');
+  std::istringstream wrong_uncompressed_stream(wrong_uncompressed);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      wrong_uncompressed_stream, wrong_uncompressed.size(), 0U),
+    std::invalid_argument);
+
+  std::string compressed_bomb = schema_header("binary_compressed");
+  append_little_u32(compressed_bomb, std::numeric_limits<std::uint32_t>::max());
+  append_little_u32(compressed_bomb, std::numeric_limits<std::uint32_t>::max());
+  std::istringstream compressed_bomb_stream(compressed_bomb);
+  EXPECT_THROW(
+    go1_mapping::preflight_pcd_header(
+      compressed_bomb_stream, compressed_bomb.size(), 0U),
+    std::length_error);
+}
+
 TEST(PcdProjection, AccountsForEveryConcurrentAllocationState)
 {
   using go1_mapping::AggregateMemoryState;
   using go1_mapping::MemoryPhase;
   const AggregateMemoryState state{
-    100U, 200U, 50U, 300U};
+    100U, 200U, 50U, 300U, 200U};
 
   EXPECT_EQ(go1_mapping::estimated_peak_bytes(MemoryPhase::LoadChunk, state), 550U);
   EXPECT_EQ(go1_mapping::estimated_peak_bytes(MemoryPhase::FilterChunk, state), 1300U);
@@ -140,7 +255,7 @@ TEST(PcdProjection, AccountsForEveryConcurrentAllocationState)
     go1_mapping::estimated_peak_bytes(
       MemoryPhase::LoadChunk,
       AggregateMemoryState{
-        std::numeric_limits<std::size_t>::max(), 1U, 0U, 0U}),
+        std::numeric_limits<std::size_t>::max(), 1U, 0U, 0U, 0U}),
     std::length_error);
 
   for (const auto phase : {

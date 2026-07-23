@@ -22,6 +22,13 @@ inline constexpr std::size_t kMaximumMergedCloudBytes = 268435456U;
 inline constexpr std::size_t kProcessMemoryBudgetBytes = 2147483648ULL;
 inline constexpr std::size_t kVoxelFilterPayloadCopies = 6U;
 
+enum class PcdDataEncoding
+{
+  Ascii,
+  Binary,
+  BinaryCompressed
+};
+
 enum class MemoryPhase
 {
   LoadChunk,
@@ -36,12 +43,18 @@ struct AggregateMemoryState
   std::size_t incoming_bytes;
   std::size_t file_bytes;
   std::size_t combined_bytes;
+  std::size_t raw_decoded_bytes;
 };
 
 struct PcdHeaderMetadata
 {
+  PcdDataEncoding encoding;
   std::size_t point_count;
+  std::size_t raw_point_step;
+  std::size_t raw_decoded_bytes;
   std::size_t decoded_bytes;
+  std::size_t compressed_bytes;
+  std::size_t data_offset;
   std::size_t file_bytes;
 };
 
@@ -101,7 +114,7 @@ PcdHeaderMetadata preflight_pcd_header(
 
 
 pcl::PointCloud<pcl::PointXYZI> voxel_filter_finite(
-  pcl::PointCloud<pcl::PointXYZI> cloud,
+  pcl::PointCloud<pcl::PointXYZI> && cloud,
   double voxel_size,
   std::size_t retained_merged_bytes = 0U,
   std::size_t budget_bytes = kProcessMemoryBudgetBytes);

@@ -171,7 +171,8 @@ Cloud merge_chunks(const std::vector<fs::path> & chunks, const double voxel_size
         merged_bytes,
         go1_mapping::point_payload_bytes(filtered.capacity()),
         0U,
-        combined_bytes});
+        combined_bytes,
+        0U});
     merged.reserve(combined_size);
     merged += filtered;
   }
@@ -181,7 +182,7 @@ Cloud merge_chunks(const std::vector<fs::path> & chunks, const double voxel_size
   const std::size_t merged_bytes = go1_mapping::point_payload_bytes(merged.capacity());
   go1_mapping::enforce_memory_budget(
     go1_mapping::MemoryPhase::FilterMerged,
-    go1_mapping::AggregateMemoryState{merged_bytes, 0U, 0U, 0U});
+    go1_mapping::AggregateMemoryState{merged_bytes, 0U, 0U, 0U, 0U});
   Cloud final_cloud = go1_mapping::voxel_filter_finite(
     std::move(merged), voxel_size);
   if (final_cloud.empty()) {

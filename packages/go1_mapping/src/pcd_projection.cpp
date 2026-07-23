@@ -1,6 +1,7 @@
 #include "go1_mapping/pcd_projection.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <limits>
@@ -9,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <utility>
 
 #include <pcl/filters/voxel_grid.h>
 
@@ -108,8 +110,8 @@ std::size_t estimated_peak_bytes(
     case MemoryPhase::LoadChunk:
       return checked_add_bytes(
         checked_add_bytes(
-          state.merged_bytes,
-          checked_multiply_bytes(2U, state.incoming_bytes)),
+          checked_add_bytes(state.merged_bytes, state.incoming_bytes),
+          state.raw_decoded_bytes),
         state.file_bytes);
     case MemoryPhase::FilterChunk:
       return checked_add_bytes(
@@ -143,9 +145,14 @@ PcdHeaderMetadata preflight_pcd_header(
 {
   constexpr std::size_t kMaximumHeaderBytes = 65536U;
   constexpr std::size_t kMaximumLineBytes = 4096U;
+  std::vector<std::string> field_names;
+  std::vector<std::size_t> field_sizes;
+  std::vector<std::string> field_types;
+  std::vector<std::size_t> field_counts;
   std::optional<std::size_t> width;
   std::optional<std::size_t> height;
   std::optional<std::size_t> points;
+  std::optional<PcdDataEncoding> encoding;
   bool found_data = false;
   std::size_t header_bytes = 0;
   std::string line;
@@ -161,10 +168,43 @@ PcdHeaderMetadata preflight_pcd_header(
       if (key.empty() || key.front() == '#') {
         return false;
       }
+      std::vector<std::string> tokens;
       std::string token;
-      if (key == "WIDTH" || key == "HEIGHT" || key == "POINTS") {
-        fields >> token;
-        const std::size_t parsed = parse_size_token(token, key.c_str());
+      while (fields >> token) {
+        tokens.push_back(token);
+      }
+      const auto require_unique_declaration = [&](const bool already_set) {
+          if (already_set) {
+            throw std::invalid_argument("duplicate PCD header declaration: " + key);
+          }
+          if (tokens.empty()) {
+            throw std::invalid_argument("empty PCD header declaration: " + key);
+          }
+        };
+      if (key == "FIELDS") {
+        require_unique_declaration(!field_names.empty());
+        field_names = tokens;
+      } else if (key == "SIZE") {
+        require_unique_declaration(!field_sizes.empty());
+        for (const auto & item : tokens) {
+          field_sizes.push_back(parse_size_token(item, "SIZE"));
+        }
+      } else if (key == "TYPE") {
+        require_unique_declaration(!field_types.empty());
+        field_types = tokens;
+      } else if (key == "COUNT") {
+        require_unique_declaration(!field_counts.empty());
+        for (const auto & item : tokens) {
+          field_counts.push_back(parse_size_token(item, "COUNT"));
+        }
+      } else if (key == "WIDTH" || key == "HEIGHT" || key == "POINTS") {
+        require_unique_declaration(
+          key == "WIDTH" ? width.has_value() :
+          (key == "HEIGHT" ? height.has_value() : points.has_value()));
+        if (tokens.size() != 1U) {
+          throw std::invalid_argument("PCD scalar declaration has multiple values: " + key);
+        }
+        const std::size_t parsed = parse_size_token(tokens.front(), key.c_str());
         if (key == "WIDTH") {
           width = parsed;
         } else if (key == "HEIGHT") {
@@ -173,9 +213,18 @@ PcdHeaderMetadata preflight_pcd_header(
           points = parsed;
         }
       } else if (key == "DATA") {
-        fields >> token;
-        if (token.empty()) {
-          throw std::invalid_argument("PCD DATA encoding is missing");
+        require_unique_declaration(encoding.has_value());
+        if (tokens.size() != 1U) {
+          throw std::invalid_argument("PCD DATA must have exactly one encoding");
+        }
+        if (tokens.front() == "ascii") {
+          encoding = PcdDataEncoding::Ascii;
+        } else if (tokens.front() == "binary") {
+          encoding = PcdDataEncoding::Binary;
+        } else if (tokens.front() == "binary_compressed") {
+          encoding = PcdDataEncoding::BinaryCompressed;
+        } else {
+          throw std::invalid_argument("unsupported PCD DATA encoding");
         }
         return true;
       }
@@ -203,8 +252,63 @@ PcdHeaderMetadata preflight_pcd_header(
   if (!found_data && !line.empty()) {
     found_data = consume_line(line);
   }
-  if (!found_data) {
-    throw std::invalid_argument("PCD header has no DATA declaration");
+  if (!found_data || !encoding) {
+    throw std::invalid_argument("PCD header has no supported DATA declaration");
+  }
+  if (file_bytes < header_bytes) {
+    throw std::invalid_argument("PCD file is shorter than its parsed header");
+  }
+
+  const std::size_t field_count = field_names.size();
+  if (field_count == 0U || field_sizes.size() != field_count ||
+    field_types.size() != field_count || field_counts.size() != field_count)
+  {
+    throw std::invalid_argument("PCD FIELDS/SIZE/TYPE/COUNT lengths must match");
+  }
+  std::size_t raw_point_step = 0U;
+  bool has_x = false;
+  bool has_y = false;
+  bool has_z = false;
+  bool has_intensity = false;
+  for (std::size_t index = 0; index < field_count; ++index) {
+    if (field_sizes[index] == 0U || field_counts[index] == 0U) {
+      throw std::invalid_argument("PCD SIZE and COUNT values must be positive");
+    }
+    for (std::size_t previous = 0; previous < index; ++previous) {
+      if (field_names[index] == field_names[previous]) {
+        throw std::invalid_argument("duplicate PCD field name");
+      }
+    }
+    if (field_types[index].size() != 1U ||
+      (field_types[index] != "F" && field_types[index] != "I" &&
+      field_types[index] != "U"))
+    {
+      throw std::invalid_argument("unsupported PCD field TYPE");
+    }
+    const bool supported_size = field_types[index] == "F" ?
+      (field_sizes[index] == 4U || field_sizes[index] == 8U) :
+      (field_sizes[index] == 1U || field_sizes[index] == 2U ||
+      field_sizes[index] == 4U || field_sizes[index] == 8U);
+    if (!supported_size) {
+      throw std::invalid_argument("unsupported PCD field SIZE for TYPE");
+    }
+    const std::size_t field_bytes = checked_multiply_bytes(
+      field_sizes[index], field_counts[index]);
+    raw_point_step = checked_add_bytes(raw_point_step, field_bytes);
+    const bool required_compatible = field_types[index] == "F" &&
+      field_sizes[index] == 4U && field_counts[index] == 1U;
+    if (field_names[index] == "x") {
+      has_x = required_compatible;
+    } else if (field_names[index] == "y") {
+      has_y = required_compatible;
+    } else if (field_names[index] == "z") {
+      has_z = required_compatible;
+    } else if (field_names[index] == "intensity") {
+      has_intensity = required_compatible;
+    }
+  }
+  if (!has_x || !has_y || !has_z || !has_intensity) {
+    throw std::invalid_argument("PCD x/y/z/intensity must be FLOAT32 with COUNT 1");
   }
 
   std::optional<std::size_t> dimensions;
@@ -220,16 +324,63 @@ PcdHeaderMetadata preflight_pcd_header(
   const std::size_t point_count = points ? *points :
     (dimensions ? *dimensions : throw std::invalid_argument("PCD point count is missing"));
   checked_merged_point_count(0U, point_count);
+  const std::size_t raw_decoded_bytes = checked_multiply_bytes(raw_point_step, point_count);
+  if (raw_decoded_bytes > kMaximumMergedCloudBytes) {
+    throw std::length_error("raw decoded PCD layout exceeds 256 MiB");
+  }
   const std::size_t decoded_bytes = point_payload_bytes(point_count);
+  std::size_t compressed_bytes = 0U;
+  if (*encoding == PcdDataEncoding::Ascii) {
+    if (point_count > 0U && file_bytes == header_bytes) {
+      throw std::invalid_argument("ASCII PCD payload is truncated");
+    }
+  } else if (*encoding == PcdDataEncoding::Binary) {
+    const std::size_t expected_file_bytes = checked_add_bytes(header_bytes, raw_decoded_bytes);
+    if (file_bytes != expected_file_bytes) {
+      throw std::invalid_argument("binary PCD payload length does not match its layout");
+    }
+  } else {
+    std::array<unsigned char, 8> prefix{};
+    input.read(reinterpret_cast<char *>(prefix.data()), prefix.size());
+    if (input.gcount() != static_cast<std::streamsize>(prefix.size())) {
+      throw std::invalid_argument("binary_compressed PCD size prefix is truncated");
+    }
+    const auto little_u32 = [&](const std::size_t offset) {
+        std::uint32_t value = 0U;
+        for (std::size_t index = 0; index < 4U; ++index) {
+          value |= static_cast<std::uint32_t>(prefix[offset + index]) << (index * 8U);
+        }
+        return value;
+      };
+    compressed_bytes = little_u32(0U);
+    const std::size_t uncompressed_bytes = little_u32(4U);
+    if (compressed_bytes > kMaximumMergedCloudBytes) {
+      throw std::length_error("compressed PCD payload exceeds 256 MiB");
+    }
+    if (uncompressed_bytes != raw_decoded_bytes) {
+      throw std::invalid_argument(
+              "binary_compressed uncompressed_size does not match PCD layout");
+    }
+    const std::size_t expected_file_bytes = checked_add_bytes(
+      checked_add_bytes(header_bytes, prefix.size()), compressed_bytes);
+    if (file_bytes != expected_file_bytes) {
+      throw std::invalid_argument(
+              "binary_compressed compressed_size does not match file length");
+    }
+  }
+
   enforce_memory_budget(
     MemoryPhase::LoadChunk,
-    AggregateMemoryState{retained_merged_bytes, decoded_bytes, file_bytes, 0U},
+    AggregateMemoryState{
+      retained_merged_bytes, decoded_bytes, file_bytes, 0U, raw_decoded_bytes},
     budget_bytes);
-  return PcdHeaderMetadata{point_count, decoded_bytes, file_bytes};
+  return PcdHeaderMetadata{
+    *encoding, point_count, raw_point_step, raw_decoded_bytes, decoded_bytes,
+    compressed_bytes, header_bytes, file_bytes};
 }
 
 pcl::PointCloud<pcl::PointXYZI> voxel_filter_finite(
-  pcl::PointCloud<pcl::PointXYZI> cloud,
+  pcl::PointCloud<pcl::PointXYZI> && transferred_cloud,
   const double voxel_size,
   const std::size_t retained_merged_bytes,
   const std::size_t budget_bytes)
@@ -240,12 +391,13 @@ pcl::PointCloud<pcl::PointXYZI> voxel_filter_finite(
   {
     throw std::invalid_argument("voxel size is outside the supported positive float range");
   }
-  checked_merged_point_count(0U, cloud.capacity());
-  const std::size_t input_bytes = point_payload_bytes(cloud.capacity());
+  checked_merged_point_count(0U, transferred_cloud.capacity());
+  const std::size_t input_bytes = point_payload_bytes(transferred_cloud.capacity());
   enforce_memory_budget(
     MemoryPhase::FilterChunk,
-    AggregateMemoryState{retained_merged_bytes, input_bytes, 0U, 0U},
+    AggregateMemoryState{retained_merged_bytes, input_bytes, 0U, 0U, 0U},
     budget_bytes);
+  pcl::PointCloud<pcl::PointXYZI> cloud = std::move(transferred_cloud);
   remove_nonfinite_xyz(cloud);
   if (cloud.empty()) {
     return cloud;
