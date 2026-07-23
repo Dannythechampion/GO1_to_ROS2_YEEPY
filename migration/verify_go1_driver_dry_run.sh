@@ -24,10 +24,15 @@ if [[ ! -r "$workspace/install/setup.bash" ]]; then
   exit 1
 fi
 
+# ROS/colcon setup scripts probe optional environment variables that may be
+# absent in a deliberately clean `env -i` shell. Disable nounset only while
+# sourcing them, then restore strict mode for the verifier itself.
+set +u
 # shellcheck disable=SC1091
 source /opt/ros/humble/setup.bash
 # shellcheck disable=SC1090
 source "$workspace/install/setup.bash"
+set -u
 
 if ! ros2 pkg prefix go1_driver >/dev/null 2>&1; then
   printf 'ERROR: go1_driver is not installed in the sourced workspace.\n' >&2
