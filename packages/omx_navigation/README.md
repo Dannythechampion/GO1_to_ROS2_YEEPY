@@ -1,109 +1,162 @@
-# OMX RViz Navigation
+# Go1 ROS2 Humble 기존 지도 내비게이션
 
-ROS 2 Humble 기준으로, 2D LiDAR 차동구동 로봇을 RViz의 **2D Goal Pose** 도구로
-주행시키는 Nav2 패키지입니다. 기본 실행은 SLAM을 켜므로 지도 파일 없이 바로
-시작할 수 있습니다.
+이 패키지는 Livox MID-360과 FAST-LIO2가 이미 실행 중인 Jetson에서 기존
+2D 지도로 AMCL 로컬라이제이션과 Nav2 경로계획을 시험합니다. 기본 실행은
+`arm:=false`이므로 `/cmd_vel`이 생성되어도 실제 Go1에는 동작 명령을
+전송하지 않습니다.
 
-## 로봇 쪽 인터페이스
+## 현재 시험 프레임
 
-이 패키지를 실행하기 전에 로봇 드라이버가 다음 인터페이스를 제공해야 합니다.
+LiDAR가 아직 영구 고정되지 않았기 때문에 최종 `base_link -> lidar` TF를
+만들지 않습니다. 현재 FAST-LIO가 제공하는 프레임을 임시로 사용합니다.
 
-| 구분 | 기본값 | 역할 |
-|---|---|---|
-| Topic | `/scan` (`sensor_msgs/LaserScan`) | 2D LiDAR |
-| Topic | `/odom` (`nav_msgs/Odometry`) | 휠 오도메트리 |
-| Topic | `/cmd_vel` (`geometry_msgs/Twist`) | 로봇 속도 명령 |
-| TF | `odom -> base_link` | 로봇 드라이버/오도메트리 노드가 발행 |
-| TF | `base_link -> <laser_frame>` | URDF 또는 static TF가 발행 |
+```text
+map -> camera_init -> body
+```
 
-`map -> odom` TF는 mapping 모드에서는 SLAM Toolbox가, 저장 지도 모드에서는
-AMCL이 발행합니다.
+- `camera_init`: Nav2 odom 프레임
+- `body`: Nav2 base 프레임과 임시 LaserScan 프레임
+- `/Odometry`: FAST-LIO odometry
+- `/cloud_registered_body`: LaserScan 변환 입력
+- `/scan`: AMCL과 costmap 입력
 
-## 설치와 빌드
+LiDAR를 고정한 뒤에는 실제 장착 위치를 측정해 고정 TF와 FAST-LIO
+extrinsic을 다시 설정해야 합니다.
 
-Ubuntu 22.04 / ROS 2 Humble에서:
+## 기존 지도 준비
+
+기본 지도 경로는 다음입니다.
+
+```text
+/mnt/t500/maps/scans_new.yaml
+/mnt/t500/maps/scans_new.pgm
+```
+
+저장소에는 실제 지도 파일을 넣지 않습니다. 지도 준비 스크립트는 프로젝트
+루트에서 실행합니다.
 
 ```bash
-sudo apt update
-sudo apt install ros-humble-navigation2 ros-humble-nav2-bringup \
-  ros-humble-slam-toolbox ros-humble-rviz2
+cd /mnt/t500/go1_ros2_project
+./migration/prepare_existing_map.sh
+```
 
-mkdir -p /mnt/t500/go1_ros2_ws/src
-cp -a /mnt/t500/go1_ros2_project/packages/omx_navigation \
-  /mnt/t500/go1_ros2_ws/src/omx_navigation
-cd /mnt/t500/go1_ros2_ws
+## 빌드
+
+```bash
+export ROS_DOMAIN_ID=100
 source /opt/ros/humble/setup.bash
-rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install
+cd /mnt/t500/go1_ros2_ws
+colcon build --symlink-install --packages-select go1_driver omx_navigation
 source install/setup.bash
 ```
 
-이미 이 저장소가 ROS 2 workspace의 `src/` 아래에 있다면 복사하지 않고 해당
-workspace 루트에서 `rosdep`과 `colcon build`만 실행하면 됩니다.
+ROS1 Noetic 작업공간과 토픽이 섞이지 않도록 모든 ROS2 시험에서
+`ROS_DOMAIN_ID=100`을 사용합니다.
 
-## 1. SLAM과 동시에 내비게이션
+## 실행 순서
 
-로봇 드라이버와 `robot_state_publisher`를 먼저 실행한 뒤:
+각 명령은 서로 다른 Jetson 터미널에서 실행합니다.
+
+### 1. MID-360
 
 ```bash
-ros2 launch omx_navigation rviz_navigation.launch.py slam:=true
+export ROS_DOMAIN_ID=100
+source /opt/ros/humble/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
+ros2 launch livox_ros_driver2 msg_MID360_launch.py
 ```
 
-RViz에서 LiDAR, TF, Map이 정상 표시되는지 확인하고 상단의 **2D Goal Pose**를
-눌러 지도 위에서 드래그하면 Nav2 목표가 전송됩니다. SLAM 초기 위치는 현재
-오도메트리 위치로 잡히므로 `2D Pose Estimate`는 누르지 않습니다.
-
-지도 저장:
+### 2. FAST-LIO2
 
 ```bash
-mkdir -p /mnt/t500/maps
-ros2 run nav2_map_server map_saver_cli -f /mnt/t500/maps/omx_map
+export ROS_DOMAIN_ID=100
+source /opt/ros/humble/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
+ros2 launch fast_lio mapping.launch.py config_file:=mid360.yaml rviz:=false
 ```
 
-## 2. 저장한 지도에서 내비게이션
+FAST-LIO 자체 RViz와 PCD 저장은 이 시험에서 사용하지 않습니다.
+
+### 3. 기존 지도 AMCL, Nav2, 저부하 RViz
 
 ```bash
-ros2 launch omx_navigation rviz_navigation.launch.py \
-  slam:=false map:=/mnt/t500/maps/omx_map.yaml
+export ROS_DOMAIN_ID=100
+source /opt/ros/humble/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
+ros2 launch omx_navigation go1_existing_map.launch.py arm:=false
 ```
 
-이 모드에서는 먼저 RViz의 **2D Pose Estimate**로 로봇의 실제 초기 위치와 방향을
-지정한 뒤 **2D Goal Pose**를 사용합니다.
+통합 launch는 다음을 시작합니다.
 
-## 토픽 또는 프레임 이름 변경
+- `/cloud_registered_body`를 `/scan`으로 변환
+- 기존 지도 map server
+- AMCL
+- Nav2 planner, controller, behavior 및 velocity smoother
+- Go1 드라이버의 무구동 모드
+- 15 FPS 저부하 RViz
 
-launch 인자로 바꿀 수 있습니다.
+## RViz 시험
+
+1. 기존 지도와 붉은색 `/scan`이 보이는지 확인합니다.
+2. `2D Pose Estimate`로 지도상의 실제 위치와 방향을 지정합니다.
+3. `/scan`이 기존 지도 벽과 겹치는지 확인합니다.
+4. `2D Goal Pose`로 가까운 목표를 지정합니다.
+5. Global Plan과 Local Plan이 생성되는지 확인합니다.
+6. 목표를 취소하고 속도 명령이 0으로 돌아오는지 확인합니다.
+
+이 단계의 `2D Goal Pose`는 경로와 속도 계산만 확인하기 위한 것입니다.
+`arm:=false`이므로 실제 Go1은 움직이지 않아야 합니다.
+
+## ROS1 DWA 튜닝의 ROS2 적용값
+
+ROS1에서 분석한 YAML 5개 중 실제 수정했던 파일은
+`base_local_planner_params.yaml` 하나입니다. 그 설정 의도를 ROS2 DWB에
+다음처럼 옮겼습니다.
+
+| 목적 | ROS2 값 |
+| --- | --- |
+| 위치 도착 오차 | `0.20 m` |
+| 방향 도착 오차 | `0.15 rad` |
+| 경로 추종 가중치 | `PathAlign/PathDist: 40.0` |
+| 목표 추종 가중치 | `GoalAlign/GoalDist: 20.0` |
+| 장애물 critic | `BaseObstacle: 0.01` |
+| 궤적 예측 시간 | `2.0 s` |
+| 속도 샘플 | `vx=10`, `vy=1`, `vtheta=20` |
+| oscillation reset 거리 | `0.20 m` |
+
+예전 ROS1 최고속도 `0.30 m/s`, `0.60 rad/s`는 현재 Go1 드라이버 상한보다
+큽니다. Nav2와 실제 드라이버의 속도 차이로 인한 경로 이탈과 목표 부근
+흔들림을 줄이기 위해 ROS2에서는 각각 `0.20 m/s`, `0.40 rad/s`로
+통일했습니다.
+
+## 확인 명령
 
 ```bash
-ros2 launch omx_navigation rviz_navigation.launch.py \
-  scan_topic:=/lidar/scan \
-  odom_topic:=/wheel/odom \
-  base_frame:=base_footprint
-```
+export ROS_DOMAIN_ID=100
+source /opt/ros/humble/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
 
-Nav2의 최종 속도 출력은 `/cmd_vel`입니다. 로봇 드라이버가 다른 이름을 사용하면
-드라이버 쪽 입력을 `/cmd_vel`로 remap합니다. `map`, `odom` 프레임명도 각각
-`map_frame`, `odom_frame` launch 인자로 바꿀 수 있습니다.
-
-추가 인자 확인:
-
-```bash
-ros2 launch omx_navigation rviz_navigation.launch.py --show-args
-```
-
-## 실제 로봇에 맞춰 먼저 조정할 값
-
-- `config/nav2_params.yaml`의 `robot_radius`를 실제 외접 반지름으로 변경
-- `max_vel_x`, `max_vel_theta`, 가감속 제한을 섀시 사양에 맞게 변경
-- LiDAR 유효 거리에 맞춰 obstacle/raytrace range 변경
-- 시뮬레이터를 사용할 때는 `use_sim_time:=true` 추가
-
-빠른 연결 점검:
-
-```bash
+ros2 topic hz /livox/lidar
+ros2 topic hz /cloud_registered_body
 ros2 topic hz /scan
-ros2 topic hz /odom
+ros2 topic hz /Odometry
+ros2 run tf2_ros tf2_echo map camera_init
+ros2 run tf2_ros tf2_echo camera_init body
+ros2 param get /go1_driver arm
 ros2 topic echo /cmd_vel
-ros2 run tf2_ros tf2_echo odom base_link
-ros2 run tf2_ros tf2_echo base_link <laser_frame>
 ```
+
+자동 무구동 검증은 다음 단계에서 실행합니다.
+
+```bash
+cd /mnt/t500/go1_ros2_project
+./migration/verify_existing_map_navigation.sh
+```
+
+## 안전 제한
+
+- 이번 단계에서는 `arm:=true`를 사용하지 않습니다.
+- LiDAR가 고정되지 않았으므로 지도와 scan 정합은 임시 시험 결과입니다.
+- 기존 지도와 실시간 scan이 맞지 않으면 새 지도를 작성해야 합니다.
+- 실제 주행은 고정 TF·extrinsic, 정지 watchdog, 초기 자세와 좁은 복도
+  검증을 모두 마친 뒤 별도 단계에서 진행합니다.
