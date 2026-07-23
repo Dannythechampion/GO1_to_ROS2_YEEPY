@@ -17,7 +17,7 @@ trap 'rm -f "$tmp_output"' EXIT
 
 require_topic() {
   local topic="$1"
-  ros2 topic list | grep -Fxq "$topic"
+  timeout 10 ros2 topic list | grep -Fxq "$topic"
   printf 'PASS topic: %s\n' "$topic"
 }
 
@@ -66,7 +66,7 @@ require_tf() {
 
 require_active() {
   local node="$1"
-  ros2 lifecycle get "$node" >"$tmp_output"
+  timeout 10 ros2 lifecycle get "$node" >"$tmp_output"
   grep -Fq "active [3]" "$tmp_output"
   printf 'PASS lifecycle: %s\n' "$node"
 }
@@ -93,7 +93,7 @@ for node in \
   require_active "$node"
 done
 
-arm_value="$(ros2 param get /go1_driver arm)"
+arm_value="$(timeout 10 ros2 param get /go1_driver arm)"
 if [[ "$arm_value" != "Boolean value is: False" ]]; then
   printf 'FAIL: go1_driver must remain arm=false, got: %s\n' \
     "$arm_value" >&2

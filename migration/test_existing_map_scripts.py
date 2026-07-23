@@ -29,7 +29,9 @@ def test_runtime_verifier_enforces_arm_false_and_core_topics():
         assert topic in text
     assert "require_tf map camera_init" in text
     assert "require_tf camera_init body" in text
-    assert "ros2 lifecycle get" in text
+    assert "timeout 10 ros2 topic list" in text
+    assert "timeout 10 ros2 lifecycle get" in text
+    assert "timeout 10 ros2 param get /go1_driver arm" in text
     assert "PASS: existing-map navigation is active with arm=false" in text
 
 def test_runtime_verifier_enables_nounset_only_after_ros_setup():
