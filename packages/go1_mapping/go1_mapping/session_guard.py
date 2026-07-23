@@ -1,87 +1,120 @@
+#!/usr/bin/env python3
+"""Mapping session health guard."""
 from __future__ import annotations
 from collections import deque
-import math, shutil
+import math
 from pathlib import Path
-from typing import Any, Mapping
+import shutil
+import time
+from typing import Any, Callable, Mapping
 from go1_mapping.manifest import write_manifest_atomic
+
+WINDOW_SECONDS=10.0
+
+def _quaternion(x,y,z,w):
+ values=tuple(map(float,(x,y,z,w)))
+ if not all(math.isfinite(v) for v in values): raise ValueError('quaternion must be finite')
+ norm=math.sqrt(sum(v*v for v in values))
+ if norm==0: raise ValueError('quaternion must be nonzero')
+ return tuple(v/norm for v in values)
+def quaternion_yaw(x,y,z,w):
+ x,y,z,w=_quaternion(x,y,z,w);return math.atan2(2*(w*z+x*y),1-2*(y*y+z*z))
+def wrap_angle(angle): return math.atan2(math.sin(angle),math.cos(angle))
 
 class HealthWindow:
  def __init__(self,required_hz:Mapping[str,float],max_gap_sec:float,initialization_sec:float,started_at:float):
-  self.required_hz={k:float(v) for k,v in required_hz.items()};self.max_gap_sec=float(max_gap_sec);self.initialization_sec=float(initialization_sec);self.started_at=float(started_at);self.r={k:deque() for k in self.required_hz};self.h={};self.x={k:deque() for k in self.required_hz}
- def observe(self,topic:str,stamp_sec:float,sensor_stamp_sec:float|None=None)->None:
-  if topic not in self.r: raise ValueError(f'unknown health topic: {topic}')
-  t=float(stamp_sec);self.r[topic].append(t)
+  self.required_hz={k:float(v) for k,v in required_hz.items()};self.max_gap_sec=float(max_gap_sec);self.initialization_sec=float(initialization_sec);self.started_at=float(started_at);self.receipts={k:deque() for k in self.required_hz};self.headers={};self.regressions={k:deque() for k in self.required_hz}
+ def observe(self,topic,stamp_sec,sensor_stamp_sec=None):
+  if topic not in self.receipts: raise ValueError(f'unknown health topic: {topic}')
+  receipt=float(stamp_sec);q=self.receipts[topic]
+  if q and receipt<q[-1]: self.regressions[topic].append((receipt,'receipt',q[-1],receipt))
+  else: q.append(receipt)
   if sensor_stamp_sec is not None:
-   h=float(sensor_stamp_sec);p=self.h.get(topic)
-   if p is not None and h<p:self.x[topic].append((t,p,h))
-   self.h[topic]=h if p is None else max(p,h)
- def measurements(self,now_sec:float)->dict[str,dict[str,float]]:
-  now=float(now_sec);cut=now-10.;rates={};gaps={}
-  for k,q in self.r.items():
-   while q and q[0]<cut:q.popleft()
-   rates[k]=(len(q)-1)/(q[-1]-q[0]) if len(q)>1 and q[-1]>q[0] else 0.
-   gaps[k]=now-q[-1] if q else now-self.started_at
-  for q in self.x.values():
-   while q and q[0][0]<cut:q.popleft()
+   header=float(sensor_stamp_sec);previous=self.headers.get(topic)
+   if previous is not None and header<previous:self.regressions[topic].append((receipt,'sensor',previous,header))
+   self.headers[topic]=header if previous is None else max(previous,header)
+ def measurements(self,now_sec):
+  now=float(now_sec);cutoff=now-WINDOW_SECONDS;rates={};gaps={}
+  for topic,q in self.receipts.items():
+   while q and q[0]<cutoff:q.popleft()
+   rates[topic]=(len(q)-1)/(q[-1]-q[0]) if len(q)>1 and q[-1]>q[0] else 0.0
+   gaps[topic]=max(0.0,now-q[-1]) if q else max(0.0,now-self.started_at)
+  for q in self.regressions.values():
+   while q and q[0][0]<cutoff:q.popleft()
   return {'rates_hz':rates,'max_gaps_sec':gaps}
- def evaluate(self,now_sec:float)->list[str]:
+ def evaluate(self,now_sec):
   m=self.measurements(now_sec)
   if now_sec<self.started_at+self.initialization_sec:return []
-  e=[]
-  for k,need in self.required_hz.items():
-   if m['rates_hz'][k]<need:e.append(f'{k} rate {m["rates_hz"][k]:.2f} Hz below required {need:.2f} Hz')
-   if m['max_gaps_sec'][k]>self.max_gap_sec:e.append(f'{k} gap {m["max_gaps_sec"][k]:.2f}s exceeds {self.max_gap_sec:.2f}s')
-   e.extend(f'{k} sensor timestamp regression: {c:.9f} < {p:.9f}' for _,p,c in self.x[k])
-  return e
+  result=[]
+  for topic,required in self.required_hz.items():
+   rate,gap=m['rates_hz'][topic],m['max_gaps_sec'][topic]
+   if rate<required:result.append(f'{topic} rate {rate:.2f} Hz below required {required:.2f} Hz')
+   if gap>self.max_gap_sec:result.append(f'{topic} gap {gap:.2f}s exceeds {self.max_gap_sec:.2f}s')
+   result.extend(f'{topic} {kind} timestamp regression: {current:.9f} < {previous:.9f}' for _,kind,previous,current in self.regressions[topic])
+  return result
 
-def free_gib(session_dir:str|Path)->float:return shutil.disk_usage(session_dir).free/2**30
-def should_abort_disk(free_gib_value:float,abort_free_gib:float=50.)->bool:return float(free_gib_value)<float(abort_free_gib)
-def quaternion_yaw(x:float,y:float,z:float,w:float)->float:return math.atan2(2*(w*z+x*y),1-2*(y*y+z*z))
-def wrap_angle(angle:float)->float:return math.atan2(math.sin(angle),math.cos(angle))
-def pose_return_error(a:Mapping[str,Any]|None,b:Mapping[str,Any]|None)->dict[str,float]|None:
- if a is None or b is None:return None
- def c(p):
-  q=p['orientation'];v=p['position'];return float(v['x']),float(v['y']),quaternion_yaw(float(q.get('x',0)),float(q.get('y',0)),float(q['z']),float(q['w']))
- ax,ay,aa=c(a);bx,by,ba=c(b);return {'xy_m':math.hypot(bx-ax,by-ay),'yaw_rad':abs(wrap_angle(ba-aa))}
-def evaluate_and_record(*,session_dir:str|Path,window:HealthWindow,now_sec:float,free_gib_value:float|None=None,abort_free_gib:float=50.,first_stable_pose=None,latest_pose=None):
- root=Path(session_dir);d=root/'validation';d.mkdir(parents=True,exist_ok=True);free=free_gib(root) if free_gib_value is None else float(free_gib_value);reasons=window.evaluate(now_sec)
- if should_abort_disk(free,abort_free_gib):reasons.append(f'free disk {free:.2f} GiB below abort limit {float(abort_free_gib):.2f} GiB')
- p={'timestamp_sec':float(now_sec),'free_gib':free,'abort_free_gib':float(abort_free_gib),'first_stable_odometry_pose':first_stable_pose,'latest_odometry_pose':latest_pose,'return_error':pose_return_error(first_stable_pose,latest_pose),'reasons':reasons};p.update(window.measurements(now_sec));write_manifest_atomic(d/'health.yaml',p)
- if reasons:write_manifest_atomic(d/'guard_failure.yaml',p);return 2,p
- return 0,p
+def free_gib(path): return shutil.disk_usage(path).free/2**30
+def should_abort_disk(free,abort=50.): return float(free)<float(abort)
+def pose_return_error(first,latest):
+ if first is None or latest is None:return None
+ def unpack(p):
+  q=p['orientation'];v=p['position'];return float(v['x']),float(v['y']),quaternion_yaw(q.get('x',0),q.get('y',0),q['z'],q['w'])
+ fx,fy,fa=unpack(first);lx,ly,la=unpack(latest);return {'xy_m':math.hypot(lx-fx,ly-fy),'yaw_rad':abs(wrap_angle(la-fa))}
+def evaluate_and_record(*,session_dir,window,now_sec,free_gib_value=None,abort_free_gib=50.,first_stable_pose=None,latest_pose=None,writer:Callable=write_manifest_atomic):
+ root=Path(session_dir);validation=root/'validation';validation.mkdir(parents=True,exist_ok=True);remaining=free_gib(root) if free_gib_value is None else float(free_gib_value);reasons=window.evaluate(now_sec)
+ if should_abort_disk(remaining,abort_free_gib):reasons.append(f'free disk {remaining:.2f} GiB below abort limit {float(abort_free_gib):.2f} GiB')
+ payload={'timestamp_sec':float(now_sec),'free_gib':remaining,'abort_free_gib':float(abort_free_gib),'first_stable_odometry_pose':first_stable_pose,'latest_odometry_pose':latest_pose,'return_error':pose_return_error(first_stable_pose,latest_pose),'reasons':reasons,'write_errors':[]};payload.update(window.measurements(now_sec))
+ def persist(target):
+  try:writer(target,payload)
+  except Exception as error:
+   message=f'{target.name} write failed: {error}';payload['write_errors'].append(message);payload['reasons'].append(message)
+ persist(validation/'health.yaml')
+ if payload['reasons']:persist(validation/'guard_failure.yaml');return 2,payload
+ return 0,payload
 
-def _stamp(msg):
- s=getattr(getattr(msg,'header',None),'stamp',None);return None if s is None else float(s.sec)+float(s.nanosec)/1e9
+def _source_stamp(message):
+ timebase=getattr(message,'timebase',0)
+ if timebase:return float(timebase)/1e9
+ stamp=getattr(getattr(message,'header',None),'stamp',None)
+ if stamp is None or (stamp.sec==0 and stamp.nanosec==0):return None
+ return float(stamp.sec)+float(stamp.nanosec)/1e9
+def _pose(message):
+ p=message.position;q=message.orientation
+ try:x,y,z,w=_quaternion(q.x,q.y,q.z,q.w)
+ except ValueError:return None
+ if not all(math.isfinite(v) for v in (p.x,p.y)):return None
+ return {'position':{'x':float(p.x),'y':float(p.y)},'orientation':{'x':x,'y':y,'z':z,'w':w}}
 class SessionGuardNode:
  def __init__(self):
   import rclpy
   from rclpy.node import Node
-  from rclpy.qos import SensorDataQoS
+  from rclpy.qos import QoSProfile,HistoryPolicy,ReliabilityPolicy,DurabilityPolicy
   from sensor_msgs.msg import Imu
   from nav_msgs.msg import Odometry
   from livox_ros_driver2.msg import CustomMsg
-  self.n=Node('mapping_session_guard');self.rc=rclpy
-  for k,v in [('session_dir',''),('abort_free_gib',50.),('lidar_min_hz',8.),('imu_min_hz',100.),('odom_min_hz',8.),('max_gap_sec',1.),('initialization_sec',15.)]:self.n.declare_parameter(k,v)
-  sd=self.n.get_parameter('session_dir').value
-  if not sd:raise ValueError('session_dir parameter is required')
-  self.sd=Path(sd);self.abort=float(self.n.get_parameter('abort_free_gib').value);self.init=float(self.n.get_parameter('initialization_sec').value);self.started=self.now();self.w=HealthWindow({k:self.n.get_parameter(k+'_min_hz').value for k in ('lidar','imu','odom')},self.n.get_parameter('max_gap_sec').value,self.init,self.started);self.first=self.latest=None;self.exit_code=0;q=SensorDataQoS();self.n.create_subscription(CustomMsg,'/livox/lidar',self.lidar,q);self.n.create_subscription(Imu,'/livox/imu',self.imu,q);self.n.create_subscription(Odometry,'/Odometry',self.odom,q);self.n.create_timer(1.,self.timer)
- def now(self):return self.n.get_clock().now().nanoseconds/1e9
- def lidar(self,m):self.w.observe('lidar',self.now(),_stamp(m))
- def imu(self,m):self.w.observe('imu',self.now(),_stamp(m))
- def odom(self,m):
-  now=self.now();self.w.observe('odom',now,_stamp(m));p=m.pose.pose.position;q=m.pose.pose.orientation;values=(p.x,p.y,q.x,q.y,q.z,q.w)
-  if all(math.isfinite(value) for value in values) and not math.isclose(sum(value*value for value in values[2:]),0):
-   self.latest={'position':{'x':float(p.x),'y':float(p.y)},'orientation':{'x':float(q.x),'y':float(q.y),'z':float(q.z),'w':float(q.w)}}
-   if self.first is None and now>=self.started+self.init:self.first=self.latest
+  self.node=Node('mapping_session_guard');self.rclpy=rclpy
+  for name,value in [('session_dir',''),('abort_free_gib',50.),('lidar_min_hz',8.),('imu_min_hz',100.),('odom_min_hz',8.),('max_gap_sec',1.),('initialization_sec',15.)]:self.node.declare_parameter(name,value)
+  directory=self.node.get_parameter('session_dir').value
+  if not directory:raise ValueError('session_dir parameter is required')
+  self.session_dir=Path(directory);self.abort=float(self.node.get_parameter('abort_free_gib').value);self.initialization=float(self.node.get_parameter('initialization_sec').value);self.started=time.monotonic();self.window=HealthWindow({k:self.node.get_parameter(k+'_min_hz').value for k in ('lidar','imu','odom')},self.node.get_parameter('max_gap_sec').value,self.initialization,self.started);self.first_pose=self.latest_pose=None;self.exit_code=0
+  qos=QoSProfile(history=HistoryPolicy.KEEP_LAST,depth=1,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.VOLATILE)
+  self.node.create_subscription(CustomMsg,'/livox/lidar',self.lidar,qos);self.node.create_subscription(Imu,'/livox/imu',self.imu,qos);self.node.create_subscription(Odometry,'/Odometry',self.odom,qos);self.node.create_timer(1.,self.timer)
+ def now(self):return time.monotonic()
+ def lidar(self,msg):self.window.observe('lidar',self.now(),_source_stamp(msg))
+ def imu(self,msg):self.window.observe('imu',self.now(),_source_stamp(msg))
+ def odom(self,msg):
+  now=self.now();self.window.observe('odom',now,_source_stamp(msg));pose=_pose(msg.pose.pose)
+  if pose is not None:self.latest_pose=pose;self.first_pose=pose if self.first_pose is None and now>=self.started+self.initialization else self.first_pose
  def timer(self):
-  code,p=evaluate_and_record(session_dir=self.sd,window=self.w,now_sec=self.now(),abort_free_gib=self.abort,first_stable_pose=self.first,latest_pose=self.latest)
-  if code==2:self.exit_code=2;self.rc.shutdown()
- def destroy_node(self):return self.n.destroy_node()
+  try:code,payload=evaluate_and_record(session_dir=self.session_dir,window=self.window,now_sec=self.now(),abort_free_gib=self.abort,first_stable_pose=self.first_pose,latest_pose=self.latest_pose)
+  except Exception as error:code,payload=2,{'reasons':[f'health guard internal failure: {error}']}
+  if code==2:self.exit_code=2;self.node.get_logger().error('; '.join(payload['reasons']));self.rclpy.shutdown()
+ def destroy_node(self):return self.node.destroy_node()
 def main(args=None):
  import rclpy
- rclpy.init(args=args);node=None
- try:node=SessionGuardNode();rclpy.spin(node.n);return node.exit_code
+ rclpy.init(args=args);guard=None
+ try:guard=SessionGuardNode();rclpy.spin(guard.node);return guard.exit_code
  finally:
-  if node:node.destroy_node()
+  if guard is not None:guard.destroy_node()
   if rclpy.ok():rclpy.shutdown()
 if __name__=='__main__':raise SystemExit(main())
