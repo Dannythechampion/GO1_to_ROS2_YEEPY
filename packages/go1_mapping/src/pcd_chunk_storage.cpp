@@ -16,6 +16,7 @@
 
 #include <pcl/io/pcd_io.h>
 #include <sensor_msgs/msg/point_field.hpp>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace go1_mapping
@@ -43,46 +44,118 @@ std::string chunk_stem(const std::size_t index)
   return name.str();
 }
 
-void sync_file(const fs::path & path)
+void sync_descriptor(const int descriptor, const char * const description)
 {
-  const int descriptor = open(path.c_str(), O_RDONLY | O_CLOEXEC);
-  if (descriptor < 0) {
-    throw std::system_error(errno, std::generic_category(), "open partial PCD for fsync");
-  }
-  const int sync_status = fsync(descriptor);
-  const int sync_error = errno;
-  const int close_status = close(descriptor);
-  const int close_error = errno;
-  if (sync_status != 0) {
-    throw std::system_error(sync_error, std::generic_category(), "fsync partial PCD");
-  }
-  if (close_status != 0) {
-    throw std::system_error(close_error, std::generic_category(), "close synced partial PCD");
+  if (fsync(descriptor) != 0) {
+    throw std::system_error(errno, std::generic_category(), description);
   }
 }
 
-class PartialFileGuard
+class OwnedPartial
 {
 public:
-  explicit PartialFileGuard(fs::path path)
-  : path_(std::move(path)) {}
-
-  ~PartialFileGuard()
+  OwnedPartial(const int directory_fd, const std::size_t index)
+  : directory_fd_(directory_fd)
   {
-    if (active_) {
-      std::error_code ignored;
-      fs::remove(path_, ignored);
+    static std::atomic<std::uint64_t> sequence{0};
+    for (std::size_t attempt = 0; attempt < 128; ++attempt) {
+      const auto ticket = sequence.fetch_add(1, std::memory_order_relaxed);
+      name_ = "." + chunk_stem(index) + "." + std::to_string(getpid()) + "." +
+        std::to_string(ticket) + ".partial";
+      descriptor_ = openat(
+        directory_fd_, name_.c_str(),
+        O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+      if (descriptor_ >= 0) {
+        if (fstat(descriptor_, &owned_status_) != 0) {
+          const int status_error = errno;
+          close(descriptor_);
+          descriptor_ = -1;
+          throw std::system_error(
+                  status_error, std::generic_category(), "fstat owned partial PCD");
+        }
+        return;
+      }
+      if (errno != EEXIST) {
+        throw std::system_error(
+                errno, std::generic_category(), "openat exclusive partial PCD");
+      }
+    }
+    throw std::runtime_error("could not reserve a unique partial PCD name");
+  }
+
+  ~OwnedPartial()
+  {
+    cleanup_owned_name_noexcept();
+    if (descriptor_ >= 0) {
+      close(descriptor_);
     }
   }
 
-  void release() noexcept
+  int descriptor() const noexcept
   {
-    active_ = false;
+    return descriptor_;
+  }
+
+  fs::path descriptor_path() const
+  {
+    return fs::path("/proc/self/fd") / std::to_string(descriptor_);
+  }
+
+  const std::string & name() const noexcept
+  {
+    return name_;
+  }
+
+  void cleanup_owned_name()
+  {
+    if (!owned_name_active_) {
+      return;
+    }
+
+    struct stat current_status {};
+    if (fstatat(directory_fd_, name_.c_str(), &current_status, AT_SYMLINK_NOFOLLOW) != 0) {
+      if (errno == ENOENT) {
+        owned_name_active_ = false;
+        return;
+      }
+      throw std::system_error(
+              errno, std::generic_category(), "fstatat partial PCD before cleanup");
+    }
+
+    if (current_status.st_dev != owned_status_.st_dev ||
+      current_status.st_ino != owned_status_.st_ino)
+    {
+      owned_name_active_ = false;
+      return;
+    }
+
+    if (unlinkat(directory_fd_, name_.c_str(), 0) != 0) {
+      throw std::system_error(errno, std::generic_category(), "unlinkat owned partial PCD");
+    }
+    owned_name_active_ = false;
   }
 
 private:
-  fs::path path_;
-  bool active_{true};
+  void cleanup_owned_name_noexcept() noexcept
+  {
+    if (!owned_name_active_) {
+      return;
+    }
+    struct stat current_status {};
+    if (fstatat(directory_fd_, name_.c_str(), &current_status, AT_SYMLINK_NOFOLLOW) == 0 &&
+      current_status.st_dev == owned_status_.st_dev &&
+      current_status.st_ino == owned_status_.st_ino)
+    {
+      unlinkat(directory_fd_, name_.c_str(), 0);
+    }
+    owned_name_active_ = false;
+  }
+
+  int directory_fd_;
+  int descriptor_{-1};
+  std::string name_;
+  struct stat owned_status_ {};
+  bool owned_name_active_{true};
 };
 
 }  // namespace
@@ -163,56 +236,55 @@ ValidatedCloudMessage validate_cloud_message(
   return ValidatedCloudMessage{point_count, payload_bytes};
 }
 
-PcdChunkStorage::PcdChunkStorage(fs::path output_dir, SaveFunction save_function)
+PcdChunkStorage::PcdChunkStorage(
+  fs::path output_dir,
+  SaveFunction save_function,
+  DirectorySyncFunction directory_sync_function)
 : output_dir_(std::move(output_dir)),
-  save_function_(std::move(save_function))
+  save_function_(std::move(save_function)),
+  directory_sync_function_(std::move(directory_sync_function))
 {
-  if (!fs::is_directory(output_dir_)) {
-    throw std::invalid_argument("PCD output directory does not exist");
+  output_dir_fd_ = open(
+    output_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (output_dir_fd_ < 0) {
+    throw std::system_error(errno, std::generic_category(), "open PCD output directory");
   }
   if (!save_function_) {
-    save_function_ = [](const fs::path & path, const Cloud & cloud) {
-        return pcl::io::savePCDFileBinaryCompressed(path.string(), cloud);
+    save_function_ = [](const fs::path & descriptor_path, const Cloud & cloud) {
+        return pcl::io::savePCDFileBinaryCompressed(descriptor_path.string(), cloud);
       };
+  }
+  if (!directory_sync_function_) {
+    directory_sync_function_ = [](const int descriptor) {
+        sync_descriptor(descriptor, "fsync PCD output directory");
+      };
+  }
+}
+
+PcdChunkStorage::~PcdChunkStorage()
+{
+  if (output_dir_fd_ >= 0) {
+    close(output_dir_fd_);
   }
 }
 
 std::size_t PcdChunkStorage::next_free_index() const
 {
   std::size_t index = 0;
-  while (fs::exists(output_dir_ / (chunk_stem(index) + ".pcd"))) {
+  while (true) {
+    struct stat status {};
+    const auto final_name = chunk_stem(index) + ".pcd";
+    if (fstatat(output_dir_fd_, final_name.c_str(), &status, AT_SYMLINK_NOFOLLOW) != 0) {
+      if (errno == ENOENT) {
+        return index;
+      }
+      throw std::system_error(errno, std::generic_category(), "fstatat final PCD");
+    }
     if (index == std::numeric_limits<std::size_t>::max()) {
       throw std::overflow_error("no PCD chunk index is available");
     }
     ++index;
   }
-  return index;
-}
-
-fs::path PcdChunkStorage::reserve_unique_partial(const std::size_t index) const
-{
-  static std::atomic<std::uint64_t> sequence{0};
-  for (std::size_t attempt = 0; attempt < 128; ++attempt) {
-    const auto ticket = sequence.fetch_add(1, std::memory_order_relaxed);
-    const fs::path partial_path = output_dir_ /
-      ("." + chunk_stem(index) + "." + std::to_string(getpid()) + "." +
-      std::to_string(ticket) + ".partial");
-    const int descriptor = open(
-      partial_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-    if (descriptor >= 0) {
-      if (close(descriptor) != 0) {
-        const int close_error = errno;
-        std::error_code ignored;
-        fs::remove(partial_path, ignored);
-        throw std::system_error(close_error, std::generic_category(), "close partial PCD");
-      }
-      return partial_path;
-    }
-    if (errno != EEXIST) {
-      throw std::system_error(errno, std::generic_category(), "reserve partial PCD");
-    }
-  }
-  throw std::runtime_error("could not reserve a unique partial PCD path");
 }
 
 bool PcdChunkStorage::flush(ChunkBuffer & buffer)
@@ -223,31 +295,26 @@ bool PcdChunkStorage::flush(ChunkBuffer & buffer)
   }
 
   const auto index = next_free_index();
-  const fs::path final_path = output_dir_ / (chunk_stem(index) + ".pcd");
-  const fs::path partial_path = reserve_unique_partial(index);
-  PartialFileGuard partial_guard(partial_path);
+  const std::string final_name = chunk_stem(index) + ".pcd";
+  OwnedPartial partial(output_dir_fd_, index);
+  const fs::path descriptor_path = partial.descriptor_path();
 
-  if (save_function_(partial_path, buffer.peek()) < 0) {
+  if (save_function_(descriptor_path, buffer.peek()) < 0) {
     throw std::runtime_error("failed to save binary-compressed partial PCD");
   }
+  sync_descriptor(partial.descriptor(), "fsync partial PCD");
 
-  sync_file(partial_path);
-
-  std::error_code publish_error;
-  fs::create_hard_link(partial_path, final_path, publish_error);
-  if (publish_error) {
-    throw fs::filesystem_error(
-            "atomic no-clobber PCD publish failed", partial_path, final_path, publish_error);
+  if (linkat(
+      AT_FDCWD, descriptor_path.c_str(), output_dir_fd_, final_name.c_str(),
+      AT_SYMLINK_FOLLOW) != 0)
+  {
+    throw std::system_error(errno, std::generic_category(), "linkat no-clobber final PCD");
   }
 
-  std::error_code cleanup_error;
-  fs::remove(partial_path, cleanup_error);
+  directory_sync_function_(output_dir_fd_);
   buffer.clear();
-  if (cleanup_error) {
-    throw fs::filesystem_error("published PCD but could not remove partial", partial_path,
-            cleanup_error);
-  }
-  partial_guard.release();
+  partial.cleanup_owned_name();
+  directory_sync_function_(output_dir_fd_);
   return true;
 }
 

@@ -79,9 +79,10 @@ const pcl::PointCloud<pcl::PointXYZI> & ChunkBuffer::peek() const noexcept
   return *cloud_;
 }
 
-void ChunkBuffer::clear() noexcept
+void ChunkBuffer::clear()
 {
-  cloud_->clear();
+  auto replacement = std::make_shared<pcl::PointCloud<pcl::PointXYZI>>();
+  cloud_.swap(replacement);
   frame_count_ = 0;
   byte_count_ = 0;
 }

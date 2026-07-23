@@ -18,7 +18,7 @@ public:
   void append(const pcl::PointCloud<pcl::PointXYZI> & cloud);
   pcl::PointCloud<pcl::PointXYZI>::Ptr take();
   const pcl::PointCloud<pcl::PointXYZI> & peek() const noexcept;
-  void clear() noexcept;
+  void clear();
 
   std::size_t frame_count() const noexcept;
   std::size_t byte_count() const noexcept;

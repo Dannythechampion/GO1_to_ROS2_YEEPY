@@ -7,6 +7,8 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
+#include <sys/stat.h>
 
 #include <pcl/io/pcd_io.h>
 #include <pcl/point_cloud.h>
@@ -293,5 +295,131 @@ TEST(PcdChunkStorage, ConcurrentFinalCollisionPreservesBytesAndBuffer)
   EXPECT_EQ(partial_file_count(directory.path()), 0U);
 }
 
+TEST(PcdChunkStorage, DirectorySyncOrderGatesBufferClearAndSuccess)
+{
+  TemporaryDirectory directory;
+  ChunkBuffer buffer(300, 268435456);
+  buffer.append(one_point_cloud());
+  std::size_t sync_calls = 0;
+  PcdChunkStorage storage(
+    directory.path(),
+    [](const fs::path & descriptor_path, const PcdChunkStorage::Cloud &)
+    {
+      write_text(descriptor_path, "owned bytes");
+      return 0;
+    },
+    [&directory, &buffer, &sync_calls](int)
+    {
+      ++sync_calls;
+      EXPECT_TRUE(fs::exists(directory.path() / "chunk_000000.pcd"));
+      if (sync_calls == 1) {
+        EXPECT_EQ(buffer.frame_count(), 1U);
+        EXPECT_EQ(partial_file_count(directory.path()), 1U);
+      } else if (sync_calls == 2) {
+        EXPECT_EQ(buffer.frame_count(), 0U);
+        EXPECT_EQ(partial_file_count(directory.path()), 0U);
+      }
+    });
+
+  EXPECT_TRUE(storage.flush(buffer));
+  EXPECT_EQ(sync_calls, 2U);
+}
+
+TEST(PcdChunkStorage, FirstDirectorySyncFailureRetainsBuffer)
+{
+  TemporaryDirectory directory;
+  ChunkBuffer buffer(300, 268435456);
+  buffer.append(one_point_cloud());
+  PcdChunkStorage storage(
+    directory.path(),
+    [](const fs::path & descriptor_path, const PcdChunkStorage::Cloud &)
+    {
+      write_text(descriptor_path, "owned bytes");
+      return 0;
+    },
+    [](int) {throw std::runtime_error("first directory fsync failed");});
+
+  EXPECT_THROW(storage.flush(buffer), std::runtime_error);
+  EXPECT_EQ(buffer.frame_count(), 1U);
+  EXPECT_EQ(buffer.byte_count(), sizeof(pcl::PointXYZI));
+  EXPECT_EQ(buffer.peek().size(), 1U);
+  EXPECT_EQ(partial_file_count(directory.path()), 0U);
+}
+
+TEST(PcdChunkStorage, SecondDirectorySyncFailureDoesNotReturnSuccess)
+{
+  TemporaryDirectory directory;
+  ChunkBuffer buffer(300, 268435456);
+  buffer.append(one_point_cloud());
+  std::size_t sync_calls = 0;
+  PcdChunkStorage storage(
+    directory.path(),
+    [](const fs::path & descriptor_path, const PcdChunkStorage::Cloud &)
+    {
+      write_text(descriptor_path, "owned bytes");
+      return 0;
+    },
+    [&sync_calls](int)
+    {
+      if (++sync_calls == 2) {
+        throw std::runtime_error("second directory fsync failed");
+      }
+    });
+
+  EXPECT_THROW(storage.flush(buffer), std::runtime_error);
+  EXPECT_EQ(sync_calls, 2U);
+  EXPECT_EQ(buffer.frame_count(), 0U);
+  EXPECT_EQ(buffer.byte_count(), 0U);
+  EXPECT_TRUE(buffer.peek().empty());
+  EXPECT_EQ(partial_file_count(directory.path()), 0U);
+}
+
+TEST(PcdChunkStorage, PathSubstitutionIsRejectedWithoutUnlinkingForeignInode)
+{
+  TemporaryDirectory directory;
+  ChunkBuffer buffer(300, 268435456);
+  buffer.append(one_point_cloud());
+  fs::path substituted_partial;
+  ino_t owned_inode = 0;
+  ino_t substituted_inode = 0;
+  PcdChunkStorage storage(
+    directory.path(),
+    [&directory, &substituted_partial, &owned_inode, &substituted_inode](
+      const fs::path & descriptor_path, const PcdChunkStorage::Cloud &)
+    {
+      struct stat owned_status {};
+      EXPECT_EQ(stat(descriptor_path.c_str(), &owned_status), 0);
+      owned_inode = owned_status.st_ino;
+
+      for (const auto & entry : fs::directory_iterator(directory.path())) {
+        if (entry.path().extension() == ".partial") {
+          substituted_partial = entry.path();
+        }
+      }
+      EXPECT_FALSE(substituted_partial.empty());
+      const bool removed_owned_name = fs::remove(substituted_partial);
+      EXPECT_TRUE(removed_owned_name);
+      if (!removed_owned_name) {
+        return -1;
+      }
+      write_text(substituted_partial, "foreign bytes");
+      struct stat substituted_status {};
+      EXPECT_EQ(stat(substituted_partial.c_str(), &substituted_status), 0);
+      substituted_inode = substituted_status.st_ino;
+      EXPECT_NE(owned_inode, substituted_inode);
+
+      write_text(descriptor_path, "owned bytes");
+      return 0;
+    });
+
+  EXPECT_THROW(storage.flush(buffer), std::runtime_error);
+
+  EXPECT_FALSE(fs::exists(directory.path() / "chunk_000000.pcd"));
+  EXPECT_EQ(read_text(substituted_partial), "foreign bytes");
+  EXPECT_EQ(partial_file_count(directory.path()), 1U);
+  EXPECT_EQ(buffer.frame_count(), 1U);
+  EXPECT_EQ(buffer.byte_count(), sizeof(pcl::PointXYZI));
+  EXPECT_EQ(buffer.peek().size(), 1U);
+}
 }  // namespace
 }  // namespace go1_mapping

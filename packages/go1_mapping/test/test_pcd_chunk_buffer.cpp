@@ -144,10 +144,12 @@ TEST(ChunkBuffer, ClearResetsCloudAndAccounting)
 {
   ChunkBuffer buffer(300, 268435456);
   buffer.append(cloud_with_points(3));
+  ASSERT_GT(buffer.peek().points.capacity(), 0U);
 
   buffer.clear();
 
   EXPECT_TRUE(buffer.peek().empty());
+  EXPECT_EQ(buffer.peek().points.capacity(), 0U);
   EXPECT_EQ(buffer.frame_count(), 0U);
   EXPECT_EQ(buffer.byte_count(), 0U);
 }

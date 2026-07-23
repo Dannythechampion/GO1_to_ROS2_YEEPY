@@ -37,19 +37,28 @@ class PcdChunkStorage
 public:
   using Cloud = pcl::PointCloud<pcl::PointXYZI>;
   using SaveFunction = std::function<int(const std::filesystem::path &, const Cloud &)>;
+  using DirectorySyncFunction = std::function<void(int)>;
 
   explicit PcdChunkStorage(
     std::filesystem::path output_dir,
-    SaveFunction save_function = SaveFunction{});
+    SaveFunction save_function = SaveFunction{},
+    DirectorySyncFunction directory_sync_function = DirectorySyncFunction{});
+  ~PcdChunkStorage();
+
+  PcdChunkStorage(const PcdChunkStorage &) = delete;
+  PcdChunkStorage & operator=(const PcdChunkStorage &) = delete;
+  PcdChunkStorage(PcdChunkStorage &&) = delete;
+  PcdChunkStorage & operator=(PcdChunkStorage &&) = delete;
 
   bool flush(ChunkBuffer & buffer);
 
 private:
   std::size_t next_free_index() const;
-  std::filesystem::path reserve_unique_partial(std::size_t index) const;
 
   std::filesystem::path output_dir_;
   SaveFunction save_function_;
+  DirectorySyncFunction directory_sync_function_;
+  int output_dir_fd_{-1};
 };
 
 }  // namespace go1_mapping
