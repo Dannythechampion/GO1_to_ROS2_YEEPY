@@ -193,15 +193,12 @@ PcdChunkStorage::PcdChunkStorage(
         sync_descriptor(descriptor, "fsync anonymous PCD");
       };
   }
-  if (!operations_.publish) {
-    operations_.publish = [](
-      const int descriptor, const int directory_fd, const std::string & final_name)
+  if (!operations_.link_at) {
+    operations_.link_at = [](
+      const int old_descriptor, const char * const old_path,
+      const int new_descriptor, const char * const new_path, const int flags)
       {
-        if (linkat(descriptor, "", directory_fd, final_name.c_str(), AT_EMPTY_PATH) != 0) {
-          throw std::system_error(
-                  errno, std::generic_category(),
-                  "linkat AT_EMPTY_PATH no-clobber PCD publish");
-        }
+        return linkat(old_descriptor, old_path, new_descriptor, new_path, flags);
       };
   }
   if (!operations_.sync_directory) {
@@ -268,7 +265,24 @@ bool PcdChunkStorage::flush(ChunkBuffer & buffer)
   }
   operations_.validate_anonymous(anonymous_file.get());
   operations_.sync_file(anonymous_file.get());
-  operations_.publish(anonymous_file.get(), output_dir_fd_, final_name);
+  if (operations_.link_at(
+      anonymous_file.get(), "", output_dir_fd_, final_name.c_str(), AT_EMPTY_PATH) != 0)
+  {
+    const int primary_error = errno;
+    if (primary_error != EPERM && primary_error != EACCES) {
+      throw std::system_error(
+              primary_error, std::generic_category(),
+              "linkat AT_EMPTY_PATH no-clobber PCD publish");
+    }
+    if (operations_.link_at(
+        AT_FDCWD, descriptor_path.c_str(), output_dir_fd_, final_name.c_str(),
+        AT_SYMLINK_FOLLOW) != 0)
+    {
+      throw std::system_error(
+              errno, std::generic_category(),
+              "linkat procfd no-clobber PCD publish fallback");
+    }
+  }
   operations_.sync_directory(output_dir_fd_);
   buffer.clear();
   return true;

@@ -38,7 +38,7 @@ struct PcdChunkStorageOperations
   std::function<int(int)> open_anonymous;
   std::function<void(int)> validate_anonymous;
   std::function<void(int)> sync_file;
-  std::function<void(int, int, const std::string &)> publish;
+  std::function<int(int, const char *, int, const char *, int)> link_at;
   std::function<void(int)> sync_directory;
 };
 

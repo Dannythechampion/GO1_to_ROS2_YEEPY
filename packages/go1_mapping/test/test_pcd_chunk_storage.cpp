@@ -396,15 +396,18 @@ TEST(PcdChunkStorage, AnonymousFileSyncFailureLeavesNoEntryAndPreservesBuffer)
   expect_buffer_preserved(buffer);
 }
 
-TEST(PcdChunkStorage, PublishFailureLeavesNoEntryAndPreservesBuffer)
+TEST(PcdChunkStorage, NonPermissionPrimaryPublishFailureDoesNotFallback)
 {
   TemporaryDirectory directory;
   ChunkBuffer buffer(300, 268435456);
   buffer.append(one_point_cloud());
+  std::size_t link_calls = 0;
   PcdChunkStorageOperations operations;
-  operations.publish = [](int, int, const std::string &)
+  operations.link_at = [&link_calls](int, const char *, int, const char *, int)
     {
-      throw std::system_error(EOPNOTSUPP, std::generic_category(), "AT_EMPTY_PATH unsupported");
+      ++link_calls;
+      errno = EOPNOTSUPP;
+      return -1;
     };
   PcdChunkStorage storage(
     directory.path(),
@@ -416,7 +419,119 @@ TEST(PcdChunkStorage, PublishFailureLeavesNoEntryAndPreservesBuffer)
     operations);
 
   EXPECT_THROW(storage.flush(buffer), std::system_error);
+  EXPECT_EQ(link_calls, 1U);
   EXPECT_EQ(directory_entry_count(directory.path()), 0U);
+  expect_buffer_preserved(buffer);
+}
+
+TEST(PcdChunkStorage, PermissionFailureFallsBackToProcFdWithExpectedLinkatArguments)
+{
+  TemporaryDirectory directory;
+  ChunkBuffer buffer(300, 268435456);
+  buffer.append(one_point_cloud());
+  std::size_t link_calls = 0;
+  int primary_descriptor = -1;
+  int output_directory_descriptor = -1;
+  PcdChunkStorageOperations operations;
+  operations.link_at = [
+    &link_calls, &primary_descriptor, &output_directory_descriptor](
+    const int old_descriptor, const char * const old_path,
+    const int new_descriptor, const char * const new_path, const int flags)
+    {
+      ++link_calls;
+      if (link_calls == 1) {
+        primary_descriptor = old_descriptor;
+        output_directory_descriptor = new_descriptor;
+        EXPECT_STREQ(old_path, "");
+        EXPECT_STREQ(new_path, "chunk_000000.pcd");
+        EXPECT_EQ(flags, AT_EMPTY_PATH);
+        errno = EPERM;
+        return -1;
+      }
+      EXPECT_EQ(old_descriptor, AT_FDCWD);
+      EXPECT_EQ(new_descriptor, output_directory_descriptor);
+      EXPECT_STREQ(new_path, "chunk_000000.pcd");
+      EXPECT_EQ(flags, AT_SYMLINK_FOLLOW);
+      EXPECT_EQ(std::string(old_path), "/proc/self/fd/" + std::to_string(primary_descriptor));
+      return linkat(old_descriptor, old_path, new_descriptor, new_path, flags);
+    };
+  PcdChunkStorage storage(
+    directory.path(),
+    [](const fs::path & descriptor_path, const PcdChunkStorage::Cloud &)
+    {
+      write_text(descriptor_path, "fallback bytes");
+      return 0;
+    },
+    operations);
+
+  EXPECT_TRUE(storage.flush(buffer));
+  EXPECT_EQ(link_calls, 2U);
+  EXPECT_EQ(read_text(directory.path() / "chunk_000000.pcd"), "fallback bytes");
+  EXPECT_EQ(directory_entry_count(directory.path()), 1U);
+  EXPECT_TRUE(buffer.peek().empty());
+}
+
+TEST(PcdChunkStorage, ProcFdFallbackFailureLeavesNoEntryAndPreservesBuffer)
+{
+  TemporaryDirectory directory;
+  ChunkBuffer buffer(300, 268435456);
+  buffer.append(one_point_cloud());
+  std::size_t link_calls = 0;
+  PcdChunkStorageOperations operations;
+  operations.link_at = [&link_calls](int, const char *, int, const char *, int)
+    {
+      ++link_calls;
+      errno = link_calls == 1 ? EACCES : EIO;
+      return -1;
+    };
+  PcdChunkStorage storage(
+    directory.path(),
+    [](const fs::path & descriptor_path, const PcdChunkStorage::Cloud &)
+    {
+      write_text(descriptor_path, "complete bytes");
+      return 0;
+    },
+    operations);
+
+  EXPECT_THROW(storage.flush(buffer), std::system_error);
+  EXPECT_EQ(link_calls, 2U);
+  EXPECT_EQ(directory_entry_count(directory.path()), 0U);
+  expect_buffer_preserved(buffer);
+}
+
+TEST(PcdChunkStorage, ProcFdFallbackEexistPreservesExistingFinalBytes)
+{
+  TemporaryDirectory directory;
+  ChunkBuffer buffer(300, 268435456);
+  buffer.append(one_point_cloud());
+  const auto colliding_final = directory.path() / "chunk_000000.pcd";
+  std::size_t link_calls = 0;
+  PcdChunkStorageOperations operations;
+  operations.link_at = [&link_calls](
+    const int old_descriptor, const char * const old_path,
+    const int new_descriptor, const char * const new_path, const int flags)
+    {
+      ++link_calls;
+      if (link_calls == 1) {
+        errno = EPERM;
+        return -1;
+      }
+      return linkat(old_descriptor, old_path, new_descriptor, new_path, flags);
+    };
+  PcdChunkStorage storage(
+    directory.path(),
+    [&colliding_final](const fs::path & descriptor_path, const PcdChunkStorage::Cloud &)
+    {
+      write_text(descriptor_path, "new bytes");
+      write_text(colliding_final, "existing fallback bytes");
+      return 0;
+    },
+    operations);
+
+  EXPECT_THROW(storage.flush(buffer), std::system_error);
+  EXPECT_EQ(link_calls, 2U);
+  EXPECT_EQ(read_text(colliding_final), "existing fallback bytes");
+  EXPECT_EQ(directory_entry_count(directory.path()), 1U);
   expect_buffer_preserved(buffer);
 }
 
