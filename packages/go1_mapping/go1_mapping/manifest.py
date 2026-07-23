@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import os
 import re
@@ -20,6 +20,38 @@ class SessionPaths:
     slam: Path
     pcd2d: Path
     validation: Path
+
+
+def build_running_manifest(
+    session_id: str,
+    ros_domain_id: int,
+    started_at_utc: datetime | None = None,
+) -> dict:
+    started = started_at_utc or datetime.now(timezone.utc)
+    if started.tzinfo is None or started.utcoffset() is None:
+        raise ValueError("started_at_utc must be timezone-aware")
+    started = started.astimezone(timezone.utc)
+    return {
+        "session_id": session_id,
+        "status": "running",
+        "ros_domain_id": int(ros_domain_id),
+        "started_at_utc": started.isoformat().replace("+00:00", "Z"),
+        "frames": {
+            "odom": "camera_init",
+            "base": "body",
+            "map": "map_slam",
+        },
+        "topics": {
+            "inputs": ["/livox/lidar", "/livox/imu"],
+            "outputs": [
+                "/Odometry",
+                "/cloud_registered",
+                "/cloud_registered_body",
+                "/scan",
+                "/map_slam",
+            ],
+        },
+    }
 
 
 def create_session(session_root: Path, session_id: str) -> SessionPaths:

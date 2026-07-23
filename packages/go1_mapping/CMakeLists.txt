@@ -91,6 +91,12 @@ if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/launch"
    AND IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/config"
    AND IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/rviz")
   install(DIRECTORY launch config rviz DESTINATION share/${PROJECT_NAME})
+else()
+  foreach(directory IN ITEMS launch config rviz)
+    if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${directory}")
+      install(DIRECTORY ${directory} DESTINATION share/${PROJECT_NAME})
+    endif()
+  endforeach()
 endif()
 
 set(mapping_python_programs)
@@ -113,6 +119,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_configs test/test_configs.py)
+  ament_add_pytest_test(test_launch_contract test/test_launch_contract.py)
   ament_add_pytest_test(test_session_guard test/test_session_guard.py)
 
   if(TARGET pcd_chunk_buffer
