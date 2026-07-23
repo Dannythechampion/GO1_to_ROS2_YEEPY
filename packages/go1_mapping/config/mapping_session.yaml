@@ -1,0 +1,14 @@
+mapping_session:
+  session_root: /mnt/t500/maps/hanyang_9f
+  frames_per_chunk: 300
+  max_buffer_bytes: 268435456
+  preflight_free_gib: 100
+  abort_free_gib: 50
+  bag_split_bytes: 4294967296
+  lidar_min_hz: 8.0
+  imu_min_hz: 100.0
+  odom_min_hz: 8.0
+  max_input_gap_sec: 1.0
+  initialization_sec: 15.0
+  return_position_tolerance_m: 0.5
+  return_yaw_tolerance_deg: 10.0

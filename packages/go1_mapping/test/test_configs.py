@@ -1,8 +1,14 @@
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+import yaml
+
 
 ROOT = Path(__file__).parents[1]
+
+
+def load(name):
+    return yaml.safe_load((ROOT / "config" / name).read_text())
 
 
 def test_package_declares_mapping_runtime_dependencies():
@@ -61,3 +67,46 @@ def test_cmake_guards_future_artifacts_until_they_exist():
         "go1_mapping/validation_report.py",
     ):
         assert program in cmake
+
+
+def test_fast_lio_mapping_disables_internal_pcd_and_heavy_map():
+    params = load("fast_lio_mapping_safe.yaml")["/**"]["ros__parameters"]
+    assert params["pcd_save"]["pcd_save_en"] is False
+    assert params["pcd_save"]["interval"] == 300
+    assert params["publish"]["map_en"] is False
+    assert params["publish"]["effect_map_en"] is False
+    assert params["publish"]["dense_publish_en"] is False
+    assert params["publish"]["scan_publish_en"] is True
+    assert params["publish"]["scan_bodyframe_pub_en"] is True
+
+
+def test_scan_projection_is_low_latency_body_frame():
+    params = load("pointcloud_to_scan_mapping.yaml")[
+        "pointcloud_to_laserscan"
+    ]["ros__parameters"]
+    assert params["target_frame"] == "body"
+    assert params["queue_size"] == 1
+    assert params["scan_time"] == 0.1
+    assert params["range_min"] == 0.5
+    assert params["range_max"] == 20.0
+
+
+def test_slam_owns_only_map_slam_to_camera_init():
+    params = load("slam_toolbox_hanyang_9f.yaml")["slam_toolbox"]["ros__parameters"]
+    assert params["map_frame"] == "map_slam"
+    assert params["odom_frame"] == "camera_init"
+    assert params["base_frame"] == "body"
+    assert params["scan_topic"] == "/scan"
+    assert params["mode"] == "mapping"
+    assert params["do_loop_closing"] is True
+    assert params["resolution"] == 0.05
+    assert params["scan_queue_size"] == 1
+
+
+def test_session_limits_match_design():
+    params = load("mapping_session.yaml")["mapping_session"]
+    assert params["frames_per_chunk"] == 300
+    assert params["max_buffer_bytes"] == 268435456
+    assert params["preflight_free_gib"] == 100
+    assert params["abort_free_gib"] == 50
+    assert params["bag_split_bytes"] == 4294967296
