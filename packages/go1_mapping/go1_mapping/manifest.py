@@ -3,6 +3,8 @@ from datetime import datetime
 from pathlib import Path
 import os
 import re
+import shutil
+import tempfile
 
 import yaml
 
@@ -40,17 +42,33 @@ def create_session(session_root: Path, session_id: str) -> SessionPaths:
         pcd2d=root / "pcd2d",
         validation=root / "validation",
     )
-    for directory in paths.__dict__.values():
-        if directory != root:
-            directory.mkdir()
+    try:
+        for directory in paths.__dict__.values():
+            if directory != root:
+                directory.mkdir()
+    except Exception:
+        shutil.rmtree(root)
+        raise
     return paths
 
 
 def write_manifest_atomic(target: Path, data: dict) -> None:
     target = Path(target)
-    partial = target.with_name(target.name + ".partial")
-    partial.write_text(
-        yaml.safe_dump(data, sort_keys=True, allow_unicode=True),
-        encoding="utf-8",
-    )
-    os.replace(partial, target)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as file:
+            temporary = Path(file.name)
+            yaml.safe_dump(data, file, sort_keys=True, allow_unicode=True)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, target)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
