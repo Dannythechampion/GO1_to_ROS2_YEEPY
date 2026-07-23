@@ -87,3 +87,28 @@ def test_write_failures_are_safety_violations(failed_targets):
     assert payload["write_errors"]
     assert "health.yaml" in calls
     assert "guard_failure.yaml" in calls
+
+def test_source_stamp_reset_after_valid_stamp_is_reported_and_recovers():
+    window = HealthWindow({"lidar": 1.0}, 1.0, 0.0, 0.0)
+    window.observe("lidar", 1.0, sensor_stamp_sec=100.0)
+    window.observe("lidar", 2.0, sensor_stamp_sec=None)
+    assert any("source timestamp reset/invalid" in error for error in window.evaluate(2.0))
+    window.observe("lidar", 3.0, sensor_stamp_sec=101.0)
+    assert not any("source timestamp reset/invalid" in error for error in window.evaluate(3.0))
+
+
+def test_main_shuts_down_only_after_spin_once_returns(monkeypatch):
+    import go1_mapping.session_guard as guard_module
+    events = []
+    class FakeRclpy:
+        def __init__(self): self.running = True
+        def init(self, args=None): events.append("init")
+        def ok(self): return self.running
+        def spin_once(self, node, timeout_sec): events.append("spin_once"); node.timer()
+        def shutdown(self): events.append("shutdown"); self.running = False
+    class FakeGuard:
+        def __init__(self): self.node = self; self.exit_code = 0
+        def timer(self): events.append("callback"); self.exit_code = 2
+        def destroy_node(self): events.append("destroy")
+    assert guard_module.main(rclpy_module=FakeRclpy(), guard_factory=FakeGuard) == 2
+    assert events == ["init", "spin_once", "callback", "destroy", "shutdown"]

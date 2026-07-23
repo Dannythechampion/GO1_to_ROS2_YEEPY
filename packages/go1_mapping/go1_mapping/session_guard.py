@@ -23,16 +23,19 @@ def wrap_angle(angle): return math.atan2(math.sin(angle),math.cos(angle))
 
 class HealthWindow:
  def __init__(self,required_hz:Mapping[str,float],max_gap_sec:float,initialization_sec:float,started_at:float):
-  self.required_hz={k:float(v) for k,v in required_hz.items()};self.max_gap_sec=float(max_gap_sec);self.initialization_sec=float(initialization_sec);self.started_at=float(started_at);self.receipts={k:deque() for k in self.required_hz};self.headers={};self.regressions={k:deque() for k in self.required_hz}
+  self.required_hz={k:float(v) for k,v in required_hz.items()};self.max_gap_sec=float(max_gap_sec);self.initialization_sec=float(initialization_sec);self.started_at=float(started_at);self.receipts={k:deque() for k in self.required_hz};self.headers={};self.source_seen={k:False for k in self.required_hz};self.source_invalid={k:False for k in self.required_hz};self.regressions={k:deque() for k in self.required_hz}
  def observe(self,topic,stamp_sec,sensor_stamp_sec=None):
   if topic not in self.receipts: raise ValueError(f'unknown health topic: {topic}')
   receipt=float(stamp_sec);q=self.receipts[topic]
   if q and receipt<q[-1]: self.regressions[topic].append((receipt,'receipt',q[-1],receipt))
   else: q.append(receipt)
-  if sensor_stamp_sec is not None:
+  if sensor_stamp_sec is None:
+   if self.source_seen[topic]: self.source_invalid[topic]=True
+  else:
    header=float(sensor_stamp_sec);previous=self.headers.get(topic)
    if previous is not None and header<previous:self.regressions[topic].append((receipt,'sensor',previous,header))
-   self.headers[topic]=header if previous is None else max(previous,header)
+   if previous is None or header>previous:self.source_invalid[topic]=False
+   self.source_seen[topic]=True;self.headers[topic]=header if previous is None else max(previous,header)
  def measurements(self,now_sec):
   now=float(now_sec);cutoff=now-WINDOW_SECONDS;rates={};gaps={}
   for topic,q in self.receipts.items():
@@ -51,6 +54,7 @@ class HealthWindow:
    if rate<required:result.append(f'{topic} rate {rate:.2f} Hz below required {required:.2f} Hz')
    if gap>self.max_gap_sec:result.append(f'{topic} gap {gap:.2f}s exceeds {self.max_gap_sec:.2f}s')
    result.extend(f'{topic} {kind} timestamp regression: {current:.9f} < {previous:.9f}' for _,kind,previous,current in self.regressions[topic])
+   if self.source_invalid[topic]:result.append(f'{topic} source timestamp reset/invalid')
   return result
 
 def free_gib(path): return shutil.disk_usage(path).free/2**30
@@ -108,13 +112,18 @@ class SessionGuardNode:
  def timer(self):
   try:code,payload=evaluate_and_record(session_dir=self.session_dir,window=self.window,now_sec=self.now(),abort_free_gib=self.abort,first_stable_pose=self.first_pose,latest_pose=self.latest_pose)
   except Exception as error:code,payload=2,{'reasons':[f'health guard internal failure: {error}']}
-  if code==2:self.exit_code=2;self.node.get_logger().error('; '.join(payload['reasons']));self.rclpy.shutdown()
+  if code==2:self.exit_code=2;self.node.get_logger().error('; '.join(payload['reasons']))
  def destroy_node(self):return self.node.destroy_node()
-def main(args=None):
- import rclpy
- rclpy.init(args=args);guard=None
- try:guard=SessionGuardNode();rclpy.spin(guard.node);return guard.exit_code
+def main(args=None,rclpy_module=None,guard_factory=None):
+ if rclpy_module is None:
+  import rclpy as rclpy_module
+ if guard_factory is None:guard_factory=SessionGuardNode
+ rclpy_module.init(args=args);guard=None
+ try:
+  guard=guard_factory()
+  while rclpy_module.ok() and guard.exit_code==0:rclpy_module.spin_once(guard.node,timeout_sec=0.5)
+  return guard.exit_code
  finally:
   if guard is not None:guard.destroy_node()
-  if rclpy.ok():rclpy.shutdown()
+  if rclpy_module.ok():rclpy_module.shutdown()
 if __name__=='__main__':raise SystemExit(main())
