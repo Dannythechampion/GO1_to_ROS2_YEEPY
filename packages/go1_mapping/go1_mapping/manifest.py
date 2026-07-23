@@ -46,8 +46,14 @@ def create_session(session_root: Path, session_id: str) -> SessionPaths:
         for directory in paths.__dict__.values():
             if directory != root:
                 directory.mkdir()
-    except Exception:
-        shutil.rmtree(root)
+    except Exception as creation_error:
+        try:
+            shutil.rmtree(root)
+        except Exception as cleanup_error:
+            raise RuntimeError(
+                f"session rollback failed for {root}; partial session may remain: "
+                f"{cleanup_error}"
+            ) from creation_error
         raise
     return paths
 
@@ -55,6 +61,7 @@ def create_session(session_root: Path, session_id: str) -> SessionPaths:
 def write_manifest_atomic(target: Path, data: dict) -> None:
     target = Path(target)
     temporary: Path | None = None
+    operation_error: Exception | None = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -69,6 +76,24 @@ def write_manifest_atomic(target: Path, data: dict) -> None:
             file.flush()
             os.fsync(file.fileno())
         os.replace(temporary, target)
-    finally:
-        if temporary is not None:
+    except Exception as error:
+        operation_error = error
+
+    if temporary is not None:
+        try:
             temporary.unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass
+        except Exception as cleanup_error:
+            if operation_error is not None:
+                raise RuntimeError(
+                    f"manifest temporary cleanup failed for {target}; "
+                    f"partial manifest state may remain: {cleanup_error}"
+                ) from operation_error
+            raise RuntimeError(
+                f"manifest temporary cleanup failed for {target}; "
+                f"partial manifest state may remain: {cleanup_error}"
+            ) from cleanup_error
+
+    if operation_error is not None:
+        raise operation_error

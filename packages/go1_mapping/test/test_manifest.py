@@ -81,3 +81,56 @@ def test_manifest_write_failure_removes_unique_temp_file(tmp_path, monkeypatch):
 
     assert not list(tmp_path.glob(".manifest.yaml.*.tmp"))
     assert not (tmp_path / "manifest.yaml.partial").exists()
+
+def test_create_session_reports_rollback_failure_with_creation_cause(
+    tmp_path, monkeypatch
+):
+    session_id = "20260724_090000"
+    root = tmp_path / session_id
+    creation_error = OSError("simulated child directory failure")
+    cleanup_error = OSError("simulated rollback failure")
+    original_mkdir = Path.mkdir
+
+    def fail_bag_mkdir(path, *args, **kwargs):
+        if path == root / "bag":
+            raise creation_error
+        return original_mkdir(path, *args, **kwargs)
+
+    def fail_rmtree(path):
+        assert path == root
+        raise cleanup_error
+
+    monkeypatch.setattr(Path, "mkdir", fail_bag_mkdir)
+    monkeypatch.setattr(manifest.shutil, "rmtree", fail_rmtree)
+
+    with pytest.raises(RuntimeError, match="rollback failed") as caught:
+        create_session(tmp_path, session_id)
+
+    assert str(root) in str(caught.value)
+    assert "partial" in str(caught.value)
+    assert caught.value.__cause__ is creation_error
+
+
+def test_manifest_reports_cleanup_failure_with_write_cause(tmp_path, monkeypatch):
+    target = tmp_path / "manifest.yaml"
+    write_error = OSError("simulated replace failure")
+    cleanup_error = OSError("simulated temporary cleanup failure")
+    original_unlink = Path.unlink
+
+    def fail_replace(source, destination):
+        raise write_error
+
+    def fail_temporary_unlink(path, *args, **kwargs):
+        if path.parent == tmp_path and path.name.startswith(".manifest.yaml."):
+            raise cleanup_error
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(manifest.os, "replace", fail_replace)
+    monkeypatch.setattr(Path, "unlink", fail_temporary_unlink)
+
+    with pytest.raises(RuntimeError, match="temporary cleanup failed") as caught:
+        write_manifest_atomic(target, {"session_id": "20260724_090000"})
+
+    assert str(target) in str(caught.value)
+    assert "partial" in str(caught.value)
+    assert caught.value.__cause__ is write_error
