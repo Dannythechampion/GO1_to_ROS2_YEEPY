@@ -4,6 +4,19 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 
 
+def test_stage_script_includes_go1_mapping():
+    text = (ROOT / "migration" / "stage_local_ros2_packages.sh").read_text()
+    assert 'mapping_source="$repo_root/packages/go1_mapping"' in text
+    assert 'mapping_target="$src_dir/go1_mapping"' in text
+    assert '"$mapping_source/package.xml"' in text
+    assert 'cp -a "$mapping_source" "$mapping_target"' in text
+
+
+def test_stage_script_uses_lf_line_endings():
+    script = ROOT / "migration" / "stage_local_ros2_packages.sh"
+    assert b"\r\n" not in script.read_bytes()
+
+
 def test_map_script_requires_both_map_files():
     text = (ROOT / "migration" / "prepare_existing_map.sh").read_text()
     assert 'test -f "$source_yaml"' in text

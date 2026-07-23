@@ -16,18 +16,22 @@ fi
 go1_target="$src_dir/go1_driver"
 omx_target="$src_dir/omx_navigation"
 
+mapping_source="$repo_root/packages/go1_mapping"
+mapping_target="$src_dir/go1_mapping"
 for required in \
   "$go1_source/package.xml" \
   "$omx_source/package.xml" \
   "$omx_source/setup.py" \
-  "$omx_source/omx_navigation"; do
+  "$omx_source/omx_navigation" \
+  "$mapping_source/package.xml" \
+  "$mapping_source/CMakeLists.txt"; do
   if [[ ! -e "$required" ]]; then
     printf 'ERROR: required source is missing: %s\n' "$required" >&2
     exit 1
   fi
 done
 
-for target in "$go1_target" "$omx_target"; do
+for target in "$go1_target" "$omx_target" "$mapping_target"; do
   if [[ -e "$target" ]]; then
     printf 'ERROR: target already exists; refusing to overwrite: %s\n' "$target" >&2
     exit 1
@@ -36,6 +40,7 @@ done
 
 mkdir -p "$src_dir"
 cp -a "$go1_source" "$go1_target"
+cp -a "$mapping_source" "$mapping_target"
 mkdir -p "$omx_target"
 
 omx_entries=(
@@ -57,9 +62,9 @@ for entry in "${omx_entries[@]}"; do
 done
 
 printf 'Staged local ROS2 packages:\n'
-printf '  %s\n' "$go1_target" "$omx_target"
+printf '  %s\n' "$go1_target" "$omx_target" "$mapping_target"
 printf '\nNext:\n'
 printf '  cd %q\n' "$workspace"
 printf '  source /opt/ros/humble/setup.bash\n'
 printf '  rosdep install --from-paths src --ignore-src -r -y\n'
-printf '  colcon build --symlink-install --packages-select go1_driver omx_navigation\n'
+printf '  colcon build --symlink-install --packages-select go1_driver omx_navigation go1_mapping\n'
