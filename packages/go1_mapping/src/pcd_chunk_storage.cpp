@@ -1,9 +1,7 @@
 #include "go1_mapping/pcd_chunk_storage.hpp"
 
 #include <array>
-#include <atomic>
 #include <cerrno>
-#include <cstdint>
 #include <fcntl.h>
 #include <iomanip>
 #include <limits>
@@ -51,111 +49,29 @@ void sync_descriptor(const int descriptor, const char * const description)
   }
 }
 
-class OwnedPartial
+class OwnedDescriptor
 {
 public:
-  OwnedPartial(const int directory_fd, const std::size_t index)
-  : directory_fd_(directory_fd)
-  {
-    static std::atomic<std::uint64_t> sequence{0};
-    for (std::size_t attempt = 0; attempt < 128; ++attempt) {
-      const auto ticket = sequence.fetch_add(1, std::memory_order_relaxed);
-      name_ = "." + chunk_stem(index) + "." + std::to_string(getpid()) + "." +
-        std::to_string(ticket) + ".partial";
-      descriptor_ = openat(
-        directory_fd_, name_.c_str(),
-        O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-      if (descriptor_ >= 0) {
-        if (fstat(descriptor_, &owned_status_) != 0) {
-          const int status_error = errno;
-          close(descriptor_);
-          descriptor_ = -1;
-          throw std::system_error(
-                  status_error, std::generic_category(), "fstat owned partial PCD");
-        }
-        return;
-      }
-      if (errno != EEXIST) {
-        throw std::system_error(
-                errno, std::generic_category(), "openat exclusive partial PCD");
-      }
-    }
-    throw std::runtime_error("could not reserve a unique partial PCD name");
-  }
+  explicit OwnedDescriptor(const int descriptor)
+  : descriptor_(descriptor) {}
 
-  ~OwnedPartial()
+  ~OwnedDescriptor()
   {
-    cleanup_owned_name_noexcept();
     if (descriptor_ >= 0) {
       close(descriptor_);
     }
   }
 
-  int descriptor() const noexcept
+  OwnedDescriptor(const OwnedDescriptor &) = delete;
+  OwnedDescriptor & operator=(const OwnedDescriptor &) = delete;
+
+  int get() const noexcept
   {
     return descriptor_;
   }
 
-  fs::path descriptor_path() const
-  {
-    return fs::path("/proc/self/fd") / std::to_string(descriptor_);
-  }
-
-  const std::string & name() const noexcept
-  {
-    return name_;
-  }
-
-  void cleanup_owned_name()
-  {
-    if (!owned_name_active_) {
-      return;
-    }
-
-    struct stat current_status {};
-    if (fstatat(directory_fd_, name_.c_str(), &current_status, AT_SYMLINK_NOFOLLOW) != 0) {
-      if (errno == ENOENT) {
-        owned_name_active_ = false;
-        return;
-      }
-      throw std::system_error(
-              errno, std::generic_category(), "fstatat partial PCD before cleanup");
-    }
-
-    if (current_status.st_dev != owned_status_.st_dev ||
-      current_status.st_ino != owned_status_.st_ino)
-    {
-      owned_name_active_ = false;
-      return;
-    }
-
-    if (unlinkat(directory_fd_, name_.c_str(), 0) != 0) {
-      throw std::system_error(errno, std::generic_category(), "unlinkat owned partial PCD");
-    }
-    owned_name_active_ = false;
-  }
-
 private:
-  void cleanup_owned_name_noexcept() noexcept
-  {
-    if (!owned_name_active_) {
-      return;
-    }
-    struct stat current_status {};
-    if (fstatat(directory_fd_, name_.c_str(), &current_status, AT_SYMLINK_NOFOLLOW) == 0 &&
-      current_status.st_dev == owned_status_.st_dev &&
-      current_status.st_ino == owned_status_.st_ino)
-    {
-      unlinkat(directory_fd_, name_.c_str(), 0);
-    }
-    owned_name_active_ = false;
-  }
-
-  int directory_fd_;
-  int descriptor_{-1};
-  std::string name_;
-  struct stat owned_status_ {};
-  bool owned_name_active_{true};
+  int descriptor_;
 };
 
 }  // namespace
@@ -239,25 +155,68 @@ ValidatedCloudMessage validate_cloud_message(
 PcdChunkStorage::PcdChunkStorage(
   fs::path output_dir,
   SaveFunction save_function,
-  DirectorySyncFunction directory_sync_function)
+  PcdChunkStorageOperations operations)
 : output_dir_(std::move(output_dir)),
   save_function_(std::move(save_function)),
-  directory_sync_function_(std::move(directory_sync_function))
+  operations_(std::move(operations))
 {
-  output_dir_fd_ = open(
-    output_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-  if (output_dir_fd_ < 0) {
-    throw std::system_error(errno, std::generic_category(), "open PCD output directory");
-  }
   if (!save_function_) {
     save_function_ = [](const fs::path & descriptor_path, const Cloud & cloud) {
         return pcl::io::savePCDFileBinaryCompressed(descriptor_path.string(), cloud);
       };
   }
-  if (!directory_sync_function_) {
-    directory_sync_function_ = [](const int descriptor) {
-        sync_descriptor(descriptor, "fsync PCD output directory");
+  if (!operations_.open_anonymous) {
+    operations_.open_anonymous = [](const int directory_fd) {
+        const int descriptor = openat(
+          directory_fd, ".", O_TMPFILE | O_RDWR | O_CLOEXEC, 0644);
+        if (descriptor < 0) {
+          throw std::system_error(
+                  errno, std::generic_category(),
+                  "openat O_TMPFILE PCD (Linux filesystem support required)");
+        }
+        return descriptor;
       };
+  }
+  if (!operations_.validate_anonymous) {
+    operations_.validate_anonymous = [](const int descriptor) {
+        struct stat status {};
+        if (fstat(descriptor, &status) != 0) {
+          throw std::system_error(errno, std::generic_category(), "fstat anonymous PCD");
+        }
+        if (!S_ISREG(status.st_mode) || status.st_nlink != 0) {
+          throw std::runtime_error("O_TMPFILE did not produce an unlinked regular PCD inode");
+        }
+      };
+  }
+  if (!operations_.sync_file) {
+    operations_.sync_file = [](const int descriptor) {
+        sync_descriptor(descriptor, "fsync anonymous PCD");
+      };
+  }
+  if (!operations_.publish) {
+    operations_.publish = [](
+      const int descriptor, const int directory_fd, const std::string & final_name)
+      {
+        if (linkat(descriptor, "", directory_fd, final_name.c_str(), AT_EMPTY_PATH) != 0) {
+          throw std::system_error(
+                  errno, std::generic_category(),
+                  "linkat AT_EMPTY_PATH no-clobber PCD publish");
+        }
+      };
+  }
+  if (!operations_.sync_directory) {
+    operations_.sync_directory = [](const int descriptor) {
+        sync_descriptor(
+          descriptor,
+          "fsync PCD output directory; complete final may exist but durability is unconfirmed"
+        );
+      };
+  }
+
+  output_dir_fd_ = open(
+    output_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (output_dir_fd_ < 0) {
+    throw std::system_error(errno, std::generic_category(), "open PCD output directory");
   }
 }
 
@@ -296,25 +255,22 @@ bool PcdChunkStorage::flush(ChunkBuffer & buffer)
 
   const auto index = next_free_index();
   const std::string final_name = chunk_stem(index) + ".pcd";
-  OwnedPartial partial(output_dir_fd_, index);
-  const fs::path descriptor_path = partial.descriptor_path();
+  const int anonymous_descriptor = operations_.open_anonymous(output_dir_fd_);
+  if (anonymous_descriptor < 0) {
+    throw std::runtime_error("anonymous PCD opener returned an invalid descriptor");
+  }
+  OwnedDescriptor anonymous_file(anonymous_descriptor);
+  const fs::path descriptor_path =
+    fs::path("/proc/self/fd") / std::to_string(anonymous_file.get());
 
   if (save_function_(descriptor_path, buffer.peek()) < 0) {
-    throw std::runtime_error("failed to save binary-compressed partial PCD");
+    throw std::runtime_error("failed to save binary-compressed anonymous PCD");
   }
-  sync_descriptor(partial.descriptor(), "fsync partial PCD");
-
-  if (linkat(
-      AT_FDCWD, descriptor_path.c_str(), output_dir_fd_, final_name.c_str(),
-      AT_SYMLINK_FOLLOW) != 0)
-  {
-    throw std::system_error(errno, std::generic_category(), "linkat no-clobber final PCD");
-  }
-
-  directory_sync_function_(output_dir_fd_);
+  operations_.validate_anonymous(anonymous_file.get());
+  operations_.sync_file(anonymous_file.get());
+  operations_.publish(anonymous_file.get(), output_dir_fd_, final_name);
+  operations_.sync_directory(output_dir_fd_);
   buffer.clear();
-  partial.cleanup_owned_name();
-  directory_sync_function_(output_dir_fd_);
   return true;
 }
 

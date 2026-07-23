@@ -11,3 +11,12 @@ installation and adds only missing dependencies.
 The original Ubuntu 20.04 / ROS1 snapshot is intentionally kept in a separate
 private repository. It must not be copied wholesale into this ROS2 workspace.
 See `ROS1_ARCHIVE.md` for the immutable archive commit and SDK v3.8.6 baseline.
+
+## PCD chunk storage filesystem requirement
+
+`go1_mapping/pcd_chunk_writer` is Linux-only. Its output directory must be on a
+filesystem that supports `O_TMPFILE` anonymous regular files and
+`linkat(..., AT_EMPTY_PATH)` hard-link publication (for example, ext4-like
+filesystems used on the target Jetson). Unsupported filesystems fail explicitly
+without clearing the in-memory point-cloud buffer or exposing a temporary
+filename.

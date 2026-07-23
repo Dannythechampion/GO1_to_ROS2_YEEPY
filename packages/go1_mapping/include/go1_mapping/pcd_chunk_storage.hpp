@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <string>
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -32,17 +33,25 @@ ValidatedCloudMessage validate_cloud_message(
   const sensor_msgs::msg::PointCloud2 & message,
   std::size_t max_payload_bytes);
 
+struct PcdChunkStorageOperations
+{
+  std::function<int(int)> open_anonymous;
+  std::function<void(int)> validate_anonymous;
+  std::function<void(int)> sync_file;
+  std::function<void(int, int, const std::string &)> publish;
+  std::function<void(int)> sync_directory;
+};
+
 class PcdChunkStorage
 {
 public:
   using Cloud = pcl::PointCloud<pcl::PointXYZI>;
   using SaveFunction = std::function<int(const std::filesystem::path &, const Cloud &)>;
-  using DirectorySyncFunction = std::function<void(int)>;
 
   explicit PcdChunkStorage(
     std::filesystem::path output_dir,
     SaveFunction save_function = SaveFunction{},
-    DirectorySyncFunction directory_sync_function = DirectorySyncFunction{});
+    PcdChunkStorageOperations operations = PcdChunkStorageOperations{});
   ~PcdChunkStorage();
 
   PcdChunkStorage(const PcdChunkStorage &) = delete;
@@ -57,7 +66,7 @@ private:
 
   std::filesystem::path output_dir_;
   SaveFunction save_function_;
-  DirectorySyncFunction directory_sync_function_;
+  PcdChunkStorageOperations operations_;
   int output_dir_fd_{-1};
 };
 
