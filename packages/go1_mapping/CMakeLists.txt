@@ -144,6 +144,17 @@ if(BUILD_TESTING)
       test_pcd_chunk_storage pcd_chunk_storage pcd_chunk_buffer ${PCL_LIBRARIES})
     ament_target_dependencies(test_pcd_chunk_storage sensor_msgs)
   endif()
+
+  if(TARGET pcd_projection
+     AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pcd_projection.cpp")
+    ament_add_gtest(
+      test_pcd_projection test/test_pcd_projection.cpp)
+    target_include_directories(test_pcd_projection PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${PCL_INCLUDE_DIRS})
+    target_link_libraries(
+      test_pcd_projection pcd_projection ${PCL_LIBRARIES})
+  endif()
 endif()
 
 ament_package()
