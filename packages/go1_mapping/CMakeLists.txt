@@ -113,6 +113,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_configs test/test_configs.py)
+  ament_add_pytest_test(test_session_guard test/test_session_guard.py)
 
   if(TARGET pcd_chunk_buffer
      AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pcd_chunk_buffer.cpp")
