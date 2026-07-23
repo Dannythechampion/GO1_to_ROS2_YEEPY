@@ -1,21 +1,20 @@
 #include "go1_mapping/pcd_chunk_buffer.hpp"
+#include "go1_mapping/pcd_chunk_storage.hpp"
 
 #include <cstdlib>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
-#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 
-#include <pcl/io/pcd_io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -36,6 +35,16 @@ std::size_t positive_size_parameter(const int64_t value, const char * const name
     throw std::invalid_argument(std::string(name) + " does not fit in size_t");
   }
   return static_cast<std::size_t>(value);
+}
+
+int64_t declare_max_buffer_bytes_parameter(rclcpp::Node & node)
+{
+  rcl_interfaces::msg::ParameterDescriptor descriptor;
+  descriptor.description =
+    "Maximum retained uncompressed pcl::PointXYZI payload bytes. The DDS-owned "
+    "PointCloud2 message and PCL compression workspace are separate overhead; incoming "
+    "serialized data must also fit this limit before conversion.";
+  return node.declare_parameter<int64_t>("max_buffer_bytes", 268435456, descriptor);
 }
 
 bool is_strict_descendant(const fs::path & root, const fs::path & candidate)
@@ -80,13 +89,6 @@ fs::path prepare_output_directory(
   return output_dir;
 }
 
-std::string chunk_stem(const std::size_t index)
-{
-  std::ostringstream name;
-  name << "chunk_" << std::setfill('0') << std::setw(6) << index;
-  return name.str();
-}
-
 }  // namespace
 
 class PcdChunkWriter : public rclcpp::Node
@@ -97,12 +99,13 @@ public:
     output_dir_(prepare_output_directory(
         declare_parameter<std::string>("allowed_root", "/mnt/t500/maps/hanyang_9f"),
         declare_parameter<std::string>("output_dir", ""))),
+    max_buffer_bytes_(positive_size_parameter(
+        declare_max_buffer_bytes_parameter(*this), "max_buffer_bytes")),
     buffer_(
       positive_size_parameter(
         declare_parameter<int64_t>("frames_per_chunk", 300), "frames_per_chunk"),
-      positive_size_parameter(
-        declare_parameter<int64_t>("max_buffer_bytes", 268435456), "max_buffer_bytes")),
-    next_chunk_index_(find_next_chunk_index())
+      max_buffer_bytes_),
+    storage_(output_dir_)
   {
     auto qos = rclcpp::SensorDataQoS();
     qos.keep_last(1);
@@ -118,51 +121,18 @@ public:
   }
 
 private:
-  std::size_t find_next_chunk_index() const
-  {
-    for (std::size_t index = 0; index < std::numeric_limits<std::size_t>::max(); ++index) {
-      const auto stem = chunk_stem(index);
-      if (!fs::exists(output_dir_ / (stem + ".pcd")) &&
-        !fs::exists(output_dir_ / (stem + ".pcd.partial")))
-      {
-        return index;
-      }
-    }
-    throw std::overflow_error("no PCD chunk index is available");
-  }
-
-  void flush_chunk()
-  {
-    auto cloud = buffer_.take();
-    if (cloud->empty()) {
-      return;
-    }
-
-    const auto stem = chunk_stem(next_chunk_index_);
-    const fs::path partial_path = output_dir_ / (stem + ".pcd.partial");
-    const fs::path final_path = output_dir_ / (stem + ".pcd");
-
-    if (pcl::io::savePCDFileBinaryCompressed(partial_path.string(), *cloud) < 0) {
-      throw std::runtime_error("failed to write partial PCD: " + partial_path.string());
-    }
-    fs::rename(partial_path, final_path);
-
-    RCLCPP_INFO(
-      get_logger(), "Saved %s with %zu points", final_path.c_str(), cloud->size());
-    if (next_chunk_index_ == std::numeric_limits<std::size_t>::max()) {
-      throw std::overflow_error("PCD chunk index overflow");
-    }
-    ++next_chunk_index_;
-  }
-
   void on_cloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr message)
   {
     try {
+      const auto validated = validate_cloud_message(*message, max_buffer_bytes_);
+      if (buffer_.should_flush_before(validated.point_count)) {
+        storage_.flush(buffer_);
+      }
+
       pcl::PointCloud<pcl::PointXYZI> cloud;
       pcl::fromROSMsg(*message, cloud);
-
-      if (buffer_.should_flush_before(cloud.size())) {
-        flush_chunk();
+      if (cloud.size() != validated.point_count) {
+        throw std::invalid_argument("PCL conversion changed the validated point count");
       }
       buffer_.append(cloud);
     } catch (const std::exception & error) {
@@ -176,9 +146,9 @@ private:
     std_srvs::srv::Trigger::Response::SharedPtr response)
   {
     try {
-      flush_chunk();
+      const bool wrote_file = storage_.flush(buffer_);
       response->success = true;
-      response->message = "PCD chunk buffer flushed";
+      response->message = wrote_file ? "PCD chunk persisted" : "PCD chunk buffer was empty";
     } catch (const std::exception & error) {
       RCLCPP_FATAL(get_logger(), "PCD chunk flush failed: %s", error.what());
       throw;
@@ -186,8 +156,9 @@ private:
   }
 
   const fs::path output_dir_;
+  const std::size_t max_buffer_bytes_;
   ChunkBuffer buffer_;
-  std::size_t next_chunk_index_;
+  PcdChunkStorage storage_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscription_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr flush_service_;
 };

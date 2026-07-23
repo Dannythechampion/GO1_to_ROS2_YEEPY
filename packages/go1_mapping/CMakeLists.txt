@@ -12,6 +12,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(pcl_conversions REQUIRED)
@@ -33,12 +34,26 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pcd_chunk_buffer.cpp")
 endif()
 
 if(TARGET pcd_chunk_buffer
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pcd_chunk_storage.cpp")
+  add_library(pcd_chunk_storage src/pcd_chunk_storage.cpp)
+  target_compile_features(pcd_chunk_storage PUBLIC cxx_std_17)
+  target_include_directories(pcd_chunk_storage PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+    ${PCL_INCLUDE_DIRS})
+  target_link_libraries(pcd_chunk_storage pcd_chunk_buffer ${PCL_LIBRARIES})
+  ament_target_dependencies(pcd_chunk_storage sensor_msgs)
+  list(APPEND mapping_targets pcd_chunk_storage)
+endif()
+
+if(TARGET pcd_chunk_storage
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pcd_chunk_writer.cpp")
   add_executable(pcd_chunk_writer src/pcd_chunk_writer.cpp)
   target_compile_features(pcd_chunk_writer PRIVATE cxx_std_17)
-  target_link_libraries(pcd_chunk_writer pcd_chunk_buffer ${PCL_LIBRARIES})
+  target_link_libraries(
+    pcd_chunk_writer pcd_chunk_storage pcd_chunk_buffer ${PCL_LIBRARIES})
   ament_target_dependencies(
-    pcd_chunk_writer rclcpp sensor_msgs std_srvs pcl_conversions)
+    pcd_chunk_writer rclcpp rcl_interfaces sensor_msgs std_srvs pcl_conversions)
   list(APPEND mapping_targets pcd_chunk_writer)
 endif()
 
@@ -108,6 +123,18 @@ if(BUILD_TESTING)
       ${PCL_INCLUDE_DIRS})
     target_link_libraries(
       test_pcd_chunk_buffer pcd_chunk_buffer ${PCL_LIBRARIES})
+  endif()
+
+  if(TARGET pcd_chunk_storage
+     AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pcd_chunk_storage.cpp")
+    ament_add_gtest(
+      test_pcd_chunk_storage test/test_pcd_chunk_storage.cpp)
+    target_include_directories(test_pcd_chunk_storage PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${PCL_INCLUDE_DIRS})
+    target_link_libraries(
+      test_pcd_chunk_storage pcd_chunk_storage pcd_chunk_buffer ${PCL_LIBRARIES})
+    ament_target_dependencies(test_pcd_chunk_storage sensor_msgs)
   endif()
 endif()
 

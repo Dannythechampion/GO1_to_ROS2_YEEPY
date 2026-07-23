@@ -74,6 +74,18 @@ pcl::PointCloud<pcl::PointXYZI>::Ptr ChunkBuffer::take()
   return replacement;
 }
 
+const pcl::PointCloud<pcl::PointXYZI> & ChunkBuffer::peek() const noexcept
+{
+  return *cloud_;
+}
+
+void ChunkBuffer::clear() noexcept
+{
+  cloud_->clear();
+  frame_count_ = 0;
+  byte_count_ = 0;
+}
+
 std::size_t ChunkBuffer::frame_count() const noexcept
 {
   return frame_count_;

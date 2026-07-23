@@ -17,6 +17,8 @@ public:
   bool should_flush_before(std::size_t incoming_points) const;
   void append(const pcl::PointCloud<pcl::PointXYZI> & cloud);
   pcl::PointCloud<pcl::PointXYZI>::Ptr take();
+  const pcl::PointCloud<pcl::PointXYZI> & peek() const noexcept;
+  void clear() noexcept;
 
   std::size_t frame_count() const noexcept;
   std::size_t byte_count() const noexcept;

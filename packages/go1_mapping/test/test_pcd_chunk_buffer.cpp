@@ -127,5 +127,29 @@ TEST(ChunkBuffer, EmptyTakeReturnsAnEmptyCloud)
   EXPECT_EQ(buffer.byte_count(), 0U);
 }
 
+TEST(ChunkBuffer, PeekReturnsAConstViewWithoutClearingAccounting)
+{
+  ChunkBuffer buffer(300, 268435456);
+  buffer.append(cloud_with_points(3));
+
+  const ChunkBuffer & const_buffer = buffer;
+  const auto & viewed = const_buffer.peek();
+
+  EXPECT_EQ(viewed.size(), 3U);
+  EXPECT_EQ(buffer.frame_count(), 1U);
+  EXPECT_EQ(buffer.byte_count(), sizeof(pcl::PointXYZI) * 3);
+}
+
+TEST(ChunkBuffer, ClearResetsCloudAndAccounting)
+{
+  ChunkBuffer buffer(300, 268435456);
+  buffer.append(cloud_with_points(3));
+
+  buffer.clear();
+
+  EXPECT_TRUE(buffer.peek().empty());
+  EXPECT_EQ(buffer.frame_count(), 0U);
+  EXPECT_EQ(buffer.byte_count(), 0U);
+}
 }  // namespace
 }  // namespace go1_mapping
