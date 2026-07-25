@@ -3,6 +3,9 @@
 Ubuntu 22.04 / ROS2 Humble deployment project for Unitree Go1 and Livox
 MID-360. Start with `migration/README.md` and execute each Gate in order.
 
+For the verified Livox MID-360, FAST-LIO, and RViz startup sequence, see
+[`docs/FAST_LIO_RVIZ_RUNBOOK.md`](docs/FAST_LIO_RVIZ_RUNBOOK.md).
+
 All writable project data lives under `/mnt/t500`: the repository,
 `go1_ros2_ws`, Unitree SDK build, third-party sources, maps, and audit output.
 The target Jetson already has ROS2 Humble Desktop; bootstrap preserves that
