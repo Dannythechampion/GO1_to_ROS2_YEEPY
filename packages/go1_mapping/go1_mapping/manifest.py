@@ -90,7 +90,7 @@ def create_session(session_root: Path, session_id: str) -> SessionPaths:
     return paths
 
 
-def write_manifest_atomic(target: Path, data: dict) -> None:
+def write_yaml_atomic(target: Path, data: dict) -> None:
     target = Path(target)
     temporary: Path | None = None
     operation_error: Exception | None = None
@@ -129,3 +129,37 @@ def write_manifest_atomic(target: Path, data: dict) -> None:
 
     if operation_error is not None:
         raise operation_error
+
+
+def write_manifest_atomic(target: Path, data: dict) -> None:
+    """Backward-compatible manifest-specific name for atomic YAML writes."""
+    write_yaml_atomic(target, data)
+
+
+def load_manifest(path: Path) -> dict:
+    """Load a manifest with PyYAML safe mode and require a mapping root."""
+    with Path(path).open("r", encoding="utf-8") as source:
+        payload = yaml.safe_load(source)
+    if not isinstance(payload, dict):
+        raise ValueError("session manifest must contain a YAML mapping")
+    return payload
+
+
+def manifest_failed(original: dict, failed_step: str, error: str) -> dict:
+    result = dict(original)
+    result.update(
+        {
+            "status": "failed",
+            "failed_step": str(failed_step),
+            "error": str(error),
+        }
+    )
+    return result
+
+
+def manifest_complete(original: dict) -> dict:
+    result = dict(original)
+    result["status"] = "complete"
+    result.pop("failed_step", None)
+    result.pop("error", None)
+    return result

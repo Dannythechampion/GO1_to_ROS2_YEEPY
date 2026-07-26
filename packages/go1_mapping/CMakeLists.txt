@@ -121,6 +121,8 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_configs test/test_configs.py)
   ament_add_pytest_test(test_launch_contract test/test_launch_contract.py)
   ament_add_pytest_test(test_session_guard test/test_session_guard.py)
+  ament_add_pytest_test(
+    test_validation_report test/test_validation_report.py)
 
   if(TARGET pcd_chunk_buffer
      AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pcd_chunk_buffer.cpp")
