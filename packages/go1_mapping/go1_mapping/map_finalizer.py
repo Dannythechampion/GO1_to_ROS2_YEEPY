@@ -14,6 +14,7 @@ from typing import Any, Callable
 import yaml
 
 from go1_mapping.manifest import (
+    SESSION_ID,
     load_manifest,
     manifest_complete,
     manifest_failed,
@@ -37,7 +38,11 @@ def _is_contained(root: Path, candidate: Path) -> bool:
         return False
 
 
-def _canonical_session(session_dir: Path, allowed_root: Path) -> Path:
+def _canonical_session(
+    session_dir: Path,
+    allowed_root: Path,
+    manifest: dict[str, Any] | None = None,
+) -> Path:
     root = Path(allowed_root).resolve(strict=True)
     session = Path(session_dir).resolve(strict=True)
     if session == root or not _is_contained(root, session):
@@ -46,6 +51,12 @@ def _canonical_session(session_dir: Path, allowed_root: Path) -> Path:
         )
     if not session.is_dir():
         raise ValueError(f"session directory is not a directory: {session}")
+    if not SESSION_ID.fullmatch(session.name):
+        raise ValueError(f"invalid session directory name: {session.name}")
+    if manifest is not None and manifest.get("session_id") != session.name:
+        raise ValueError(
+            "session manifest session_id must match the directory name"
+        )
     for relative in ("pcd", "slam_toolbox", "pcd2d", "validation"):
         directory = (session / relative).resolve(strict=True)
         if not _is_contained(session, directory) or not directory.is_dir():
@@ -63,6 +74,21 @@ def _require_nonempty_contained(session: Path, relative: str) -> Path:
     if not canonical.is_file() or canonical.stat().st_size <= 0:
         raise ValueError(f"required artifact is empty or not regular: {relative}")
     return canonical
+
+
+def _validate_pcd_chunks(session: Path) -> None:
+    pcd_directory = (session / "pcd").resolve(strict=True)
+    chunks = sorted((session / "pcd").glob("chunk_*.pcd"))
+    if not chunks:
+        raise ValueError("no chunk_*.pcd artifacts found after writer flush")
+    for chunk in chunks:
+        canonical = chunk.resolve(strict=True)
+        if not _is_contained(pcd_directory, canonical):
+            raise ValueError(f"PCD chunk escapes pcd directory: {chunk.name}")
+        if not canonical.is_file() or canonical.stat().st_size <= 0:
+            raise ValueError(
+                f"PCD chunk is empty or not a regular file: {chunk.name}"
+            )
 
 
 def _projection_command(
@@ -112,6 +138,7 @@ def finalize_session(
         if not _is_contained(session, manifest_file) or not manifest_file.is_file():
             raise ValueError("session manifest is unsafe or not a regular file")
         original_manifest = load_manifest(manifest_file)
+        session = _canonical_session(session, allowed_root, original_manifest)
         if original_manifest.get("status") != "running":
             raise ValueError("session manifest status must be running")
         for relative in (
@@ -119,6 +146,7 @@ def finalize_session(
             "slam_toolbox/hanyang_9f.pgm",
             "slam_toolbox/hanyang_9f.yaml",
             "slam_toolbox/hanyang_9f.posegraph",
+            "slam_toolbox/hanyang_9f.data",
             "pcd2d/geometry_reference.pgm",
             "pcd2d/geometry_reference.yaml",
         ):
@@ -133,6 +161,9 @@ def finalize_session(
             "/pcd_chunk_writer/flush", None, SERVICE_TIMEOUT_SEC
         ):
             raise RuntimeError("writer flush returned an unsuccessful response")
+
+        step = "pcd_chunks"
+        _validate_pcd_chunks(session)
 
         step = "slam_save_map"
         slam_prefix = session / "slam_toolbox" / "hanyang_9f"
@@ -154,6 +185,9 @@ def finalize_session(
             raise RuntimeError("slam_toolbox serialize_map returned failure")
         _require_nonempty_contained(
             session, "slam_toolbox/hanyang_9f.posegraph"
+        )
+        _require_nonempty_contained(
+            session, "slam_toolbox/hanyang_9f.data"
         )
 
         step = "pcd_to_grid"

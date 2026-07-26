@@ -228,6 +228,7 @@ def build_report(session_dir: Path) -> dict[str, Any]:
         "slam_toolbox/hanyang_9f.pgm",
         "slam_toolbox/hanyang_9f.yaml",
         "slam_toolbox/hanyang_9f.posegraph",
+        "slam_toolbox/hanyang_9f.data",
         "pcd2d/geometry_reference.pgm",
         "pcd2d/geometry_reference.yaml",
         "validation/health.yaml",

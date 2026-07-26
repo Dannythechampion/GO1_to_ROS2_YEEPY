@@ -48,6 +48,10 @@ def _valid_session(tmp_path: Path) -> Path:
     (session / "slam_toolbox" / "hanyang_9f.posegraph").write_bytes(
         b"posegraph"
     )
+    (session / "slam_toolbox" / "hanyang_9f.data").write_bytes(
+        b"scan-data"
+    )
+
     (session / "pcd2d" / "geometry_reference.pgm").write_text(
         "P2\n1 1\n255\n0\n", encoding="ascii"
     )
@@ -95,6 +99,7 @@ def test_build_report_accepts_complete_session_and_hashes_all_artifacts(tmp_path
         "slam_toolbox/hanyang_9f.pgm",
         "slam_toolbox/hanyang_9f.yaml",
         "slam_toolbox/hanyang_9f.posegraph",
+        "slam_toolbox/hanyang_9f.data",
         "pcd2d/geometry_reference.pgm",
         "pcd2d/geometry_reference.yaml",
         "validation/health.yaml",
@@ -361,6 +366,8 @@ def _successful_finalizer_dependencies(session: Path, events: list[str]):
         elif service_name == "/slam_toolbox/serialize_map":
             events.append("serialize_map")
             Path(str(target) + ".posegraph").write_bytes(b"posegraph")
+            Path(str(target) + ".data").write_bytes(b"scan-data")
+
         else:
             raise AssertionError(f"unexpected service: {service_name}")
         return True
@@ -733,3 +740,173 @@ def test_build_report_contains_malformed_health_runtime_errors(
     assert report["needs_return_check"] is True
     assert report["checks"]["health"] is False or report["checks"]["return"] is False
     assert report["errors"]
+
+
+def test_finalizer_rejects_unsafe_session_directory_name_before_services(tmp_path):
+    session = _mapping_session(tmp_path)
+    unsafe = session.parent / "bad;session name"
+    session.rename(unsafe)
+    events = []
+    service_caller, command_runner, atomic_writer = (
+        _successful_finalizer_dependencies(unsafe, events)
+    )
+
+    exit_code = finalize_session(
+        session_dir=unsafe,
+        allowed_root=unsafe.parent,
+        sensor_height_m=0.75,
+        service_caller=service_caller,
+        command_runner=command_runner,
+        pcd_to_grid_executable="installed-pcd-to-grid",
+        atomic_writer=atomic_writer,
+    )
+
+    assert exit_code != 0
+    assert events == []
+    manifest = yaml.safe_load(
+        (unsafe / "validation" / "session_manifest.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["status"] == "running"
+
+
+def test_finalizer_rejects_manifest_session_id_mismatch_before_services(tmp_path):
+    session = _mapping_session(tmp_path)
+    manifest_path = session / "validation" / "session_manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["session_id"] = "20260724_090001"
+    write_manifest_atomic(manifest_path, manifest)
+    events = []
+    service_caller, command_runner, atomic_writer = (
+        _successful_finalizer_dependencies(session, events)
+    )
+
+    exit_code = finalize_session(
+        session_dir=session,
+        allowed_root=session.parent,
+        sensor_height_m=0.75,
+        service_caller=service_caller,
+        command_runner=command_runner,
+        pcd_to_grid_executable="installed-pcd-to-grid",
+        atomic_writer=atomic_writer,
+    )
+
+    assert exit_code != 0
+    assert events == ["write_failed"]
+    failed = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    assert failed["status"] == "failed"
+    assert failed["failed_step"] == "preflight"
+    assert failed["session_id"] == "20260724_090001"
+
+
+def test_build_report_requires_posegraph_data_sidecar(tmp_path):
+    session = _valid_session(tmp_path)
+    data_path = session / "slam_toolbox" / "hanyang_9f.data"
+    data_path.unlink()
+
+    report = build_report(session)
+
+    assert report["complete"] is False
+    assert report["checks"]["required_artifacts"] is False
+    assert "slam_toolbox/hanyang_9f.data" not in report["artifacts"]
+
+
+def test_finalizer_refuses_preexisting_posegraph_data_without_overwrite(tmp_path):
+    session = _mapping_session(tmp_path)
+    existing = session / "slam_toolbox" / "hanyang_9f.data"
+    existing.write_bytes(b"irreplaceable-scan-data")
+    events = []
+    service_caller, command_runner, atomic_writer = (
+        _successful_finalizer_dependencies(session, events)
+    )
+
+    exit_code = finalize_session(
+        session_dir=session,
+        allowed_root=session.parent,
+        sensor_height_m=0.75,
+        service_caller=service_caller,
+        command_runner=command_runner,
+        pcd_to_grid_executable="installed-pcd-to-grid",
+        atomic_writer=atomic_writer,
+    )
+
+    assert exit_code != 0
+    assert events == ["write_failed"]
+    assert existing.read_bytes() == b"irreplaceable-scan-data"
+
+
+def test_finalizer_requires_posegraph_data_immediately_after_serialize(tmp_path):
+    session = _mapping_session(tmp_path)
+    events = []
+    good_service, command_runner, atomic_writer = (
+        _successful_finalizer_dependencies(session, events)
+    )
+
+    def service_without_data(service_name, target, timeout_sec):
+        result = good_service(service_name, target, timeout_sec)
+        if service_name == "/slam_toolbox/serialize_map":
+            Path(str(target) + ".data").unlink()
+        return result
+
+    exit_code = finalize_session(
+        session_dir=session,
+        allowed_root=session.parent,
+        sensor_height_m=0.75,
+        service_caller=service_without_data,
+        command_runner=command_runner,
+        pcd_to_grid_executable="installed-pcd-to-grid",
+        atomic_writer=atomic_writer,
+    )
+
+    assert exit_code != 0
+    assert events == ["flush", "save_map", "serialize_map", "write_failed"]
+    manifest = yaml.safe_load(
+        (session / "validation" / "session_manifest.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["failed_step"] == "slam_serialize_map"
+
+
+@pytest.mark.parametrize("invalid_chunk", ["external_symlink", "empty"])
+def test_finalizer_validates_chunks_immediately_after_flush(
+    tmp_path, invalid_chunk
+):
+    session = _mapping_session(tmp_path)
+    chunk = session / "pcd" / "chunk_000001.pcd"
+    if invalid_chunk == "external_symlink":
+        outside = tmp_path / "outside-chunk.pcd"
+        outside.write_bytes(b"external-point-cloud")
+        chunk.unlink()
+        try:
+            chunk.symlink_to(outside)
+        except OSError as error:
+            pytest.skip(f"symlink creation unavailable: {error}")
+    else:
+        chunk.write_bytes(b"")
+    events = []
+    service_caller, command_runner, atomic_writer = (
+        _successful_finalizer_dependencies(session, events)
+    )
+
+    exit_code = finalize_session(
+        session_dir=session,
+        allowed_root=session.parent,
+        sensor_height_m=0.75,
+        service_caller=service_caller,
+        command_runner=command_runner,
+        pcd_to_grid_executable="installed-pcd-to-grid",
+        atomic_writer=atomic_writer,
+    )
+
+    assert exit_code != 0
+    assert events == ["flush", "write_failed"]
+    manifest = yaml.safe_load(
+        (session / "validation" / "session_manifest.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["failed_step"] == "pcd_chunks"
+    assert not (session / "slam_toolbox" / "hanyang_9f.pgm").exists()
+    assert not (session / "pcd" / "merged.pcd").exists()
