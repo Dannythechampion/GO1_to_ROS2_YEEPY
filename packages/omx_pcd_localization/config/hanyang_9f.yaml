@@ -1,0 +1,46 @@
+pcd_localizer:
+  ros__parameters:
+    map_path: /mnt/t500/go1_ros2_project/maps/hanyang_9f/20260728_204825/pcd/merged.pcd
+    cloud_topic: /cloud_registered_body
+    map_frame: map
+    odom_frame: camera_init
+    base_frame: body
+
+    # T_map_pcd: provisional rigid alignment measured from the two 0.05 m/px
+    # map products. Validate this with arm:=false before physical driving.
+    pcd_to_map_xyz_rpy: [-0.10, 0.0, 0.0, 0.0, 0.0, -0.013962634]
+
+    map_leaf_size: 0.40
+    scan_leaf_size: 0.25
+    local_map_radius: 18.0
+    local_map_z_radius: 4.0
+    min_scan_points: 300
+    min_target_points: 1000
+
+    registration_rate_hz: 0.5
+    tf_publish_rate_hz: 20.0
+    localization_timeout_sec: 5.0
+
+    ndt_resolution: 1.0
+    ndt_step_size: 0.15
+    ndt_transformation_epsilon: 0.01
+    ndt_max_iterations: 35
+
+    gicp_max_iterations: 40
+    gicp_max_correspondence_distance: 1.2
+    gicp_transformation_epsilon: 0.001
+    gicp_rotation_epsilon: 0.001
+    gicp_correspondence_randomness: 12
+
+    max_fitness_score: 0.30
+    initial_max_translation_correction: 3.0
+    initial_max_rotation_correction: 1.05
+    tracking_max_translation_correction: 0.75
+    tracking_max_rotation_correction: 0.35
+    max_abs_z: 1.0
+    max_abs_roll_pitch: 0.55
+
+    use_initial_pose_z: false
+    initial_pose_z: 0.0
+    publish_aligned_cloud: true
+    publish_map_cloud: true

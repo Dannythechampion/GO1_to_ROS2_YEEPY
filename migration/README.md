@@ -14,6 +14,7 @@
 | `velocity_smoother_ema` | 교체 예정 | `nav2_velocity_smoother`로 대체 후 검증 |
 | `vision_opencv` | 불필요 | Humble 배포판의 `cv_bridge` 사용 |
 | `FAST_LIO_LOCALIZATION` | 보류 | ROS2 저장소와 커밋을 고정하고 검증하기 전까지 미포함 |
+| `omx_pcd_localization` | 추가 | 저장 PCD에 NDT/GICP 6DoF 정합 후 `map -> camera_init` 발행 |
 | `pcd2pgm` | 보류 | ROS2 적용 방법 검증 전까지 미포함 |
 | `go1_imu_pub` | 확인 필요 | `go1_driver` 상태/IMU 통합 여부를 확인한 뒤 포팅 결정 |
 | `stereo_split` | 조건부 보류 | 카메라 사용이 확정될 때만 ROS2로 포팅 |
@@ -147,6 +148,7 @@ cd /mnt/t500/go1_ros2_project
 ```text
 /mnt/t500/go1_ros2_ws/src/go1_driver
 /mnt/t500/go1_ros2_ws/src/omx_navigation
+/mnt/t500/go1_ros2_ws/src/omx_pcd_localization
 ```
 
 기존 `GO-_project_data/catkin_ws/src`는 ROS2 workspace에 복사하지 않는다.
@@ -202,7 +204,8 @@ cd /mnt/t500/go1_ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
-colcon build --symlink-install --packages-select go1_driver omx_navigation
+colcon build --symlink-install \
+  --packages-select go1_driver omx_navigation omx_pcd_localization
 source install/setup.bash
 ```
 
@@ -211,7 +214,8 @@ Gate 8:
 ```bash
 ros2 pkg prefix go1_driver
 ros2 pkg prefix omx_navigation
-colcon test --packages-select go1_driver
+ros2 pkg prefix omx_pcd_localization
+colcon test --packages-select go1_driver omx_navigation omx_pcd_localization
 colcon test-result --verbose
 ```
 
@@ -296,22 +300,32 @@ odometry가 연속적이어야 한다.
 
 ## 13. TF 및 Nav2 dry-run
 
-다음 chain을 확정한다.
+3D PCD localization에서는 다음 chain을 확정한다.
 
 ```text
-map -> odom -> base_link -> lidar
+map -> camera_init -> body -> lidar
 ```
 
 ```bash
 ros2 run tf2_tools view_frames
-ros2 run tf2_ros tf2_echo odom base_link
-ros2 run tf2_ros tf2_echo base_link lidar
+ros2 run tf2_ros tf2_echo camera_init body
+ros2 run tf2_ros tf2_echo body lidar
 ```
 
-Go1 driver는 계속 disarmed로 실행한다.
+먼저 Livox와 FAST-LIO를 실행한 뒤 Go1 driver를 disarmed 상태로 포함해 3D
+localization과 Nav2를 시작한다.
 
 ```bash
-ros2 launch go1_driver go1_driver.launch.py arm:=false
+ros2 launch omx_pcd_localization go1_pcd_navigation.launch.py \
+  rviz:=true start_go1_driver:=true arm:=false
+```
+
+RViz의 `2D Pose Estimate`로 초기 `x`, `y`, `yaw`를 지정하고, NDT/GICP 정합이
+승인된 뒤 다음 Gate를 실행한다.
+
+```bash
+ros2 run tf2_ros tf2_echo map camera_init
+./migration/verify_pcd_localization.sh
 ```
 
 Nav2 goal을 보낸 후 다음을 확인한다.

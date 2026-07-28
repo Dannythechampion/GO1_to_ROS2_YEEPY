@@ -11,3 +11,15 @@ installation and adds only missing dependencies.
 The original Ubuntu 20.04 / ROS1 snapshot is intentionally kept in a separate
 private repository. It must not be copied wholesale into this ROS2 workspace.
 See `ROS1_ARCHIVE.md` for the immutable archive commit and SDK v3.8.6 baseline.
+
+## 3D PCD localization
+
+The `nav2-workflow_3D` branch adds `omx_pcd_localization`, which keeps
+FAST-LIO's `camera_init -> body` odometry and aligns the live body-frame cloud
+against a saved PCD with NDT followed by GICP. The accepted 6DoF result is
+published as `map -> camera_init`; Nav2 continues to use a 2D occupancy map for
+planning, without starting AMCL.
+
+The sensor-generated PCD is a runtime input and is not embedded in this code
+branch. See [`packages/omx_pcd_localization/README.md`](packages/omx_pcd_localization/README.md)
+for map placement, build, launch, initial-pose, and safety-gate instructions.
