@@ -32,6 +32,8 @@ def test_runtime_verifier_enforces_arm_false_and_core_topics():
         ROOT / "migration" / "verify_existing_map_navigation.sh"
     ).read_text()
     assert "export ROS_DOMAIN_ID=100" in text
+    assert 'go1_ros2_ws="${GO1_ROS2_WS:-/mnt/t500/go1_ros2_ws}"' in text
+    assert 'source "$go1_ros2_ws/install/setup.bash"' in text
     assert "ros2 param get /go1_driver arm" in text
     for topic in (
         "/scan",

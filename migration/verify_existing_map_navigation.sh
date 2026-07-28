@@ -3,7 +3,8 @@ set -eo pipefail
 
 export ROS_DOMAIN_ID=100
 source /opt/ros/humble/setup.bash
-source /mnt/t500/go1_ros2_ws/install/setup.bash
+go1_ros2_ws="${GO1_ROS2_WS:-/mnt/t500/go1_ros2_ws}"
+source "$go1_ros2_ws/install/setup.bash"
 set -euo pipefail
 
 mode="${1:-preflight}"
