@@ -61,6 +61,31 @@ class HealthWindow:
     if self.source_invalid[topic]:result.append(f'{topic} source timestamp reset/invalid')
    return result
 
+class ReportedHealthWindow:
+ def __init__(self,required_hz,max_gap_sec,initialization_sec,started_at):
+  self.required_hz={key:float(value) for key,value in required_hz.items()};self.max_gap_sec=float(max_gap_sec);self.initialization_sec=float(initialization_sec);self.started_at=float(started_at);self.rates={key:0.0 for key in self.required_hz};self.gaps={key:0.0 for key in self.required_hz};self.last_report=None;self.lock=threading.RLock()
+ def update(self,rates,gaps,now_sec):
+  checked_rates={topic:float(rates[topic]) for topic in self.required_hz};checked_gaps={topic:float(gaps[topic]) for topic in self.required_hz}
+  for topic in self.required_hz:
+   if not math.isfinite(checked_rates[topic]) or checked_rates[topic]<0:raise ValueError(f'invalid {topic} rate')
+   if not math.isfinite(checked_gaps[topic]) or checked_gaps[topic]<0:raise ValueError(f'invalid {topic} gap')
+  with self.lock:
+   self.rates.update(checked_rates);self.gaps.update(checked_gaps);self.last_report=float(now_sec)
+ def measurements(self,now_sec):
+  with self.lock:
+   now=float(now_sec)
+   if self.last_report is None:return {'rates_hz':dict(self.rates),'max_gaps_sec':{key:max(0.0,now-self.started_at) for key in self.required_hz}}
+   age=max(0.0,now-self.last_report)
+   return {'rates_hz':dict(self.rates),'max_gaps_sec':{key:self.gaps[key]+age for key in self.required_hz}}
+ def evaluate(self,now_sec):
+  measurements=self.measurements(now_sec)
+  if now_sec<self.started_at+self.initialization_sec:return []
+  reasons=[]
+  for topic,required in self.required_hz.items():
+   rate=measurements['rates_hz'][topic];gap=measurements['max_gaps_sec'][topic]
+   if rate<required:reasons.append(f'{topic} rate {rate:.2f} Hz below required {required:.2f} Hz')
+   if gap>self.max_gap_sec:reasons.append(f'{topic} gap {gap:.2f}s exceeds {self.max_gap_sec:.2f}s')
+  return reasons
 def free_gib(path): return shutil.disk_usage(path).free/2**30
 def should_abort_disk(free,abort=50.): return float(free)<float(abort)
 def pose_return_error(first,latest):
@@ -98,22 +123,25 @@ class SessionGuardNode:
   from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
   from rclpy.node import Node
   from rclpy.qos import QoSProfile,HistoryPolicy,ReliabilityPolicy,DurabilityPolicy
-  from sensor_msgs.msg import Imu
+  from diagnostic_msgs.msg import DiagnosticArray
   from nav_msgs.msg import Odometry
-  from livox_ros_driver2.msg import CustomMsg
   self.node=Node('mapping_session_guard');self.rclpy=rclpy
   for name,value in [('session_dir',''),('abort_free_gib',50.),('lidar_min_hz',8.),('imu_min_hz',100.),('odom_min_hz',8.),('max_gap_sec',1.),('initialization_sec',15.)]:self.node.declare_parameter(name,value)
   directory=self.node.get_parameter('session_dir').value
   if not directory:raise ValueError('session_dir parameter is required')
-  self.session_dir=Path(directory);self.abort=float(self.node.get_parameter('abort_free_gib').value);self.initialization=float(self.node.get_parameter('initialization_sec').value);self.started=time.monotonic();self.window=HealthWindow({k:self.node.get_parameter(k+'_min_hz').value for k in ('lidar','imu','odom')},self.node.get_parameter('max_gap_sec').value,self.initialization,self.started);self.first_pose=self.latest_pose=None;self.exit_code=0
+  self.session_dir=Path(directory);self.abort=float(self.node.get_parameter('abort_free_gib').value);self.initialization=float(self.node.get_parameter('initialization_sec').value);self.started=time.monotonic();self.window=ReportedHealthWindow({k:self.node.get_parameter(k+'_min_hz').value for k in ('lidar','imu','odom')},self.node.get_parameter('max_gap_sec').value,self.initialization,self.started);self.first_pose=self.latest_pose=None;self.exit_code=0
   def qos(depth):return QoSProfile(history=HistoryPolicy.KEEP_LAST,depth=depth,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.VOLATILE)
-  self.callback_groups=[MutuallyExclusiveCallbackGroup() for _ in range(4)]
-  self.node.create_subscription(CustomMsg,'/livox/lidar',self.lidar,qos(20),callback_group=self.callback_groups[0],raw=True);self.node.create_subscription(Imu,'/livox/imu',self.imu,qos(500),callback_group=self.callback_groups[1]);self.node.create_subscription(Odometry,'/Odometry',self.odom,qos(50),callback_group=self.callback_groups[2]);self.node.create_timer(1.,self.timer,callback_group=self.callback_groups[3])
+  self.callback_groups=[MutuallyExclusiveCallbackGroup() for _ in range(3)]
+  self.node.create_subscription(DiagnosticArray,'/mapping/input_health',self.health_report,10,callback_group=self.callback_groups[0]);self.node.create_subscription(Odometry,'/Odometry',self.odom,qos(50),callback_group=self.callback_groups[1]);self.node.create_timer(1.,self.timer,callback_group=self.callback_groups[2])
  def now(self):return time.monotonic()
- def lidar(self,msg):self.window.observe('lidar',self.now(),_source_stamp(msg))
- def imu(self,msg):self.window.observe('imu',self.now(),_source_stamp(msg))
+ def health_report(self,msg):
+  status=next((item for item in msg.status if item.name=='mapping_input_rates'),None)
+  if status is None:return
+  values={item.key:item.value for item in status.values}
+  rates={topic:float(values[topic+'_rate_hz']) for topic in ('lidar','imu','odom')};gaps={topic:float(values[topic+'_gap_sec']) for topic in ('lidar','imu','odom')}
+  self.window.update(rates,gaps,self.now())
  def odom(self,msg):
-  now=self.now();self.window.observe('odom',now,_source_stamp(msg));pose=_pose(msg.pose.pose)
+  now=self.now();pose=_pose(msg.pose.pose)
   if pose is not None:self.latest_pose=pose;self.first_pose=pose if self.first_pose is None and now>=self.started+self.initialization else self.first_pose
  def timer(self):
   try:code,payload=evaluate_and_record(session_dir=self.session_dir,window=self.window,now_sec=self.now(),abort_free_gib=self.abort,first_stable_pose=self.first_pose,latest_pose=self.latest_pose)

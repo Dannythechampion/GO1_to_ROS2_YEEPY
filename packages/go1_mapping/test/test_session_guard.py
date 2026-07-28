@@ -7,6 +7,7 @@ import yaml
 
 from go1_mapping.session_guard import (
     HealthWindow,
+    ReportedHealthWindow,
     evaluate_and_record,
     pose_return_error,
     quaternion_yaw,
@@ -127,3 +128,27 @@ def test_main_treats_keyboard_interrupt_as_clean_shutdown():
         def destroy_node(self): events.append("destroy")
     assert guard_module.main(rclpy_module=FakeRclpy(), guard_factory=FakeGuard) == 0
     assert events == ["init", "destroy", "shutdown"]
+
+
+def test_reported_health_window_accepts_native_rates_and_ages_gaps():
+    window = ReportedHealthWindow(REQUIRED_HZ, 1.0, 15.0, 0.0)
+    window.update(
+        {"lidar": 10.0, "imu": 200.0, "odom": 10.0},
+        {"lidar": 0.01, "imu": 0.005, "odom": 0.02},
+        15.0,
+    )
+    assert window.evaluate(15.1) == []
+    measurements = window.measurements(15.5)
+    assert measurements["rates_hz"]["imu"] == 200.0
+    assert measurements["max_gaps_sec"]["odom"] == pytest.approx(0.52)
+    assert any("gap" in reason for reason in window.evaluate(16.1))
+
+
+def test_reported_health_window_rejects_invalid_native_measurement():
+    window = ReportedHealthWindow(REQUIRED_HZ, 1.0, 0.0, 0.0)
+    with pytest.raises(ValueError, match="invalid imu rate"):
+        window.update(
+            {"lidar": 10.0, "imu": math.nan, "odom": 10.0},
+            {"lidar": 0.01, "imu": 0.01, "odom": 0.01},
+            1.0,
+        )

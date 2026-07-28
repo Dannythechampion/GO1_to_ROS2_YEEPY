@@ -23,6 +23,7 @@ def test_launch_declares_only_mapping_session_controls():
 def test_launch_stages_livox_fast_lio_and_mapping_nodes():
     assert "msg_MID360_launch.py" in TEXT
     assert "mapping.launch.py" in TEXT
+    assert 'executable="topic_rate_monitor"' in TEXT
     assert '"config_path": mapping_config_dir' in TEXT
     assert '"config_file": "fast_lio_mapping_safe.yaml"' in TEXT
     assert '"rviz": "false"' in TEXT

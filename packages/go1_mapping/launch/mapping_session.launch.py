@@ -111,6 +111,12 @@ def _launch_session(context):
         condition=IfCondition(LaunchConfiguration("start_fast_lio")),
     )
 
+    rate_monitor = Node(
+        package="go1_mapping",
+        executable="topic_rate_monitor",
+        name="mapping_topic_rate_monitor",
+        output="screen",
+    )
     writer = Node(
         package="go1_mapping",
         executable="pcd_chunk_writer",
@@ -173,11 +179,12 @@ def _launch_session(context):
 
     fast_lio_timer = TimerAction(period=3.0, actions=[fast_lio])
     mapping_timer = TimerAction(period=8.0, actions=[
-        writer, pointcloud_to_laserscan, slam_toolbox, guard,
+        rate_monitor, writer, pointcloud_to_laserscan, slam_toolbox, guard,
     ])
 
     return [
         _critical_exit_registration(rosbag, "rosbag"),
+        _critical_exit_registration(rate_monitor, "topic_rate_monitor"),
         _critical_exit_registration(writer, "pcd_chunk_writer"),
         _critical_exit_registration(guard, "session_guard"),
         livox,

@@ -13,6 +13,9 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rcl_interfaces REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
+find_package(livox_ros_driver2 REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(pcl_conversions REQUIRED)
@@ -57,6 +60,15 @@ if(TARGET pcd_chunk_storage
   list(APPEND mapping_targets pcd_chunk_writer)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/topic_rate_monitor.cpp")
+  add_executable(topic_rate_monitor src/topic_rate_monitor.cpp)
+  target_compile_features(topic_rate_monitor PRIVATE cxx_std_17)
+  target_include_directories(topic_rate_monitor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  ament_target_dependencies(
+    topic_rate_monitor diagnostic_msgs livox_ros_driver2 nav_msgs rclcpp sensor_msgs)
+  list(APPEND mapping_targets topic_rate_monitor)
+endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pcd_projection.cpp")
   add_library(pcd_projection src/pcd_projection.cpp)
   target_compile_features(pcd_projection PUBLIC cxx_std_17)
@@ -124,6 +136,12 @@ if(BUILD_TESTING)
   ament_add_pytest_test(
     test_validation_report test/test_validation_report.py)
 
+  if(TARGET topic_rate_monitor
+     AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_rate_window.cpp")
+    ament_add_gtest(test_rate_window test/test_rate_window.cpp)
+    target_include_directories(test_rate_window PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  endif()
   if(TARGET pcd_chunk_buffer
      AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/test_pcd_chunk_buffer.cpp")
     ament_add_gtest(
