@@ -1,0 +1,125 @@
+artifacts:
+  pcd/chunk_000000.pcd:
+    sha256: 9b90bf90b64cacdff683f2e90cc1ccf5101f3fd126b06581876628021b9748d0
+    size_bytes: 1867487
+  pcd/chunk_000001.pcd:
+    sha256: 6ff2478f33b6757e9a0ee86a0ce11a6f8f3ba25274276025acad1c57e860b6b2
+    size_bytes: 1854666
+  pcd/chunk_000002.pcd:
+    sha256: bd916d0146e9ee7faab5c0eaccb81fde97130120951e149fe718f8fe575ed977
+    size_bytes: 1851898
+  pcd/chunk_000003.pcd:
+    sha256: 45f247ef8af7aea2a4ad9cfc3a3198df20d38e6d0cf101b55216f115d45524ba
+    size_bytes: 2205878
+  pcd/chunk_000004.pcd:
+    sha256: a7b550068f1f56e747e628e3819e2d72e21360621d12365daacb978423f879c3
+    size_bytes: 2278772
+  pcd/chunk_000005.pcd:
+    sha256: bfd01a2df0b709cd88b9e1ca970ab0eb9e145ddf6d5b4b4f7aa46db6fd3d036f
+    size_bytes: 2291643
+  pcd/chunk_000006.pcd:
+    sha256: 2faeec47ce1b9b5c2e091b19cde187c08ced15f556d88db4539ac2b4c4026faa
+    size_bytes: 2280061
+  pcd/chunk_000007.pcd:
+    sha256: 15ea44ca5467fa7b97c5f242e06fcab18ab0c413f687de868e421c8b025d0c7c
+    size_bytes: 1786765
+  pcd/chunk_000008.pcd:
+    sha256: 08d272113d3fc76ff6b652259d71bca79eca36da70874d5a55e533939d79d220
+    size_bytes: 2369502
+  pcd/chunk_000009.pcd:
+    sha256: 322dc102f3c198ce45cd220f3b5086e259810d8d4035c30eee3140d3ea6f2831
+    size_bytes: 1817823
+  pcd/chunk_000010.pcd:
+    sha256: 3239c64340d20bedee9a7d06002a3579ece08dfe70ac7d9daf64e4dc9cdd1469
+    size_bytes: 1915746
+  pcd/chunk_000011.pcd:
+    sha256: 24c585b5636101f23b3178924c71061f37f2bc41066f43abef16f1baf9188d7d
+    size_bytes: 1912956
+  pcd/chunk_000012.pcd:
+    sha256: e0a40f5dbf8463b138e2bb65961ed3c5249b84f776e37592c5969c6dfe88da42
+    size_bytes: 1908193
+  pcd/chunk_000013.pcd:
+    sha256: fefebac66c1226204ba1b2389991c4da5158ad1e3b5241c5b46f389f895f0e0d
+    size_bytes: 1048309
+  pcd/chunk_000014.pcd:
+    sha256: 33128e1722df6ff5a6cfe1418231585b5ebac01c5a5a29421789cffbbffff29c
+    size_bytes: 1914363
+  pcd/chunk_000015.pcd:
+    sha256: 60179ddfd3e43fb846ceddd2891e247f179948ac06c37bf0dd2291514ac0d854
+    size_bytes: 1922134
+  pcd/chunk_000016.pcd:
+    sha256: 3983d2b57f1ab2973ed4295c8f046135fd56393f192e006e29626f9b10193b52
+    size_bytes: 1926527
+  pcd/chunk_000017.pcd:
+    sha256: 97edf249555575aceb10fda1c1a161eaca793de236ba5ebd416e12cbb4b8260e
+    size_bytes: 1924830
+  pcd/chunk_000018.pcd:
+    sha256: d95d0423151da7cd5eed31d377261fbd6e17e005c710fd6f47e6ad204069e6e0
+    size_bytes: 1892530
+  pcd/chunk_000019.pcd:
+    sha256: 27572e637583ea2f2d35f0264bf3667d3e59ad1a52535dc39fc601e1ff2c397d
+    size_bytes: 1918959
+  pcd/chunk_000020.pcd:
+    sha256: f96ca06436bcd284f8d81542ebc9d5cc8c29afe2835ebc7b027f7cea22396351
+    size_bytes: 1924665
+  pcd/merged.pcd:
+    sha256: 9af57fbb96dd9364e466913dd453ef26ad9573564134d649230e1d1a3685201d
+    size_bytes: 1804289
+  pcd2d/geometry_reference.pgm:
+    sha256: 6583c77b90c19ca8896d9fa905bf1713de727e649a573bd5c9bc7b1a8ccd530c
+    size_bytes: 1294386
+  pcd2d/geometry_reference.yaml:
+    sha256: e4806bcf2404cb6208171ffd0ea06c754219ef87d80b96b7fe4638520a12e122
+    size_bytes: 214
+  slam_toolbox/hanyang_9f.data:
+    sha256: 05272bbd5946ed3712df6a78b6fbeb3e5555eeea957fda384afe190e4a294b02
+    size_bytes: 12136741
+  slam_toolbox/hanyang_9f.pgm:
+    sha256: d3dcf2b9cb500ff8b52513e991e920ca6370947f384c4cd8b2dd179d9a60d330
+    size_bytes: 239689
+  slam_toolbox/hanyang_9f.posegraph:
+    sha256: 913a9b4b5b3c4c037f697839313de1d6c359b0c75f3d5fc86270db835ab15e91
+    size_bytes: 30312147
+  slam_toolbox/hanyang_9f.yaml:
+    sha256: 388863a3266a1bc28fb03a695fc6f5d193a9e5e35fbcbf2cfef3d9a2f39f10c3
+    size_bytes: 128
+  validation/health.yaml:
+    sha256: 114117788c19f83d7b35044525460a458cb080893b6bfc010bc0c3e43dc190e3
+    size_bytes: 779
+checks:
+  geometry_reference: true
+  guard: true
+  health: true
+  pcd_chunks: true
+  required_artifacts: true
+  return: true
+  slam_map: true
+  slam_resolution: true
+  unique_chunks: true
+complete: true
+errors: []
+health:
+  max_gaps_sec:
+    imu: 0.23889668500020506
+    lidar: 0.25616668500020506
+    odom: 0.23941568500020508
+  ok: true
+  rates_hz:
+    imu: 199.987587
+    lidar: 9.986036
+    odom: 9.988403
+needs_return_check: false
+pcd_chunks:
+  count: 21
+  duplicate_sha256: []
+  ok: true
+return_check:
+  ok: true
+  xy_m: 0.06973050768629135
+  yaw_deg: 4.955485713484002
+  yaw_rad: 0.0864895417358362
+slam_map:
+  height: 586
+  ok: true
+  resolution_m: 0.05
+  width: 409
