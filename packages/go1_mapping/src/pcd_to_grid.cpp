@@ -140,7 +140,7 @@ Cloud merge_chunks(const std::vector<fs::path> & chunks, const double voxel_size
     if (raw_file_size > std::numeric_limits<std::size_t>::max()) {
       throw std::length_error("PCD chunk file size exceeds size_t");
     }
-    const std::size_t merged_bytes = go1_mapping::point_payload_bytes(merged.capacity());
+    const std::size_t merged_bytes = go1_mapping::point_payload_bytes(merged.points.capacity());
     std::ifstream header_input(chunk_path, std::ios::binary);
     if (!header_input) {
       throw std::runtime_error("failed to open PCD chunk header: " + chunk_path.string());
@@ -169,7 +169,7 @@ Cloud merge_chunks(const std::vector<fs::path> & chunks, const double voxel_size
       go1_mapping::MemoryPhase::AppendChunk,
       go1_mapping::AggregateMemoryState{
         merged_bytes,
-        go1_mapping::point_payload_bytes(filtered.capacity()),
+        go1_mapping::point_payload_bytes(filtered.points.capacity()),
         0U,
         combined_bytes,
         0U});
@@ -179,7 +179,7 @@ Cloud merge_chunks(const std::vector<fs::path> & chunks, const double voxel_size
   if (merged.empty()) {
     throw std::invalid_argument("all input PCD chunks are empty");
   }
-  const std::size_t merged_bytes = go1_mapping::point_payload_bytes(merged.capacity());
+  const std::size_t merged_bytes = go1_mapping::point_payload_bytes(merged.points.capacity());
   go1_mapping::enforce_memory_budget(
     go1_mapping::MemoryPhase::FilterMerged,
     go1_mapping::AggregateMemoryState{merged_bytes, 0U, 0U, 0U, 0U});

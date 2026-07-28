@@ -475,8 +475,8 @@ pcl::PointCloud<pcl::PointXYZI> voxel_filter_finite(
   {
     throw std::invalid_argument("voxel size is outside the supported positive float range");
   }
-  checked_merged_point_count(0U, transferred_cloud.capacity());
-  const std::size_t input_bytes = point_payload_bytes(transferred_cloud.capacity());
+  checked_merged_point_count(0U, transferred_cloud.points.capacity());
+  const std::size_t input_bytes = point_payload_bytes(transferred_cloud.points.capacity());
   enforce_memory_budget(
     MemoryPhase::FilterChunk,
     AggregateMemoryState{retained_merged_bytes, input_bytes, 0U, 0U, 0U},
@@ -493,7 +493,7 @@ pcl::PointCloud<pcl::PointXYZI> voxel_filter_finite(
   filter.setLeafSize(leaf, leaf, leaf);
   pcl::PointCloud<pcl::PointXYZI> output;
   filter.filter(output);
-  checked_merged_point_count(0U, output.capacity());
+  checked_merged_point_count(0U, output.points.capacity());
   remove_nonfinite_xyz(output);
   return output;
 }
