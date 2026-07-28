@@ -8,8 +8,8 @@ SCAN = ROOT / "config" / "mid360_scan.yaml"
 
 def test_launch_defaults_are_safe():
     text = LAUNCH.read_text(encoding="utf-8")
-    assert 'DeclareLaunchArgument("map"' in text
-    assert 'default_value="/mnt/t500/maps/scans_new.yaml"' in text
+    assert 'DeclareLaunchArgument(\n                "map",' in text
+    assert '"20260728_204825/slam_toolbox/hanyang_9f_annotated.yaml"' in text
     assert 'DeclareLaunchArgument("arm", default_value="false")' in text
     assert 'DeclareLaunchArgument("ros_domain_id", default_value="100")' in text
     assert 'default_value="/cloud_registered_body"' in text

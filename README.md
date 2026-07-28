@@ -4,9 +4,9 @@ Ubuntu 22.04 / ROS2 Humble 환경에서 Unitree Go1과 Livox MID-360을 이용�
 
 이 문서는 다음 조건을 전제로 합니다.
 
-- `codex/hanyang-9f-mapping-pcl-fix` 브랜치로 매핑을 완료했습니다.
-- SLAM Toolbox 지도가 정상적으로 저장되었습니다.
-- 지도 검증 결과가 `complete: true`입니다.
+- `codex/hanyang-9f-mapping-pcl-fix` 브랜치에서 세션 `20260728_204825` 매핑을 완료했습니다.
+- 검증된 원본 지도와 반사 영역을 정리한 최종 Nav2 지도가 이 브랜치의 `maps/` 아래에 포함되어 있습니다.
+- 원본 지도 검증 결과는 `complete: true`, 출발점 복귀 오차는 약 `0.07 m`, `4.96 deg`입니다.
 - 실제 주행은 `agent/nav2-end-to-end-workflow` 브랜치에서 수행합니다.
 - Jetson에서 Livox, FAST-LIO, Nav2 및 Go1 driver를 실행합니다.
 - 모든 터미널에서 동일한 `ROS_DOMAIN_ID=100`을 사용합니다.
@@ -20,19 +20,24 @@ Ubuntu 22.04 / ROS2 Humble 환경에서 Unitree Go1과 Livox MID-360을 이용�
 | 지도 생성 | `codex/hanyang-9f-mapping-pcl-fix` | FAST-LIO, 3D PCD, rosbag, SLAM Toolbox 2D 지도 생성 |
 | Localization 및 자율주행 | `agent/nav2-end-to-end-workflow` | 저장 지도 로드, AMCL localization, Nav2 경로계획, Go1 제어 |
 
-매핑이 이미 완료되었다면 평상시 자율주행을 위해 매핑 브랜치를 다시 실행할 필요가 없습니다.
+매핑이 이미 완료되었으므로 평상시 자율주행을 위해 매핑 브랜치를 다시 실행할 필요가 없습니다.
 
-사용할 지도는 다음 파일입니다.
+기본으로 사용할 최종 Nav2 지도는 다음 파일입니다.
 
 ```text
-/mnt/t500/maps/hanyang_9f/<SESSION_ID>/slam_toolbox/hanyang_9f.yaml
+/mnt/t500/go1_ros2_project/maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f_annotated.yaml
 ```
 
 같은 디렉터리에 다음 이미지 파일이 있어야 합니다.
 
 ```text
-/mnt/t500/maps/hanyang_9f/<SESSION_ID>/slam_toolbox/hanyang_9f.pgm
+/mnt/t500/go1_ros2_project/maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f_annotated.pgm
 ```
+
+지도 세션 상세 정보와 정리 보고서는
+[`maps/hanyang_9f/20260728_204825/README.md`](maps/hanyang_9f/20260728_204825/README.md)에서 확인할 수 있습니다.
+
+![한양대 9층 최종 SLAM/Nav2 지도](maps/hanyang_9f/20260728_204825/hanyang_9f_annotated_preview.png)
 
 다음 파일들은 Nav2 주행용 지도로 사용하지 않습니다.
 
@@ -40,6 +45,8 @@ Ubuntu 22.04 / ROS2 Humble 환경에서 Unitree Go1과 Livox MID-360을 이용�
 |---|---|
 | `pcd/merged.pcd` | 전체 3D 점군 지도 확인 및 보관 |
 | `pcd2d/geometry_reference.yaml` | 3D PCD 투영 결과 비교 |
+| `slam_toolbox/hanyang_9f.yaml` | 검증된 원본 SLAM 지도 |
+| `slam_toolbox/hanyang_9f_cleaned.yaml` | 자동 정리 지도 |
 | `slam_toolbox/hanyang_9f.posegraph` | SLAM 수정 및 재개 |
 | `slam_toolbox/hanyang_9f.data` | SLAM Toolbox pose graph 데이터 |
 
@@ -49,7 +56,7 @@ Ubuntu 22.04 / ROS2 Humble 환경에서 Unitree Go1과 Livox MID-360을 이용�
 
 ```mermaid
 flowchart TD
-    MAP["저장된 2D 지도<br/>hanyang_9f.yaml + PGM"]
+    MAP["정리된 2D 지도<br/>hanyang_9f_annotated.yaml + PGM"]
 
     LIVOX["Livox MID-360"]
     FAST["FAST-LIO<br/>LiDAR-Inertial Odometry"]
@@ -105,7 +112,7 @@ Localization은 저장된 2D 지도와 AMCL을 이용합니다.
 AMCL의 입력:
 
 ```text
-저장 지도: hanyang_9f.yaml + hanyang_9f.pgm
+저장 지도: hanyang_9f_annotated.yaml + hanyang_9f_annotated.pgm
 실시간 LaserScan: /scan
 실시간 Odometry: /Odometry
 초기 위치: RViz 2D Pose Estimate
@@ -187,6 +194,7 @@ Go1 주행
 - 전진 및 후진
 - 제자리 회전
 - 횡방향 이동은 사용하지 않음
+- 반사 의심 영역과 미관측 영역은 global path에서 통과하지 않음
 
 ---
 
@@ -194,14 +202,16 @@ Go1 주행
 
 ## 5. 저장 지도 확인
 
-실제 매핑 세션 ID를 입력합니다.
+저장소에 포함된 검증 세션과 최종 정리 지도를 사용합니다.
 
 ```bash
-export SESSION_ID="실제_SESSION_ID"
+export GO1_PROJECT_ROOT="/mnt/t500/go1_ros2_project"
+export SESSION_ID="20260728_204825"
 
-export MAP_DIR="/mnt/t500/maps/hanyang_9f/$SESSION_ID/slam_toolbox"
-export MAP_FILE="$MAP_DIR/hanyang_9f.yaml"
-export MAP_IMAGE="$MAP_DIR/hanyang_9f.pgm"
+export SESSION_DIR="$GO1_PROJECT_ROOT/maps/hanyang_9f/$SESSION_ID"
+export MAP_DIR="$SESSION_DIR/slam_toolbox"
+export MAP_FILE="$MAP_DIR/hanyang_9f_annotated.yaml"
+export MAP_IMAGE="$MAP_DIR/hanyang_9f_annotated.pgm"
 ```
 
 파일 확인:
@@ -226,15 +236,13 @@ grep -E \
 정상적인 예:
 
 ```yaml
-image: hanyang_9f.pgm
+image: hanyang_9f_annotated.pgm
 resolution: 0.05
 ```
 
 매핑 검증 결과 확인:
 
 ```bash
-export SESSION_DIR="/mnt/t500/maps/hanyang_9f/$SESSION_ID"
-
 grep -E \
   'status:|failed_step:|error:' \
   "$SESSION_DIR/validation/session_manifest.yaml"
@@ -302,7 +310,8 @@ git log -1 --oneline
 agent/nav2-end-to-end-workflow
 ```
 
-지도는 `/mnt/t500/maps` 아래에 있으므로 Git 브랜치를 전환해도 삭제되지 않습니다.
+검증 지도는 이 브랜치의 `maps/` 디렉터리에 포함되어 있습니다. 별도 매핑
+세션을 사용할 때는 `map:=` 인자로 해당 YAML 절대 경로를 전달합니다.
 
 ---
 
@@ -551,10 +560,11 @@ FAST-LIO 출력이 확인되기 전에는 Nav2를 실행하지 마십시오.
 
 ```bash
 export GO1_ROS2_WS="$HOME/ros2_ws"
+export GO1_PROJECT_ROOT="/mnt/t500/go1_ros2_project"
 export ROS_DOMAIN_ID=100
 
-export SESSION_ID="실제_SESSION_ID"
-export MAP_FILE="/mnt/t500/maps/hanyang_9f/$SESSION_ID/slam_toolbox/hanyang_9f.yaml"
+export SESSION_ID="20260728_204825"
+export MAP_FILE="$GO1_PROJECT_ROOT/maps/hanyang_9f/$SESSION_ID/slam_toolbox/hanyang_9f_annotated.yaml"
 
 source /opt/ros/humble/setup.bash
 source "$HOME/ws_livox/install/setup.bash"
@@ -807,10 +817,11 @@ Unitree SDK 환경까지 source합니다.
 
 ```bash
 export GO1_ROS2_WS="$HOME/ros2_ws"
+export GO1_PROJECT_ROOT="/mnt/t500/go1_ros2_project"
 export ROS_DOMAIN_ID=100
 
-export SESSION_ID="실제_SESSION_ID"
-export MAP_FILE="/mnt/t500/maps/hanyang_9f/$SESSION_ID/slam_toolbox/hanyang_9f.yaml"
+export SESSION_ID="20260728_204825"
+export MAP_FILE="$GO1_PROJECT_ROOT/maps/hanyang_9f/$SESSION_ID/slam_toolbox/hanyang_9f_annotated.yaml"
 
 source /opt/ros/humble/setup.bash
 source "$HOME/ws_livox/install/setup.bash"
@@ -1115,8 +1126,8 @@ Jetson에서는 RViz 없이 Nav2를 실행하고, ROS2 Humble GUI PC에서 같�
 
 ```text
 매핑 완료 파일:
-<mapping-session>/slam_toolbox/hanyang_9f.yaml
-<mapping-session>/slam_toolbox/hanyang_9f.pgm
+/mnt/t500/go1_ros2_project/maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f_annotated.yaml
+/mnt/t500/go1_ros2_project/maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f_annotated.pgm
 
 평상시 사용 브랜치:
 agent/nav2-end-to-end-workflow

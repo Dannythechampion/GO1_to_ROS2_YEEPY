@@ -9,11 +9,20 @@
 
 ## 지도 미리보기
 
-### SLAM/내비게이션 지도
+### 원본 SLAM 지도
 
 ![한양대 9층 SLAM 지도](hanyang_9f_preview.png)
 
-검정은 장애물, 흰색은 자유 공간, 회색은 미관측 영역이다. Nav2 등에서 사용하는 기본 지도는 `slam_toolbox/hanyang_9f.yaml`과 `slam_toolbox/hanyang_9f.pgm`이다.
+검정은 장애물, 흰색은 자유 공간, 회색은 미관측 영역이다. 원본 SLAM
+산출물은 `slam_toolbox/hanyang_9f.yaml`과 `slam_toolbox/hanyang_9f.pgm`이다.
+
+### 최종 Nav2 주행 지도
+
+![한양대 9층 최종 Nav2 지도](hanyang_9f_annotated_preview.png)
+
+Nav2 기본 지도는 반사 의심 영역을 보수적으로 미확인 처리하고 수동 경계를
+반영한 `slam_toolbox/hanyang_9f_annotated.yaml`이다. 변경 기준은
+`CLEANING_REPORT.md`와 `MANUAL_CLEANING_REPORT.md`에 기록되어 있다.
 
 ### PCD 형상 참고 지도
 
@@ -37,8 +46,10 @@
 
 | 경로 | 용도 |
 |---|---|
-| `slam_toolbox/hanyang_9f.yaml` | SLAM/Nav2 지도 메타데이터 |
-| `slam_toolbox/hanyang_9f.pgm` | 2D occupancy 지도 |
+| `slam_toolbox/hanyang_9f.yaml` | 검증된 원본 SLAM 지도 메타데이터 |
+| `slam_toolbox/hanyang_9f.pgm` | 원본 2D occupancy 지도 |
+| `slam_toolbox/hanyang_9f_cleaned.*` | 반사 의심 자유공간 자동 정리본 |
+| `slam_toolbox/hanyang_9f_annotated.*` | 수동 경계까지 반영한 최종 Nav2 지도 |
 | `slam_toolbox/hanyang_9f.posegraph` | slam_toolbox pose graph |
 | `slam_toolbox/hanyang_9f.data` | slam_toolbox 직렬화 데이터 |
 | `pcd/merged.pcd` | 전체 3D 병합 포인트클라우드 |
@@ -51,7 +62,7 @@
 
 ```bash
 ros2 run nav2_map_server map_server --ros-args \
-  -p yaml_filename:=/path/to/slam_toolbox/hanyang_9f.yaml
+  -p yaml_filename:=/path/to/slam_toolbox/hanyang_9f_annotated.yaml
 ```
 
 실제 로봇에서 사용할 때는 절대 경로를 현재 설치 위치에 맞게 바꿔야 한다.

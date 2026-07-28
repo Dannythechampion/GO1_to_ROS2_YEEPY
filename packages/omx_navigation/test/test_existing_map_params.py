@@ -48,3 +48,11 @@ def test_nav2_never_exceeds_go1_driver_limits():
     assert follow["max_vel_theta"] <= 0.40
     assert smoother["max_velocity"] == [0.20, 0.0, 0.40]
     assert smoother["min_velocity"] == [0.0, 0.0, -0.40]
+
+
+def test_global_planner_rejects_unknown_space():
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    global_costmap = config["global_costmap"]["global_costmap"]["ros__parameters"]
+    planner = params("planner_server")["GridBased"]
+    assert global_costmap["track_unknown_space"] is True
+    assert planner["allow_unknown"] is False

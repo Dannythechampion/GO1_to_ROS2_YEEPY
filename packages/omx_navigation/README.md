@@ -25,20 +25,31 @@ extrinsic을 다시 설정해야 합니다.
 
 ## 기존 지도 준비
 
-기본 지도 경로는 다음입니다.
+수동 경계까지 반영한 검증 세션의 기본 주행 지도는 저장소에 포함되어 있습니다.
 
 ```text
-/mnt/t500/maps/scans_new.yaml
-/mnt/t500/maps/scans_new.pgm
+/mnt/t500/go1_ros2_project/maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f_annotated.yaml
+/mnt/t500/go1_ros2_project/maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f_annotated.pgm
 ```
 
-저장소에는 실제 지도 파일을 넣지 않습니다. 지도 준비 스크립트는 프로젝트
-루트에서 실행합니다.
+`go1_existing_map.launch.py`의 기본 `map` 인자는 위 YAML을 사용합니다.
+별도의 운영 지도 디렉터리로 복사하려면 프로젝트 루트에서 실행합니다.
 
 ```bash
 cd /mnt/t500/go1_ros2_project
 ./migration/prepare_existing_map.sh
 ```
+
+복사된 지도는 다음 위치에 생성됩니다.
+
+```text
+/mnt/t500/maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f_annotated.yaml
+/mnt/t500/maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f_annotated.pgm
+```
+
+이 지도는 반사 의심 자유공간을 미확인 영역으로 되돌렸습니다. Global
+costmap은 미확인 셀을 보존하고 NavFn은 `allow_unknown: false`로 해당 영역을
+통과하는 경로를 만들지 않습니다.
 
 ## 빌드
 

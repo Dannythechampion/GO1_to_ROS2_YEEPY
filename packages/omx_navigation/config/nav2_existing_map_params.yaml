@@ -205,7 +205,9 @@ planner_server:
       plugin: nav2_navfn_planner/NavfnPlanner
       tolerance: 0.20
       use_astar: false
-      allow_unknown: true
+      # The curated Hanyang map marks reflection artifacts as unknown.
+      # Do not plan through those cells in fixed-map navigation.
+      allow_unknown: false
 
 smoother_server:
   ros__parameters:

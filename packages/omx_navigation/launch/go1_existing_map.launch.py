@@ -78,7 +78,13 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument("map", default_value="/mnt/t500/maps/scans_new.yaml"),
+            DeclareLaunchArgument(
+                "map",
+                default_value=(
+                    "/mnt/t500/go1_ros2_project/maps/hanyang_9f/"
+                    "20260728_204825/slam_toolbox/hanyang_9f_annotated.yaml"
+                ),
+            ),
             DeclareLaunchArgument("cloud_topic", default_value="/cloud_registered_body"),
             DeclareLaunchArgument("scan_topic", default_value="/scan"),
             DeclareLaunchArgument("odom_topic", default_value="/Odometry"),
