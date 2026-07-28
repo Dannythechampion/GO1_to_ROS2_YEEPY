@@ -118,7 +118,7 @@ class SessionGuardNode:
  def timer(self):
   try:code,payload=evaluate_and_record(session_dir=self.session_dir,window=self.window,now_sec=self.now(),abort_free_gib=self.abort,first_stable_pose=self.first_pose,latest_pose=self.latest_pose)
   except Exception as error:code,payload=2,{'reasons':[f'health guard internal failure: {error}']}
-  if code==2:self.exit_code=2;self.node.get_logger().error('; '.join(payload['reasons']))
+  if code==2:self.exit_code=2;self.node.get_logger().error('; '.join(payload['reasons']));self.rclpy.shutdown()
  def destroy_node(self):return self.node.destroy_node()
 def main(args=None,rclpy_module=None,guard_factory=None):
  if rclpy_module is None:
@@ -129,9 +129,9 @@ def main(args=None,rclpy_module=None,guard_factory=None):
   guard=guard_factory()
   if hasattr(rclpy_module,'executors'):
    executor=rclpy_module.executors.MultiThreadedExecutor(num_threads=4);executor.add_node(guard.node)
-  while rclpy_module.ok() and guard.exit_code==0:
-   if executor is None:rclpy_module.spin_once(guard.node,timeout_sec=0.5)
-   else:executor.spin_once(timeout_sec=0.5)
+  if executor is not None:executor.spin()
+  else:
+   while rclpy_module.ok() and guard.exit_code==0:rclpy_module.spin_once(guard.node,timeout_sec=0.5)
   return guard.exit_code
  except KeyboardInterrupt:
   return 0
