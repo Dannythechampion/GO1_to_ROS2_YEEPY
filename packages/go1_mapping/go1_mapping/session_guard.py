@@ -5,6 +5,7 @@ from collections import deque
 import math
 from pathlib import Path
 import shutil
+import threading
 import time
 from typing import Any, Callable, Mapping
 from go1_mapping.manifest import write_manifest_atomic
@@ -23,39 +24,42 @@ def wrap_angle(angle): return math.atan2(math.sin(angle),math.cos(angle))
 
 class HealthWindow:
  def __init__(self,required_hz:Mapping[str,float],max_gap_sec:float,initialization_sec:float,started_at:float):
-  self.required_hz={k:float(v) for k,v in required_hz.items()};self.max_gap_sec=float(max_gap_sec);self.initialization_sec=float(initialization_sec);self.started_at=float(started_at);self.receipts={k:deque() for k in self.required_hz};self.headers={};self.source_seen={k:False for k in self.required_hz};self.source_invalid={k:False for k in self.required_hz};self.regressions={k:deque() for k in self.required_hz}
+  self.required_hz={k:float(v) for k,v in required_hz.items()};self.max_gap_sec=float(max_gap_sec);self.initialization_sec=float(initialization_sec);self.started_at=float(started_at);self.receipts={k:deque() for k in self.required_hz};self.headers={};self.source_seen={k:False for k in self.required_hz};self.source_invalid={k:False for k in self.required_hz};self.regressions={k:deque() for k in self.required_hz};self.lock=threading.RLock()
  def observe(self,topic,stamp_sec,sensor_stamp_sec=None):
-  if topic not in self.receipts: raise ValueError(f'unknown health topic: {topic}')
-  receipt=float(stamp_sec);q=self.receipts[topic]
-  if q and receipt<q[-1]: self.regressions[topic].append((receipt,'receipt',q[-1],receipt))
-  else: q.append(receipt)
-  if sensor_stamp_sec is None:
-   if self.source_seen[topic]: self.source_invalid[topic]=True
-  else:
-   header=float(sensor_stamp_sec);previous=self.headers.get(topic)
-   if previous is not None and header<previous:self.regressions[topic].append((receipt,'sensor',previous,header))
-   if previous is None or header>previous:self.source_invalid[topic]=False
-   self.source_seen[topic]=True;self.headers[topic]=header if previous is None else max(previous,header)
+  with self.lock:
+   if topic not in self.receipts: raise ValueError(f'unknown health topic: {topic}')
+   receipt=float(stamp_sec);q=self.receipts[topic]
+   if q and receipt<q[-1]: self.regressions[topic].append((receipt,'receipt',q[-1],receipt))
+   else: q.append(receipt)
+   if sensor_stamp_sec is None:
+    if self.source_seen[topic]: self.source_invalid[topic]=True
+   else:
+    header=float(sensor_stamp_sec);previous=self.headers.get(topic)
+    if previous is not None and header<previous:self.regressions[topic].append((receipt,'sensor',previous,header))
+    if previous is None or header>previous:self.source_invalid[topic]=False
+    self.source_seen[topic]=True;self.headers[topic]=header if previous is None else max(previous,header)
  def measurements(self,now_sec):
-  now=float(now_sec);cutoff=now-WINDOW_SECONDS;rates={};gaps={}
-  for topic,q in self.receipts.items():
-   while q and q[0]<cutoff:q.popleft()
-   rates[topic]=(len(q)-1)/(q[-1]-q[0]) if len(q)>1 and q[-1]>q[0] else 0.0
-   gaps[topic]=max(0.0,now-q[-1]) if q else max(0.0,now-self.started_at)
-  for q in self.regressions.values():
-   while q and q[0][0]<cutoff:q.popleft()
-  return {'rates_hz':rates,'max_gaps_sec':gaps}
+  with self.lock:
+   now=float(now_sec);cutoff=now-WINDOW_SECONDS;rates={};gaps={}
+   for topic,q in self.receipts.items():
+    while q and q[0]<cutoff:q.popleft()
+    rates[topic]=(len(q)-1)/(q[-1]-q[0]) if len(q)>1 and q[-1]>q[0] else 0.0
+    gaps[topic]=max(0.0,now-q[-1]) if q else max(0.0,now-self.started_at)
+   for q in self.regressions.values():
+    while q and q[0][0]<cutoff:q.popleft()
+   return {'rates_hz':rates,'max_gaps_sec':gaps}
  def evaluate(self,now_sec):
-  m=self.measurements(now_sec)
-  if now_sec<self.started_at+self.initialization_sec:return []
-  result=[]
-  for topic,required in self.required_hz.items():
-   rate,gap=m['rates_hz'][topic],m['max_gaps_sec'][topic]
-   if rate<required:result.append(f'{topic} rate {rate:.2f} Hz below required {required:.2f} Hz')
-   if gap>self.max_gap_sec:result.append(f'{topic} gap {gap:.2f}s exceeds {self.max_gap_sec:.2f}s')
-   result.extend(f'{topic} {kind} timestamp regression: {current:.9f} < {previous:.9f}' for _,kind,previous,current in self.regressions[topic])
-   if self.source_invalid[topic]:result.append(f'{topic} source timestamp reset/invalid')
-  return result
+  with self.lock:
+   m=self.measurements(now_sec)
+   if now_sec<self.started_at+self.initialization_sec:return []
+   result=[]
+   for topic,required in self.required_hz.items():
+    rate,gap=m['rates_hz'][topic],m['max_gaps_sec'][topic]
+    if rate<required:result.append(f'{topic} rate {rate:.2f} Hz below required {required:.2f} Hz')
+    if gap>self.max_gap_sec:result.append(f'{topic} gap {gap:.2f}s exceeds {self.max_gap_sec:.2f}s')
+    result.extend(f'{topic} {kind} timestamp regression: {current:.9f} < {previous:.9f}' for _,kind,previous,current in self.regressions[topic])
+    if self.source_invalid[topic]:result.append(f'{topic} source timestamp reset/invalid')
+   return result
 
 def free_gib(path): return shutil.disk_usage(path).free/2**30
 def should_abort_disk(free,abort=50.): return float(free)<float(abort)
@@ -91,6 +95,7 @@ def _pose(message):
 class SessionGuardNode:
  def __init__(self):
   import rclpy
+  from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
   from rclpy.node import Node
   from rclpy.qos import QoSProfile,HistoryPolicy,ReliabilityPolicy,DurabilityPolicy
   from sensor_msgs.msg import Imu
@@ -101,8 +106,9 @@ class SessionGuardNode:
   directory=self.node.get_parameter('session_dir').value
   if not directory:raise ValueError('session_dir parameter is required')
   self.session_dir=Path(directory);self.abort=float(self.node.get_parameter('abort_free_gib').value);self.initialization=float(self.node.get_parameter('initialization_sec').value);self.started=time.monotonic();self.window=HealthWindow({k:self.node.get_parameter(k+'_min_hz').value for k in ('lidar','imu','odom')},self.node.get_parameter('max_gap_sec').value,self.initialization,self.started);self.first_pose=self.latest_pose=None;self.exit_code=0
-  qos=QoSProfile(history=HistoryPolicy.KEEP_LAST,depth=1,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.VOLATILE)
-  self.node.create_subscription(CustomMsg,'/livox/lidar',self.lidar,qos);self.node.create_subscription(Imu,'/livox/imu',self.imu,qos);self.node.create_subscription(Odometry,'/Odometry',self.odom,qos);self.node.create_timer(1.,self.timer)
+  def qos(depth):return QoSProfile(history=HistoryPolicy.KEEP_LAST,depth=depth,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.VOLATILE)
+  self.callback_groups=[MutuallyExclusiveCallbackGroup() for _ in range(4)]
+  self.node.create_subscription(CustomMsg,'/livox/lidar',self.lidar,qos(20),callback_group=self.callback_groups[0]);self.node.create_subscription(Imu,'/livox/imu',self.imu,qos(500),callback_group=self.callback_groups[1]);self.node.create_subscription(Odometry,'/Odometry',self.odom,qos(50),callback_group=self.callback_groups[2]);self.node.create_timer(1.,self.timer,callback_group=self.callback_groups[3])
  def now(self):return time.monotonic()
  def lidar(self,msg):self.window.observe('lidar',self.now(),_source_stamp(msg))
  def imu(self,msg):self.window.observe('imu',self.now(),_source_stamp(msg))
@@ -118,14 +124,21 @@ def main(args=None,rclpy_module=None,guard_factory=None):
  if rclpy_module is None:
   import rclpy as rclpy_module
  if guard_factory is None:guard_factory=SessionGuardNode
- rclpy_module.init(args=args);guard=None
+ rclpy_module.init(args=args);guard=None;executor=None
  try:
   guard=guard_factory()
-  while rclpy_module.ok() and guard.exit_code==0:rclpy_module.spin_once(guard.node,timeout_sec=0.5)
+  if hasattr(rclpy_module,'executors'):
+   executor=rclpy_module.executors.MultiThreadedExecutor(num_threads=4);executor.add_node(guard.node)
+  while rclpy_module.ok() and guard.exit_code==0:
+   if executor is None:rclpy_module.spin_once(guard.node,timeout_sec=0.5)
+   else:executor.spin_once(timeout_sec=0.5)
   return guard.exit_code
  except KeyboardInterrupt:
   return 0
  finally:
+  if executor is not None:
+   try:executor.remove_node(guard.node);executor.shutdown()
+   except KeyboardInterrupt:pass
   try:
    if guard is not None:guard.destroy_node()
   except KeyboardInterrupt:pass
