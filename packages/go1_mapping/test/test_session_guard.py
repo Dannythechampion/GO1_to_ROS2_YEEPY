@@ -112,3 +112,18 @@ def test_main_shuts_down_only_after_spin_once_returns(monkeypatch):
         def destroy_node(self): events.append("destroy")
     assert guard_module.main(rclpy_module=FakeRclpy(), guard_factory=FakeGuard) == 2
     assert events == ["init", "spin_once", "callback", "destroy", "shutdown"]
+
+def test_main_treats_keyboard_interrupt_as_clean_shutdown():
+    import go1_mapping.session_guard as guard_module
+    events = []
+    class FakeRclpy:
+        def __init__(self): self.running = True
+        def init(self, args=None): events.append("init")
+        def ok(self): return self.running
+        def spin_once(self, node, timeout_sec): raise KeyboardInterrupt
+        def shutdown(self): events.append("shutdown"); self.running = False
+    class FakeGuard:
+        def __init__(self): self.node = self; self.exit_code = 0
+        def destroy_node(self): events.append("destroy")
+    assert guard_module.main(rclpy_module=FakeRclpy(), guard_factory=FakeGuard) == 0
+    assert events == ["init", "destroy", "shutdown"]

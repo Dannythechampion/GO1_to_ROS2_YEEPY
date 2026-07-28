@@ -43,7 +43,8 @@ def _critical_exit_actions(returncode, process_name):
 
 def _critical_exit_handler(process_name):
     def on_exit(event, context):
-        del context
+        if context.is_shutdown:
+            return []
         return _critical_exit_actions(event.returncode, process_name)
 
     return on_exit

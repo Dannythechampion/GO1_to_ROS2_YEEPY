@@ -64,4 +64,5 @@ def test_bag_allowlist_storage_and_critical_exit_contract_are_exact():
     assert "OnProcessExit" in TEXT
     assert "Shutdown(" in TEXT
     assert "event.returncode" in TEXT
+    assert "context.is_shutdown" in TEXT
     assert "if returncode == 0:" in TEXT

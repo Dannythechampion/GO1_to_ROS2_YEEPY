@@ -123,7 +123,13 @@ def main(args=None,rclpy_module=None,guard_factory=None):
   guard=guard_factory()
   while rclpy_module.ok() and guard.exit_code==0:rclpy_module.spin_once(guard.node,timeout_sec=0.5)
   return guard.exit_code
+ except KeyboardInterrupt:
+  return 0
  finally:
-  if guard is not None:guard.destroy_node()
-  if rclpy_module.ok():rclpy_module.shutdown()
+  try:
+   if guard is not None:guard.destroy_node()
+  except KeyboardInterrupt:pass
+  try:
+   if rclpy_module.ok():rclpy_module.shutdown()
+  except KeyboardInterrupt:pass
 if __name__=='__main__':raise SystemExit(main())
