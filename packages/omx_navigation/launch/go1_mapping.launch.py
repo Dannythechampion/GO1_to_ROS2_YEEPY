@@ -1,18 +1,58 @@
 """Bring up scan projection, SLAM Toolbox, Nav2, RViz, and optional Go1 I/O."""
 
 import os
+from datetime import datetime
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
+    OpaqueFunction,
     SetEnvironmentVariable,
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+
+BAG_TOPICS = (
+    "/livox/lidar",
+    "/livox/imu",
+    "/Odometry",
+    "/cloud_registered_body",
+    "/tf",
+    "/tf_static",
+)
+
+
+def _default_bag_output() -> str:
+    """Timestamped directory so a rerun never collides with an earlier bag."""
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return os.path.join(
+        os.path.expanduser("~"), "go1_maps", stamp, "bag", "raw"
+    )
+
+
+def _rosbag_recorder(context, *_args, **_kwargs):
+    """Create the parent directory, then hand ros2 bag an unused output path."""
+    output = context.perform_substitution(LaunchConfiguration("bag_output"))
+    os.makedirs(os.path.dirname(output), exist_ok=True)
+    return [
+        ExecuteProcess(
+            cmd=[
+                "ros2", "bag", "record",
+                "--output", output,
+                "--max-bag-size", "4294967296",
+                "--compression-mode", "file",
+                "--compression-format", "zstd",
+                *BAG_TOPICS,
+            ],
+            output="screen",
+        )
+    ]
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -67,6 +107,11 @@ def generate_launch_description() -> LaunchDescription:
         launch_arguments={"arm": arm, "cmd_vel_topic": "/cmd_vel"}.items(),
     )
 
+    rosbag = OpaqueFunction(
+        function=_rosbag_recorder,
+        condition=IfCondition(LaunchConfiguration("record_bag")),
+    )
+
     return LaunchDescription(
         [
             DeclareLaunchArgument("cloud_topic", default_value="/cloud_registered_body"),
@@ -93,6 +138,16 @@ def generate_launch_description() -> LaunchDescription:
                     package_share, "config", "mid360_scan.yaml"
                 ),
             ),
+            DeclareLaunchArgument(
+                "record_bag",
+                default_value="true",
+                description="Record raw LiDAR/IMU so a session can be replayed offline.",
+            ),
+            DeclareLaunchArgument(
+                "bag_output",
+                default_value=_default_bag_output(),
+                description="Bag destination; must not already exist.",
+            ),
             DeclareLaunchArgument("rviz", default_value="true"),
             DeclareLaunchArgument(
                 "rviz_config",
@@ -111,6 +166,7 @@ def generate_launch_description() -> LaunchDescription:
             SetEnvironmentVariable(
                 "ROS_DOMAIN_ID", LaunchConfiguration("ros_domain_id")
             ),
+            rosbag,
             scan_projection,
             mapping,
             go1_driver,
