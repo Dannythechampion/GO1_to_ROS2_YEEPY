@@ -10,7 +10,7 @@ from launch.actions import (
     EmitEvent,
     ExecuteProcess,
     IncludeLaunchDescription,
-    LogError,
+    LogInfo,
     OpaqueFunction,
     RegisterEventHandler,
     SetEnvironmentVariable,
@@ -36,7 +36,7 @@ def _critical_exit_actions(returncode, process_name):
         return []
     reason = f"critical process {process_name} exited with code {returncode}"
     return [
-        LogError(msg=reason),
+        LogInfo(msg=f"ERROR: {reason}"),
         EmitEvent(event=Shutdown(reason=reason)),
     ]
 

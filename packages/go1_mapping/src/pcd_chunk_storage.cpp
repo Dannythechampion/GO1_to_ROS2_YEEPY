@@ -269,7 +269,9 @@ bool PcdChunkStorage::flush(ChunkBuffer & buffer)
       anonymous_file.get(), "", output_dir_fd_, final_name.c_str(), AT_EMPTY_PATH) != 0)
   {
     const int primary_error = errno;
-    if (primary_error != EPERM && primary_error != EACCES) {
+    if (primary_error != EPERM && primary_error != EACCES &&
+      primary_error != ENOENT)
+    {
       throw std::system_error(
               primary_error, std::generic_category(),
               "linkat AT_EMPTY_PATH no-clobber PCD publish");

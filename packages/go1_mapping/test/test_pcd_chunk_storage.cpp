@@ -471,6 +471,38 @@ TEST(PcdChunkStorage, PermissionFailureFallsBackToProcFdWithExpectedLinkatArgume
   EXPECT_TRUE(buffer.peek().empty());
 }
 
+TEST(PcdChunkStorage, MissingAnonymousPathFallsBackToProcFd)
+{
+  TemporaryDirectory directory;
+  ChunkBuffer buffer(300, 268435456);
+  buffer.append(one_point_cloud());
+  std::size_t link_calls = 0;
+  PcdChunkStorageOperations operations;
+  operations.link_at = [&link_calls](
+    const int old_descriptor, const char * const old_path,
+    const int new_descriptor, const char * const new_path, const int flags)
+    {
+      ++link_calls;
+      if (link_calls == 1) {
+        errno = ENOENT;
+        return -1;
+      }
+      return linkat(old_descriptor, old_path, new_descriptor, new_path, flags);
+    };
+  PcdChunkStorage storage(
+    directory.path(),
+    [](const fs::path & descriptor_path, const PcdChunkStorage::Cloud &)
+    {
+      write_text(descriptor_path, "fallback bytes");
+      return 0;
+    },
+    operations);
+
+  EXPECT_TRUE(storage.flush(buffer));
+  EXPECT_EQ(link_calls, 2U);
+  EXPECT_EQ(read_text(directory.path() / "chunk_000000.pcd"), "fallback bytes");
+  EXPECT_TRUE(buffer.peek().empty());
+}
 TEST(PcdChunkStorage, ProcFdFallbackFailureLeavesNoEntryAndPreservesBuffer)
 {
   TemporaryDirectory directory;
