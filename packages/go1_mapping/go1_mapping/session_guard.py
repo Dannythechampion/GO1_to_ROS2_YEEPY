@@ -108,7 +108,7 @@ class SessionGuardNode:
   self.session_dir=Path(directory);self.abort=float(self.node.get_parameter('abort_free_gib').value);self.initialization=float(self.node.get_parameter('initialization_sec').value);self.started=time.monotonic();self.window=HealthWindow({k:self.node.get_parameter(k+'_min_hz').value for k in ('lidar','imu','odom')},self.node.get_parameter('max_gap_sec').value,self.initialization,self.started);self.first_pose=self.latest_pose=None;self.exit_code=0
   def qos(depth):return QoSProfile(history=HistoryPolicy.KEEP_LAST,depth=depth,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.VOLATILE)
   self.callback_groups=[MutuallyExclusiveCallbackGroup() for _ in range(4)]
-  self.node.create_subscription(CustomMsg,'/livox/lidar',self.lidar,qos(20),callback_group=self.callback_groups[0]);self.node.create_subscription(Imu,'/livox/imu',self.imu,qos(500),callback_group=self.callback_groups[1]);self.node.create_subscription(Odometry,'/Odometry',self.odom,qos(50),callback_group=self.callback_groups[2]);self.node.create_timer(1.,self.timer,callback_group=self.callback_groups[3])
+  self.node.create_subscription(CustomMsg,'/livox/lidar',self.lidar,qos(20),callback_group=self.callback_groups[0],raw=True);self.node.create_subscription(Imu,'/livox/imu',self.imu,qos(500),callback_group=self.callback_groups[1]);self.node.create_subscription(Odometry,'/Odometry',self.odom,qos(50),callback_group=self.callback_groups[2]);self.node.create_timer(1.,self.timer,callback_group=self.callback_groups[3])
  def now(self):return time.monotonic()
  def lidar(self,msg):self.window.observe('lidar',self.now(),_source_stamp(msg))
  def imu(self,msg):self.window.observe('imu',self.now(),_source_stamp(msg))
