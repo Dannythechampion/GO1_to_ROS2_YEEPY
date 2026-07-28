@@ -5,6 +5,7 @@ from collections import deque
 import math
 from pathlib import Path
 import shutil
+import sqlite3
 import threading
 import time
 from typing import Any, Callable, Mapping
@@ -61,6 +62,37 @@ class HealthWindow:
     if self.source_invalid[topic]:result.append(f'{topic} source timestamp reset/invalid')
    return result
 
+class RosbagHealthWindow:
+ def __init__(self,session_dir,required_hz,max_gap_sec,initialization_sec,started_at):
+  self.bag_dir=Path(session_dir)/'bag'/'raw';self.required_hz={k:float(v) for k,v in required_hz.items()};self.max_gap_sec=float(max_gap_sec);self.initialization_sec=float(initialization_sec);self.started_at=float(started_at);self.topic_names={'lidar':'/livox/lidar','imu':'/livox/imu','odom':'/Odometry'}
+ def measurements(self,now_sec):
+  wall_ns=time.time_ns();cutoff_ns=wall_ns-int(WINDOW_SECONDS*1e9);counts={k:0 for k in self.required_hz};firsts={k:None for k in self.required_hz};lasts={k:None for k in self.required_hz}
+  reverse={name:key for key,name in self.topic_names.items()}
+  for database in sorted(self.bag_dir.glob('*.db3')):
+   connection=sqlite3.connect(f'file:{database}?mode=ro',uri=True,timeout=1.0)
+   try:
+    rows=connection.execute("SELECT t.name,COUNT(m.id),MIN(m.timestamp),MAX(m.timestamp) FROM topics t LEFT JOIN messages m ON m.topic_id=t.id AND m.timestamp>=? WHERE t.name IN (?,?,?) GROUP BY t.name",(cutoff_ns,*reverse)).fetchall()
+    latest_rows=connection.execute("SELECT t.name,MAX(m.timestamp) FROM topics t LEFT JOIN messages m ON m.topic_id=t.id WHERE t.name IN (?,?,?) GROUP BY t.name",tuple(reverse)).fetchall()
+   finally:connection.close()
+   for name,count,first,last in rows:
+    key=reverse[name];counts[key]+=int(count)
+    if first is not None:firsts[key]=first if firsts[key] is None else min(firsts[key],first)
+    if last is not None:lasts[key]=last if lasts[key] is None else max(lasts[key],last)
+   for name,last in latest_rows:
+    if last is not None:
+     key=reverse[name];lasts[key]=last if lasts[key] is None else max(lasts[key],last)
+  rates={key:(counts[key]-1)/((lasts[key]-firsts[key])/1e9) if counts[key]>1 and firsts[key] is not None and lasts[key]>firsts[key] else 0.0 for key in self.required_hz}
+  gaps={key:max(0.0,(wall_ns-lasts[key])/1e9) if lasts[key] is not None else max(0.0,float(now_sec)-self.started_at) for key in self.required_hz}
+  return {'rates_hz':rates,'max_gaps_sec':gaps}
+ def evaluate(self,now_sec):
+  measurements=self.measurements(now_sec)
+  if now_sec<self.started_at+self.initialization_sec:return []
+  reasons=[]
+  for topic,required in self.required_hz.items():
+   rate=measurements['rates_hz'][topic];gap=measurements['max_gaps_sec'][topic]
+   if rate<required:reasons.append(f'{topic} rate {rate:.2f} Hz below required {required:.2f} Hz')
+   if gap>self.max_gap_sec:reasons.append(f'{topic} gap {gap:.2f}s exceeds {self.max_gap_sec:.2f}s')
+  return reasons
 def free_gib(path): return shutil.disk_usage(path).free/2**30
 def should_abort_disk(free,abort=50.): return float(free)<float(abort)
 def pose_return_error(first,latest):
@@ -105,15 +137,13 @@ class SessionGuardNode:
   for name,value in [('session_dir',''),('abort_free_gib',50.),('lidar_min_hz',8.),('imu_min_hz',100.),('odom_min_hz',8.),('max_gap_sec',1.),('initialization_sec',15.)]:self.node.declare_parameter(name,value)
   directory=self.node.get_parameter('session_dir').value
   if not directory:raise ValueError('session_dir parameter is required')
-  self.session_dir=Path(directory);self.abort=float(self.node.get_parameter('abort_free_gib').value);self.initialization=float(self.node.get_parameter('initialization_sec').value);self.started=time.monotonic();self.window=HealthWindow({k:self.node.get_parameter(k+'_min_hz').value for k in ('lidar','imu','odom')},self.node.get_parameter('max_gap_sec').value,self.initialization,self.started);self.first_pose=self.latest_pose=None;self.exit_code=0
+  self.session_dir=Path(directory);self.abort=float(self.node.get_parameter('abort_free_gib').value);self.initialization=float(self.node.get_parameter('initialization_sec').value);self.started=time.monotonic();self.window=RosbagHealthWindow(self.session_dir,{k:self.node.get_parameter(k+'_min_hz').value for k in ('lidar','imu','odom')},self.node.get_parameter('max_gap_sec').value,self.initialization,self.started);self.first_pose=self.latest_pose=None;self.exit_code=0
   def qos(depth):return QoSProfile(history=HistoryPolicy.KEEP_LAST,depth=depth,reliability=ReliabilityPolicy.BEST_EFFORT,durability=DurabilityPolicy.VOLATILE)
-  self.callback_groups=[MutuallyExclusiveCallbackGroup() for _ in range(4)]
-  self.node.create_subscription(CustomMsg,'/livox/lidar',self.lidar,qos(20),callback_group=self.callback_groups[0],raw=True);self.node.create_subscription(Imu,'/livox/imu',self.imu,qos(500),callback_group=self.callback_groups[1]);self.node.create_subscription(Odometry,'/Odometry',self.odom,qos(50),callback_group=self.callback_groups[2]);self.node.create_timer(1.,self.timer,callback_group=self.callback_groups[3])
+  self.callback_groups=[MutuallyExclusiveCallbackGroup() for _ in range(2)]
+  self.node.create_subscription(Odometry,'/Odometry',self.odom,qos(50),callback_group=self.callback_groups[0]);self.node.create_timer(1.,self.timer,callback_group=self.callback_groups[1])
  def now(self):return time.monotonic()
- def lidar(self,msg):self.window.observe('lidar',self.now(),_source_stamp(msg))
- def imu(self,msg):self.window.observe('imu',self.now(),_source_stamp(msg))
  def odom(self,msg):
-  now=self.now();self.window.observe('odom',now,_source_stamp(msg));pose=_pose(msg.pose.pose)
+  now=self.now();pose=_pose(msg.pose.pose)
   if pose is not None:self.latest_pose=pose;self.first_pose=pose if self.first_pose is None and now>=self.started+self.initialization else self.first_pose
  def timer(self):
   try:code,payload=evaluate_and_record(session_dir=self.session_dir,window=self.window,now_sec=self.now(),abort_free_gib=self.abort,first_stable_pose=self.first_pose,latest_pose=self.latest_pose)

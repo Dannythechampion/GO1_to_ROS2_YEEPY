@@ -1,4 +1,6 @@
 import math
+import sqlite3
+import time
 from pathlib import Path
 import uuid
 
@@ -7,6 +9,7 @@ import yaml
 
 from go1_mapping.session_guard import (
     HealthWindow,
+    RosbagHealthWindow,
     evaluate_and_record,
     pose_return_error,
     quaternion_yaw,
@@ -127,3 +130,39 @@ def test_main_treats_keyboard_interrupt_as_clean_shutdown():
         def destroy_node(self): events.append("destroy")
     assert guard_module.main(rclpy_module=FakeRclpy(), guard_factory=FakeGuard) == 0
     assert events == ["init", "destroy", "shutdown"]
+
+
+def test_rosbag_health_window_uses_recorded_message_rates():
+    tmp_path = Path.cwd() / ".superpowers" / "sdd" / ("task5-bag-" + uuid.uuid4().hex)
+    bag_dir = tmp_path / "bag" / "raw"
+    bag_dir.mkdir(parents=True)
+    connection = sqlite3.connect(bag_dir / "raw_0.db3")
+    connection.executescript(
+        "CREATE TABLE topics(id INTEGER PRIMARY KEY, name TEXT);"
+        "CREATE TABLE messages(id INTEGER PRIMARY KEY, topic_id INTEGER, timestamp INTEGER);"
+    )
+    names = ["/livox/lidar", "/livox/imu", "/Odometry"]
+    now_ns = time.time_ns()
+    for topic_id, name in enumerate(names, 1):
+        connection.execute("INSERT INTO topics VALUES(?, ?)", (topic_id, name))
+    rows = []
+    for topic_id, hz in enumerate((10, 200, 10), 1):
+        step_ns = 1_000_000_000 // hz
+        rows.extend(
+            (topic_id, now_ns - 10_000_000_000 + index * step_ns)
+            for index in range(hz * 10)
+        )
+    connection.executemany(
+        "INSERT INTO messages(topic_id, timestamp) VALUES(?, ?)", rows
+    )
+    connection.commit()
+    connection.close()
+
+    window = RosbagHealthWindow(
+        tmp_path, REQUIRED_HZ, 1.0, 0.0, time.monotonic() - 20.0
+    )
+    measurements = window.measurements(time.monotonic())
+    assert measurements["rates_hz"] == pytest.approx(
+        {"lidar": 10.0, "imu": 200.0, "odom": 10.0}, rel=0.01
+    )
+    assert window.evaluate(time.monotonic()) == []
