@@ -17,7 +17,8 @@ PCL의 NDT와 GICP는 근사 초기 자세가 필요한 로컬 정합기다. 따
 RViz의 `2D Pose Estimate`로 실제 위치와 방향을 대략 지정해야 한다. 이 입력은
 AMCL용이 아니라 첫 3D 정합의 초기값이다.
 
-MID-360부터 FAST-LIO, 3D localization, 검증까지 터미널별 전체 명령은
+RustDesk로 Jetson 데스크톱을 제어하고 Jetson에서 RViz를 실행하는 전제의
+MID-360, FAST-LIO, 3D localization, 검증 전체 명령은
 [`docs/GO1_3D_LOCALIZATION_RUNBOOK.md`](../../docs/GO1_3D_LOCALIZATION_RUNBOOK.md)를
 따른다.
 

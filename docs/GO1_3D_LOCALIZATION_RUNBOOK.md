@@ -1,7 +1,9 @@
-# Go1 3D PCD localization 실행 Runbook
+# Go1 3D PCD localization 실행 Runbook — RustDesk/Jetson RViz
 
 이 문서는 `nav2-workflow_3D` 브랜치에서 MID-360, FAST-LIO, 저장 PCD 기반
 3D localization, Nav2, Go1 driver를 실제 터미널 순서대로 실행하는 절차다.
+외부 PC는 RustDesk로 Jetson 화면과 입력만 원격 제어하고, RViz를 포함한 모든
+ROS2 프로세스는 Jetson에서 직접 실행한다고 가정한다.
 
 사용하는 TF 구조는 다음과 같다.
 
@@ -16,6 +18,27 @@ map --PCD localization--> camera_init --FAST-LIO--> body
 
 `go1_existing_map.launch.py`는 AMCL fallback 경로다. 이 Runbook에서는 실행하지
 않고 `go1_pcd_navigation.launch.py`만 사용한다.
+
+## 실행 전제 — RustDesk로 Jetson 데스크톱 사용
+
+1. 외부 PC에서 RustDesk를 열고 Jetson에 접속한다.
+2. RustDesk에 표시된 **Jetson 데스크톱 안에서** Terminal을 연다.
+3. Jetson Terminal 탭을 최소 4개 준비한다.
+4. 외부 PC에서는 RViz나 ROS2 노드를 별도로 실행하지 않는다.
+
+첫 Jetson Terminal에서 그래픽 세션을 확인한다.
+
+```bash
+hostname
+echo "DISPLAY=${DISPLAY:-<empty>}"
+test -n "${DISPLAY:-}"
+command -v rviz2
+```
+
+`DISPLAY`가 비어 있으면 일반 SSH Terminal일 가능성이 있다. 이 상태에서
+`rviz:=true`를 실행하지 말고, RustDesk로 보이는 Jetson 데스크톱에서 Terminal을
+다시 연다. 이후 이 문서의 모든 “터미널”은 RustDesk 안의 Jetson Terminal을
+뜻한다.
 
 ## 0. 공통 경로와 지도 확인
 
@@ -127,7 +150,7 @@ ros2 run tf2_ros tf2_echo camera_init body
 정지 상태에서 pose가 급격하게 움직이거나 point cloud가 흔들리고 갈라지면 여기서
 중단한다. PCD localization이 FAST-LIO 오류를 대신 해결해 주지는 않는다.
 
-## 5. 터미널 4 — 3D localization, Nav2, RViz, disarmed Go1
+## 5. 터미널 4 — Jetson RViz, 3D localization, Nav2, disarmed Go1
 
 이 터미널에서도 지도 변수를 다시 선언해야 한다.
 
@@ -159,14 +182,27 @@ ros2 launch omx_pcd_localization go1_pcd_navigation.launch.py \
 - RViz
 - `arm=false` Go1 driver
 
-VNC 또는 RustDesk를 사용한다면 Jetson에서 열린 RViz 화면을 원격으로 조작하면
-된다. 외부 PC에서 RViz를 직접 실행할 때는 Jetson launch를 `rviz:=false`로
-바꾸고 PC에서도 `ROS_DOMAIN_ID=100`을 사용한다. 원격 화면 방식은 localization
-알고리즘을 바꾸지 않는다.
+`rviz:=true`이므로 RViz는 Jetson에서 실행되고 그 창이 RustDesk 화면에 나타난다.
+외부 PC는 RViz 화면 픽셀과 마우스·키보드 입력만 주고받으므로 외부 PC에 ROS2를
+설치하거나 `ROS_DOMAIN_ID`를 설정할 필요가 없다.
 
-## 6. RViz 초기 위치와 정합 확인
+RViz 창이 보이지 않으면 launch를 반복 실행하지 말고 RustDesk 안의 새 Jetson
+Terminal에서 다음을 확인한다.
 
-1. RViz의 Fixed Frame이 `map`인지 확인한다.
+```bash
+echo "DISPLAY=${DISPLAY:-<empty>}"
+test -n "${DISPLAY:-}"
+pgrep -af rviz2
+ros2 node list | grep -Fx /rviz2
+```
+
+RustDesk 화면이 끊기거나 느린 현상은 원격 화면 전송 문제일 수 있다. 센서와
+localization의 실제 상태는 화면 프레임률 대신 `/Odometry`, point cloud topic
+rate와 `/pcd_localizer/status`로 판단한다.
+
+## 6. RustDesk에서 Jetson RViz 초기 위치와 정합 확인
+
+1. RustDesk 화면에 열린 Jetson RViz의 Fixed Frame이 `map`인지 확인한다.
 2. `2D Pose Estimate`로 실제 위치의 `x`, `y`, `yaw`를 대략 지정한다.
 3. `/pcd_localizer/aligned_cloud`가 저장 PCD와 겹치는지 확인한다.
 4. `/scan`과 2D occupancy map의 벽이 겹치는지 확인한다.
@@ -240,10 +276,22 @@ extrinsic, 정지 drift, 좁은 복도 재현 시험이 완료되기 전에는 `
 
 ## 10. 종료 순서
 
-각 프로세스 터미널에서 `Ctrl+C`로 다음 순서대로 종료한다.
+RustDesk 연결을 먼저 끊으면 Jetson의 ROS2 프로세스가 계속 실행될 수 있다.
+RustDesk 화면을 닫기 전에 각 Jetson Terminal에서 `Ctrl+C`로 다음 순서대로
+종료한다.
 
 1. 3D localization/Nav2/Go1 driver
 2. FAST-LIO
 3. Livox driver
+
+다음 명령으로 주요 노드가 종료됐는지 확인한 뒤 RustDesk 연결을 끊는다.
+
+```bash
+export ROS_DOMAIN_ID=100
+source /opt/ros/humble/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
+
+ros2 node list | grep -E 'livox|fastlio|pcd_localizer|controller_server|go1_driver' || true
+```
 
 종료 후 Go1이 계속 stepping하면 리모컨 또는 비상 정지 절차로 즉시 중단한다.

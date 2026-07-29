@@ -23,6 +23,7 @@ planning, without starting AMCL.
 The sensor-generated PCD is a runtime input and is not embedded in this code
 branch. Follow the Korean
 [`GO1_3D_LOCALIZATION_RUNBOOK.md`](docs/GO1_3D_LOCALIZATION_RUNBOOK.md) for the
-terminal-by-terminal execution sequence. Package parameters and safety behavior
-are documented in
+terminal-by-terminal execution sequence, assuming RViz runs on the Jetson and
+is operated from an external PC through RustDesk. Package parameters and safety
+behavior are documented in
 [`packages/omx_pcd_localization/README.md`](packages/omx_pcd_localization/README.md).

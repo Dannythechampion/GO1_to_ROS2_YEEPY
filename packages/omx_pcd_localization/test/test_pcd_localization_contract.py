@@ -89,3 +89,10 @@ def test_runbook_has_copyable_end_to_end_commands():
         "arm:=false",
     ):
         assert command in text
+    for rustdesk_contract in (
+        "RustDesk/Jetson RViz",
+        'test -n "${DISPLAY:-}"',
+        "외부 PC에서는 RViz나 ROS2 노드를 별도로 실행하지 않는다",
+        "RustDesk 연결을 먼저 끊으면",
+    ):
+        assert rustdesk_contract in text
