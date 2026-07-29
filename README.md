@@ -21,5 +21,8 @@ published as `map -> camera_init`; Nav2 continues to use a 2D occupancy map for
 planning, without starting AMCL.
 
 The sensor-generated PCD is a runtime input and is not embedded in this code
-branch. See [`packages/omx_pcd_localization/README.md`](packages/omx_pcd_localization/README.md)
-for map placement, build, launch, initial-pose, and safety-gate instructions.
+branch. Follow the Korean
+[`GO1_3D_LOCALIZATION_RUNBOOK.md`](docs/GO1_3D_LOCALIZATION_RUNBOOK.md) for the
+terminal-by-terminal execution sequence. Package parameters and safety behavior
+are documented in
+[`packages/omx_pcd_localization/README.md`](packages/omx_pcd_localization/README.md).

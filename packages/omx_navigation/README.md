@@ -1,5 +1,10 @@
 # Go1 ROS2 Humble 기존 지도 내비게이션
 
+> `nav2-workflow_3D`의 기본 실행 경로는 AMCL이 아니라 저장 PCD 기반
+> NDT/GICP localization이다. 3D 실행은
+> [`docs/GO1_3D_LOCALIZATION_RUNBOOK.md`](../../docs/GO1_3D_LOCALIZATION_RUNBOOK.md)를
+> 따른다. 아래 `go1_existing_map.launch.py` 절차는 AMCL fallback 시험용이다.
+
 이 패키지는 Livox MID-360과 FAST-LIO2가 이미 실행 중인 Jetson에서 기존
 2D 지도로 AMCL 로컬라이제이션과 Nav2 경로계획을 시험합니다. 기본 실행은
 `arm:=false`이므로 `/cmd_vel`이 생성되어도 실제 Go1에는 동작 명령을

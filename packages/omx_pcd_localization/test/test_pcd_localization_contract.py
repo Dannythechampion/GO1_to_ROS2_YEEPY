@@ -10,6 +10,7 @@ LAUNCH = PACKAGE / "launch" / "go1_pcd_navigation.launch.py"
 CONFIG = PACKAGE / "config" / "hanyang_9f.yaml"
 STAGE = REPO / "migration" / "stage_local_ros2_packages.sh"
 VERIFY = REPO / "migration" / "verify_pcd_localization.sh"
+RUNBOOK = REPO / "docs" / "GO1_3D_LOCALIZATION_RUNBOOK.md"
 
 
 def test_config_points_to_the_validated_mapping_session():
@@ -73,3 +74,18 @@ def test_deployment_and_runtime_verification_include_3d_localizer():
     assert "LOCALIZED fitness=" in verify
     assert "AMCL is not running" in verify
     assert "go1_driver must remain arm=false" in verify
+
+
+def test_runbook_has_copyable_end_to_end_commands():
+    text = RUNBOOK.read_text(encoding="utf-8")
+    for command in (
+        "ros2 launch livox_ros_driver2 msg_MID360_launch.py",
+        "ros2 launch fast_lio mapping.launch.py",
+        "config_file:=fast_lio_mid360_navigation.yaml",
+        "ros2 launch omx_pcd_localization go1_pcd_navigation.launch.py",
+        'map:="$MAP_YAML"',
+        'pcd_map:="$PCD_MAP"',
+        "./migration/verify_pcd_localization.sh",
+        "arm:=false",
+    ):
+        assert command in text

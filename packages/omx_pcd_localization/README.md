@@ -17,6 +17,10 @@ PCL의 NDT와 GICP는 근사 초기 자세가 필요한 로컬 정합기다. 따
 RViz의 `2D Pose Estimate`로 실제 위치와 방향을 대략 지정해야 한다. 이 입력은
 AMCL용이 아니라 첫 3D 정합의 초기값이다.
 
+MID-360부터 FAST-LIO, 3D localization, 검증까지 터미널별 전체 명령은
+[`docs/GO1_3D_LOCALIZATION_RUNBOOK.md`](../../docs/GO1_3D_LOCALIZATION_RUNBOOK.md)를
+따른다.
+
 ## 지도
 
 기본 3D 지도 경로는 다음과 같다.
@@ -46,7 +50,7 @@ cd /mnt/t500/go1_ros2_project
 
 cd /mnt/t500/go1_ros2_ws
 source /opt/ros/humble/setup.bash
-source "$HOME/ws_livox/install/setup.bash"
+source /mnt/t500/go1_ros2_ws/install/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install \
   --packages-select go1_driver omx_navigation omx_pcd_localization
@@ -64,7 +68,6 @@ source install/setup.bash
 ```bash
 export ROS_DOMAIN_ID=100
 source /opt/ros/humble/setup.bash
-source "$HOME/ws_livox/install/setup.bash"
 source /mnt/t500/go1_ros2_ws/install/setup.bash
 
 ros2 launch omx_pcd_localization go1_pcd_navigation.launch.py \
