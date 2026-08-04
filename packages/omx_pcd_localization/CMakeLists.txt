@@ -9,6 +9,10 @@ if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
 endif()
 
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -21,7 +25,11 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common filters io registration)
+# kdtree/search are needed for the inlier-ratio and degeneracy metrics.
+find_package(PCL REQUIRED COMPONENTS common filters io registration kdtree search)
+
+link_directories(${PCL_LIBRARY_DIRS})
+add_definitions(${PCL_DEFINITIONS})
 
 add_executable(pcd_localizer src/pcd_localizer.cpp)
 ament_target_dependencies(
@@ -36,11 +44,10 @@ ament_target_dependencies(
 )
 target_include_directories(pcd_localizer PRIVATE ${PCL_INCLUDE_DIRS})
 target_link_libraries(pcd_localizer ${PCL_LIBRARIES})
-add_definitions(${PCL_DEFINITIONS})
 
 install(TARGETS pcd_localizer DESTINATION lib/${PROJECT_NAME})
 install(
-  DIRECTORY config launch
+  DIRECTORY config launch rviz
   DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE

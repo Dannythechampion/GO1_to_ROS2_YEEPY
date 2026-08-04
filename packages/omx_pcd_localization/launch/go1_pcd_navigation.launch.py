@@ -1,4 +1,14 @@
-"""Start guarded 3D PCD localization and Nav2 without AMCL."""
+"""Start guarded 3D PCD localization and Nav2 without AMCL.
+
+Review fixes applied:
+  P0-3/P0-4  the default 2D map is the curated hanyang_9f_annotated.yaml and
+             Nav2 runs on nav2_pcd_localization_params.yaml, which has no amcl
+             block and restores allow_unknown: false
+  P2-1       RViz starts with a config that actually shows
+             /pcd_localizer/map_cloud and /pcd_localizer/aligned_cloud
+  P2-6       map_frame / odom_frame / base_frame now reach Nav2 through
+             RewrittenYaml instead of only configuring the localizer
+"""
 
 import os
 
@@ -15,6 +25,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node, SetRemap
+from nav2_common.launch import RewrittenYaml
 
 
 DEFAULT_PROJECT_ROOT = "/mnt/t500/go1_ros2_project"
@@ -22,7 +33,7 @@ DEFAULT_SESSION = "20260728_204825"
 
 
 def validate_inputs(context):
-    """Fail before ROS nodes start when either navigation map is missing."""
+    """Fail before ROS nodes start when any required input is missing."""
     paths = {
         "2D map YAML": LaunchConfiguration("map").perform(context),
         "3D PCD map": LaunchConfiguration("pcd_map").perform(context),
@@ -30,10 +41,17 @@ def validate_inputs(context):
             context
         ),
         "Nav2 parameters": LaunchConfiguration("nav2_params_file").perform(context),
+        "scan parameters": LaunchConfiguration("scan_params_file").perform(context),
+        "RViz configuration": LaunchConfiguration("rviz_config").perform(context),
     }
     missing = [f"{label}: {path}" for label, path in paths.items() if not os.path.isfile(path)]
     if missing:
         raise RuntimeError("Required localization inputs are missing:\n  " + "\n  ".join(missing))
+
+    map_yaml = paths["2D map YAML"]
+    pgm = os.path.splitext(map_yaml)[0] + ".pgm"
+    if not os.path.isfile(pgm):
+        raise RuntimeError(f"Occupancy image referenced by the map YAML is missing: {pgm}")
     return []
 
 
@@ -60,6 +78,28 @@ def generate_launch_description() -> LaunchDescription:
     rviz_config = LaunchConfiguration("rviz_config")
     start_go1_driver = LaunchConfiguration("start_go1_driver")
     arm = LaunchConfiguration("arm")
+
+    # global_frame means map for global nodes and odom for local nodes, so the
+    # rewrite uses full YAML paths instead of a single bare key.
+    configured_nav2_params = RewrittenYaml(
+        source_file=nav2_params,
+        param_rewrites={
+            "use_sim_time": use_sim_time,
+            "map_frame": map_frame,
+            "map_frame_id": map_frame,
+            "global_frame_id": map_frame,
+            "odom_frame": odom_frame,
+            "odom_frame_id": odom_frame,
+            "robot_base_frame": base_frame,
+            "base_frame": base_frame,
+            "base_frame_id": base_frame,
+            "bt_navigator.ros__parameters.global_frame": map_frame,
+            "global_costmap.global_costmap.ros__parameters.global_frame": map_frame,
+            "local_costmap.local_costmap.ros__parameters.global_frame": odom_frame,
+            "behavior_server.ros__parameters.global_frame": odom_frame,
+        },
+        convert_types=True,
+    )
 
     scan_projection = Node(
         package="pointcloud_to_laserscan",
@@ -93,7 +133,10 @@ def generate_launch_description() -> LaunchDescription:
         executable="map_server",
         name="map_server",
         output="screen",
-        parameters=[nav2_params, {"yaml_filename": map_yaml, "use_sim_time": use_sim_time}],
+        parameters=[
+            configured_nav2_params,
+            {"yaml_filename": map_yaml, "use_sim_time": use_sim_time},
+        ],
     )
     map_lifecycle = Node(
         package="nav2_lifecycle_manager",
@@ -115,7 +158,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         launch_arguments={
             "use_sim_time": use_sim_time,
-            "params_file": nav2_params,
+            "params_file": configured_nav2_params,
             "autostart": autostart,
             "use_composition": "False",
         }.items(),
@@ -167,8 +210,9 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "map",
                 default_value=os.path.join(
-                    default_session_root, "slam_toolbox", "hanyang_9f.yaml"
+                    default_session_root, "slam_toolbox", "hanyang_9f_annotated.yaml"
                 ),
+                description="Curated 2D map. Reflection artefacts are unknown cells.",
             ),
             DeclareLaunchArgument(
                 "pcd_map",
@@ -190,7 +234,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "nav2_params_file",
                 default_value=os.path.join(
-                    navigation_share, "config", "nav2_existing_map_params.yaml"
+                    navigation_share, "config", "nav2_pcd_localization_params.yaml"
                 ),
             ),
             DeclareLaunchArgument(
@@ -203,7 +247,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "rviz_config",
                 default_value=os.path.join(
-                    navigation_share, "rviz", "go1_existing_map_low_load.rviz"
+                    localizer_share, "rviz", "go1_pcd_localization.rviz"
                 ),
             ),
             DeclareLaunchArgument("start_go1_driver", default_value="true"),

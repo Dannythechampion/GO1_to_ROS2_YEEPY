@@ -7,21 +7,45 @@ pcd_localizer:
     base_frame: body
 
     # T_map_pcd: provisional rigid alignment measured from the two 0.05 m/px
-    # map products. Validate this with arm:=false before physical driving.
+    # map products.
+    #
+    # WARNING: this is only valid near the mapping origin. Measured residual
+    # between merged.pcd and hanyang_9f.pgm after applying this transform:
+    #     0-5 m   0.10 m      10-15 m  0.20 m
+    #     5-10 m  0.15 m      15-20 m  0.41 m
+    # The 2D map was loop-closed by SLAM Toolbox, merged.pcd was not, so the
+    # difference is a drift field and no single rigid transform can remove it.
+    # Keep the first runs within ~10 m of the origin, or rebuild the 2D map by
+    # projecting merged.pcd so that this becomes the identity.
     pcd_to_map_xyz_rpy: [-0.10, 0.0, 0.0, 0.0, 0.0, -0.013962634]
 
-    map_leaf_size: 0.40
+    # --- map / scan sampling -------------------------------------------------
+    # 0.40 m left only 48.7 % of the 1.0 m NDT voxels with enough points to
+    # build a Gaussian (PCL needs >= 6). 0.25 m / 1.5 m gives 82 %.
+    map_leaf_size: 0.25
     scan_leaf_size: 0.25
-    local_map_radius: 18.0
+    # Live points beyond the cropped map have no possible correspondence and
+    # only pollute the fitness score. Must stay below local_map_radius.
+    scan_max_range: 15.0
+    scan_max_abs_z: 4.0
+    local_map_radius: 25.0
     local_map_z_radius: 4.0
+    # Rebuild the cropped target / KD-tree / GICP covariances only after the
+    # robot has moved this far. At 0.20 m/s this is roughly every 15 s.
+    target_refresh_distance: 3.0
     min_scan_points: 300
     min_target_points: 1000
 
+    # --- rates ---------------------------------------------------------------
     registration_rate_hz: 0.5
     tf_publish_rate_hz: 20.0
+    # Stamped into the future like AMCL's transform_tolerance so Nav2 never
+    # extrapolates past the end of the buffer.
+    tf_transform_tolerance: 0.20
     localization_timeout_sec: 5.0
 
-    ndt_resolution: 1.0
+    # --- registration --------------------------------------------------------
+    ndt_resolution: 1.5
     ndt_step_size: 0.15
     ndt_transformation_epsilon: 0.01
     ndt_max_iterations: 35
@@ -32,6 +56,10 @@ pcd_localizer:
     gicp_rotation_epsilon: 0.001
     gicp_correspondence_randomness: 12
 
+    # --- acceptance guards ---------------------------------------------------
+    # PCL getFitnessScore() is a MEAN SQUARED distance in m^2.
+    # 0.30 m^2 == 0.55 m RMS, which is loose. Log the values observed while
+    # standing still, then set this to roughly 3-5x the observed median.
     max_fitness_score: 0.30
     initial_max_translation_correction: 3.0
     initial_max_rotation_correction: 1.05
@@ -39,6 +67,28 @@ pcd_localizer:
     tracking_max_rotation_correction: 0.35
     max_abs_z: 1.0
     max_abs_roll_pitch: 0.55
+
+    # Extra observability metrics. Both are always measured and published in
+    # ~/status. They start DISABLED so the first run only records baselines.
+    # After one good session set min_inlier_ratio to ~0.6x the observed value
+    # and turn degeneracy_guard_enabled on.
+    inlier_distance: 0.20
+    min_inlier_ratio: 0.0
+    degeneracy_guard_enabled: false
+    degeneracy_probe_distance: 0.30
+    degeneracy_probe_directions: 8
+    min_degeneracy_margin: 0.010
+
+    # A jump larger than this many m/s in camera_init -> body means FAST-LIO
+    # restarted and camera_init was redefined. Drop localization instead of
+    # broadcasting a stale map -> camera_init.
+    odom_jump_speed_limit: 3.0
+
+    # Bounds of hanyang_9f_annotated.pgm (409 x 586 px @ 0.05 m,
+    # origin [-8.57, -19.20]). 4 % of merged.pcd lies outside this rectangle;
+    # Nav2 has no occupancy cells there, so a pose there is unusable.
+    # Order: [min_x, min_y, max_x, max_y]. Leave empty to disable.
+    map_bounds_xy: [-8.57, -19.20, 11.88, 10.10]
 
     use_initial_pose_z: false
     initial_pose_z: 0.0
