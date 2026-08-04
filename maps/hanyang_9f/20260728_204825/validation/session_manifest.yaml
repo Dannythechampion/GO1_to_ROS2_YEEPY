@@ -1,0 +1,18 @@
+frames:
+  base: body
+  map: map_slam
+  odom: camera_init
+ros_domain_id: 100
+session_id: '20260728_204825'
+started_at_utc: '2026-07-28T11:48:25.488071Z'
+status: complete
+topics:
+  inputs:
+  - /livox/lidar
+  - /livox/imu
+  outputs:
+  - /Odometry
+  - /cloud_registered
+  - /cloud_registered_body
+  - /scan
+  - /map_slam
