@@ -153,16 +153,18 @@ def score_pose(
     else:
         mean_distance = total_distance / used if used else math.inf
         overlap = hits / used if used else 0.0
-    return PoseScore(pose, overlap, mean_distance, overlap - 0.20 * min(mean_distance, 1.0), used)
+    return PoseScore(pose, overlap, mean_distance, _score_value(overlap, mean_distance), used)
 
 
 def coarse_search(grid: GridMap, points: Sequence[ScanPoint], initial: Pose2D, window: SearchWindow) -> SearchResult:
     field = build_distance_field(grid)
     sampled_points = _evenly_sample(points, window.max_scan_points)
-    candidates = [
-        score_pose(grid, field, sampled_points, pose, window.hit_distance)
-        for pose in _candidate_poses(initial, window)
-    ]
+    candidates = []
+    for pose in _candidate_poses(initial, window):
+        score = score_pose(grid, field, sampled_points, pose, window.hit_distance)
+        if _has_outside_endpoint(grid, points, pose):
+            score = PoseScore(score.pose, 0.0, math.inf, _score_value(0.0, math.inf), score.points_used)
+        candidates.append(score)
     candidates.sort(key=lambda item: (-item.score, -item.overlap, item.mean_distance, item.pose.x, item.pose.y, item.pose.yaw))
     best = candidates[0]
     runner_up = next((candidate for candidate in candidates[1:] if _is_distinct_pose(best.pose, candidate.pose)), None)
@@ -194,6 +196,20 @@ def _evenly_sample(points: Sequence[ScanPoint], maximum: int) -> tuple[ScanPoint
     if maximum == 1:
         return (points[0],)
     return tuple(points[round(index * (len(points) - 1) / (maximum - 1))] for index in range(maximum))
+
+
+def _has_outside_endpoint(grid: GridMap, points: Sequence[ScanPoint], pose: Pose2D) -> bool:
+    c, s = math.cos(pose.yaw), math.sin(pose.yaw)
+    for point in points:
+        if not math.isfinite(point.x) or not math.isfinite(point.y):
+            continue
+        if grid.world_to_cell(pose.x + c * point.x - s * point.y, pose.y + s * point.x + c * point.y) is None:
+            return True
+    return False
+
+
+def _score_value(overlap: float, mean_distance: float) -> float:
+    return overlap - 0.20 * min(mean_distance, 1.0)
 
 
 def _is_distinct_pose(first: Pose2D, second: Pose2D) -> bool:

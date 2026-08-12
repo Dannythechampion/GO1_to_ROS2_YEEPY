@@ -161,3 +161,18 @@ def test_coarse_search_includes_translation_and_yaw_window_endpoints():
         SearchWindow(3.0, 3.0, math.pi / 2, math.pi / 2),
     )
     assert result.best.pose == Pose2D(-3.0, -3.0, -math.pi / 2)
+
+
+def test_coarse_search_disqualifies_an_outside_endpoint_omitted_by_downsampling():
+    grid = GridMap(3, 3, 1.0, 0.0, 0.0, 0.0, (100,) * 9)
+    points = [ScanPoint(0.0, 0.0)] * 181
+    points[90] = ScanPoint(100.0, 0.0)
+    result = coarse_search(
+        grid,
+        tuple(points),
+        Pose2D(1.0, 1.0, 0.0),
+        SearchWindow(0.5, 0.5, math.radians(15), math.radians(15), max_scan_points=180),
+    )
+    assert result.best.overlap == 0.0
+    assert math.isinf(result.best.mean_distance)
+    assert result.best.score == pytest.approx(-0.20)
