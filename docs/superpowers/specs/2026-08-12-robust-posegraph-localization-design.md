@@ -61,7 +61,7 @@ MID-360
   -> SLAM Toolbox localization
        + hanyang_9f.posegraph/.data
        + one /initialpose
-       -> /slam_toolbox/pose
+       -> /slam_localization/pose
        -> map -> camera_init
   -> localization_supervisor
        + scan_map_quality
@@ -116,17 +116,26 @@ WAITING_INPUT -> ALIGNING -> VERIFYING -> READY
 
 상태 머신과 품질 계산 결과를 ROS 토픽에 연결한다. 다음을 감시한다.
 
-- `/scan`, `/Odometry`, `/slam_toolbox/pose`
-- `camera_init -> body`, `map -> camera_init` TF
+- `/scan`, `/Odometry`, `/slam_localization/pose`
+- `camera_init -> body/body_nav`, `map -> camera_init` TF
 - 중복 TF 소유자와 FAST-LIO odom reset 징후
 - 초기 자세가 지도 안에 있는지 여부
 - 최초 coarse search의 distance field를 재사용한 현재 SLAM 자세의 scan-map overlap
 
-`READY` 이후에도 최신 scan을 현재 `/slam_toolbox/pose`에 투영해 overlap을 계속
-다시 계산한다. 초기 coarse search 점수를 고정 재사용하지 않는다. scan, odometry,
-SLAM pose, 관련 TF 가운데 하나라도 `0.50 s`보다 오래되면 `ready=false`로
+Humble SLAM Toolbox의 실제 출력인 `/pose`
+(`geometry_msgs/PoseWithCovarianceStamped`)는 launch 안에서
+`/slam_localization/pose`로 격리한다. 이 이벤트는 보정 자세 epoch 이후 scan match가
+한 번 성공했음을 확인하는 handshake다. 정지 상태에서는 이동 임계값 때문에 pose가
+반복 발행되지 않으므로 이를 `0.50 s` heartbeat로 취급하지 않는다.
+
+handshake 이후 현재 map 자세는 `map -> camera_init -> body_nav` TF를 합성해 구한다.
+`READY` 이후에도 최신 scan을 이 현재 자세에 투영해 overlap을 계속 다시 계산한다.
+scan, odometry, 두 TF 가운데 하나라도 `0.50 s`보다 오래되면 `ready=false`로
 fail-closed 처리한다. 실행 중 map 스냅샷이 바뀌면 이전 map의 비동기 search 결과와
-distance field를 폐기한다.
+distance field를 폐기한다. `map -> camera_init`의 급격한 불연속이나 알려진 AMCL
+publisher는 `TF_CONFLICT`로 처리한다. ROS 2 TF 메시지만으로 값이 완전히 같은 익명
+중복 publisher를 식별할 수 없으므로 launch는 SLAM Toolbox만 해당 transform을
+발행하도록 구성하고, 실행 검증은 AMCL 부재와 transform 연속성을 함께 검사한다.
 
 `~/status`에는 기계 판독 가능한 상태·오류 코드와 한국어 설명을 `2 Hz`로 발행하고,
 같은 상태 행을 CSV 진단 기록에 `2 Hz`로 남긴다. `~/ready`에는 safety gate가
@@ -154,6 +163,11 @@ Nav2 controller의 출력을 `/cmd_vel_nav`로 받고 다음 조건을 모두 �
 
 `go1_posegraph_navigation.launch.py`는 다음을 하나의 dry-run 진입점으로 제공한다.
 
+SLAM localization 설정은 `map_file_name`과 `map_start_pose: [0.0, 0.0, 0.0]`을
+함께 전달해 Humble의 저장 posegraph 로드를 확실히 시작한다. 이 시작 pose에서는
+속도 gate가 닫혀 있으며, 사용자 입력을 coarse search로 보정한 뒤 발행하는
+`/slam_localization/initialpose`가 실제 localization 위치를 결정한다.
+
 - 입력 파일과 지도 이미지 사전 검증
 - pointcloud-to-laserscan
 - SLAM Toolbox localization
@@ -180,7 +194,8 @@ frame을 각각 `map`, `camera_init`, `body_nav`로 고정한다. `body_nav`는 
 - 자동 초기 재시도: `3회`
 - VERIFYING 최소 지속시간: `3 s`
 - 최소 scan-map overlap: `0.45`
-- live scan/odometry/SLAM pose/TF 최대 age: `0.50 s`
+- live scan/odometry/map→odom/odom→base TF 최대 age: `0.50 s`
+- 보정 자세 epoch 이후 SLAM pose handshake: 최소 `1회`, 주기 freshness 요구 없음
 - 최대 연속 위치 jump: `0.30 m`
 - 최대 연속 방향 jump: `10 deg`
 - ready heartbeat timeout: `0.30 s`
@@ -227,7 +242,7 @@ frame을 각각 `map`, `camera_init`, `body_nav`로 고정한다. `body_nav`는 
 `record_localization:=true`일 때 timestamp 디렉터리에 다음 토픽을 기록한다.
 
 - `/scan`, `/Odometry`, `/tf`, `/tf_static`
-- `/initialpose`, `/slam_toolbox/pose`
+- `/initialpose`, `/slam_localization/pose`
 - `/localization_supervisor/status`, `/localization_supervisor/ready`
 - `/cmd_vel_nav`, `/cmd_vel`
 
@@ -257,9 +272,13 @@ WSL 검증은 저장소 안에 `build/`, `install/`, `log/`를 만들지 않도�
 - `/opt/ros/humble/setup.bash`를 source한 clean shell에서 의존 패키지를 확인한다.
 - `go1_driver`, `omx_navigation`을 `colcon build --symlink-install`로 빌드한다.
 - `colcon test`와 `colcon test-result --verbose`에서 실패 0건을 확인한다.
+- `omx_navigation`의 pytest가 `colcon test`에서 0건이 아니라 실제로 수집됐는지
+  결과 XML과 test count로 확인한다.
 - 설치된 launch에 대해 `ros2 launch ... --show-args`를 실행해 Python launch import,
   package share 조회, 기본 인자 구성을 확인한다.
 - 센서 토픽과 Jetson 전용 Unitree SDK가 필요한 실제 node 실행은 하지 않는다.
+- `.gitattributes`에서 `*.sh text eol=lf`를 강제하고 Git blob과 Windows checkout
+  양쪽을 WSL `bash -n`으로 검사한다.
 
 ## 10. 위험과 제한
 
