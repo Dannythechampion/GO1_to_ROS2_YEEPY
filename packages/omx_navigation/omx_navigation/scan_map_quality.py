@@ -203,7 +203,14 @@ def angle_distance(first: float, second: float) -> float:
 def _candidate_poses(initial: Pose2D, window: SearchWindow) -> tuple[Pose2D, ...]:
     translations = _offsets(window.translation_radius, window.translation_step)
     yaws = _offsets(window.yaw_radius, window.yaw_step)
-    return tuple(Pose2D(initial.x + dx, initial.y + dy, initial.yaw + dyaw) for dyaw in yaws for dy in translations for dx in translations)
+    tolerance = 8.0 * math.ulp(window.translation_radius)
+    return tuple(
+        Pose2D(initial.x + dx, initial.y + dy, initial.yaw + dyaw)
+        for dyaw in yaws
+        for dy in translations
+        for dx in translations
+        if math.hypot(dx, dy) <= window.translation_radius + tolerance
+    )
 
 
 def _offsets(radius: float, step: float) -> tuple[float, ...]:

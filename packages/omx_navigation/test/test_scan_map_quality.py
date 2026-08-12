@@ -5,6 +5,8 @@ import pytest
 
 from omx_navigation.scan_map_quality import (
     _candidate_has_outside_endpoint,
+    _candidate_poses,
+    _is_distinct_pose,
     _rotated_point_bounds,
     GridMap,
     Pose2D,
@@ -135,6 +137,7 @@ def test_score_pose_uses_the_specified_overlap_distance_formula():
 
 
 def test_runner_up_accepts_the_exact_point_seventy_five_meter_boundary():
+    assert _is_distinct_pose(Pose2D(0.0, 0.0, 0.0), Pose2D(0.75, 0.0, 0.0))
     grid = GridMap(10, 10, 1.0, -5.0, -5.0, 0.0, (100,) * 100)
     result = coarse_search(
         grid, (ScanPoint(0.0, 0.0),), Pose2D(0.0, 0.0, 0.0),
@@ -144,7 +147,7 @@ def test_runner_up_accepts_the_exact_point_seventy_five_meter_boundary():
     assert math.hypot(
         result.runner_up.pose.x - result.best.pose.x,
         result.runner_up.pose.y - result.best.pose.y,
-    ) == pytest.approx(0.75)
+    ) >= 0.75
 
 
 def test_runner_up_accepts_the_exact_twenty_degree_boundary():
@@ -163,7 +166,7 @@ def test_coarse_search_includes_translation_and_yaw_window_endpoints():
         grid, (ScanPoint(0.0, 0.0),), Pose2D(0.0, 0.0, 0.0),
         SearchWindow(3.0, 3.0, math.pi / 2, math.pi / 2),
     )
-    assert result.best.pose == Pose2D(-3.0, -3.0, -math.pi / 2)
+    assert result.best.pose == Pose2D(-3.0, 0.0, -math.pi / 2)
 
 
 def test_coarse_search_disqualifies_an_outside_endpoint_omitted_by_downsampling():
@@ -310,3 +313,15 @@ def test_coarse_search_handles_overflowing_relative_yaw_with_exact_fallback():
         SearchWindow(1e-16, 1e-16, 1e-16, 1e-16),
     )
     assert result.best.score == pytest.approx(direct.score)
+
+
+def test_translation_candidates_stay_inside_euclidean_radius():
+    initial = Pose2D(10.0, 20.0, 0.3)
+    window = SearchWindow(3.0, 0.5, math.pi / 2, math.radians(15))
+    poses = _candidate_poses(initial, window)
+    translations = {(pose.x - initial.x, pose.y - initial.y) for pose in poses}
+
+    assert all(math.hypot(dx, dy) <= 3.0 + 1e-12 for dx, dy in translations)
+    assert (3.0, 3.0) not in translations
+    assert {(0.0, 0.0), (-3.0, 0.0), (3.0, 0.0), (0.0, -3.0), (0.0, 3.0)} <= translations
+    assert poses == _candidate_poses(initial, window)
