@@ -1,0 +1,31 @@
+slam_toolbox:
+  ros__parameters:
+    use_sim_time: false
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    mode: localization
+    # RewrittenYaml replaces this installed-map default with posegraph:= at launch.
+    map_file_name: /mnt/t500/go1_ros2_project/maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f
+    map_frame: map
+    odom_frame: camera_init
+    base_frame: body_nav
+    scan_topic: /scan
+    transform_publish_period: 0.05
+    transform_timeout: 0.5
+    tf_buffer_duration: 30.0
+    scan_queue_size: 1
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+    minimum_time_interval: 0.1
+    minimum_travel_distance: 0.10
+    minimum_travel_heading: 0.10
+    use_scan_matching: true
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution: 0.0349
+    fine_search_angle_offset: 0.00349
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+    do_loop_closing: false
