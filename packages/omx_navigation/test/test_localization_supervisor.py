@@ -589,9 +589,25 @@ def test_ready_heartbeat_evaluates_stale_inputs_before_publishing(supervisor_mod
     from omx_navigation.localization_state import LocalizationState
 
     node = supervisor_module.LocalizationSupervisor()
+    node.clock.seconds = 1.0
+    node._on_map(map_message())
+    node._on_scan(scan_message())
+    node._slam_epoch = 0.9
+    node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(
+        header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav"
+    )]))
+    node._on_slam_pose(SimpleNamespace(
+        header=header(),
+        pose=SimpleNamespace(
+            position=SimpleNamespace(x=0.0, y=0.0),
+            orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+        ),
+    ))
+    node._overlap = 0.8
+    node._ambiguity_margin = 0.2
     node._machine.state = LocalizationState.READY
     node._last_transition = node._machine._transition()
-    node.clock.seconds = 0.1
+    node.clock.seconds = 1.51
 
     node._on_ready_heartbeat()
 
@@ -610,6 +626,9 @@ def test_retry_republishes_refined_pose_once_across_both_timers(supervisor_modul
     node.clock.seconds = 6.7
 
     node._on_ready_heartbeat()
+    assert node._machine.attempts == 2
+    assert len(publisher(node, "/slam_localization/initialpose").messages) == 1
+
     node._on_status_timer()
 
     assert len(publisher(node, "/slam_localization/initialpose").messages) == 1

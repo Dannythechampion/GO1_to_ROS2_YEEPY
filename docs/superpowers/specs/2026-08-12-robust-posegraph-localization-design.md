@@ -121,8 +121,10 @@ WAITING_INPUT -> ALIGNING -> VERIFYING -> READY
 - 중복 TF 소유자와 FAST-LIO odom reset 징후
 - 초기 자세가 지도 안에 있는지 여부
 
-`~/status`에는 기계 판독 가능한 상태·오류 코드와 한국어 설명을 발행하고,
-`~/ready`에는 safety gate가 사용할 boolean을 발행한다.
+`~/status`에는 기계 판독 가능한 상태·오류 코드와 한국어 설명을 `2 Hz`로 발행하고,
+같은 상태 행을 CSV 진단 기록에 `2 Hz`로 남긴다. `~/ready`에는 safety gate가
+사용할 boolean을 상태 평가 후 `10 Hz` heartbeat로 발행한다. 이는 gate의
+`0.30 s` ready timeout 안에 실행 여유를 확보한다.
 
 ### 5.4 `cmd_vel_safety_gate.py`
 

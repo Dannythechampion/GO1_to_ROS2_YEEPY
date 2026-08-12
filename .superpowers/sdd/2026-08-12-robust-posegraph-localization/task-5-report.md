@@ -5,7 +5,7 @@
 - ROS 메시지 비의존 변환 모듈에서 유한 범위 LaserScan 점 변환·균등 샘플링, quaternion yaw 정규화, occupancy map cell 수 검증을 구현했습니다.
 - `LocalizationSupervisor`는 `/map`, `/scan`, `/Odometry`, `/initialpose`, `/slam_toolbox/pose`, `/tf`를 구독하고, 보정 자세는 `/slam_localization/initialpose`로만 발행합니다. 따라서 사용자의 `/initialpose` 입력이 SLAM 출력과 다시 연결되지 않습니다.
 - 신선한 map/scan에서 bounded coarse search를 수행하며, LOW_OVERLAP·AMBIGUOUS·입력 누락·AMCL TF 충돌·3.0 m/s 초과/시간 역행 odom reset을 상태 머신에 전달합니다.
-- 2 Hz 상태 JSON(`state`, `error`, `message_ko`, `attempt`, `overlap`, `ambiguity_margin`, `stamp`)과 ready를 발행하고, CSV 진단 행은 표준 CSV escaping 후 매 행 flush합니다. 종료 시 CSV handle을 닫습니다.
+- 상태 JSON(`state`, `error`, `message_ko`, `attempt`, `overlap`, `ambiguity_margin`, `stamp`)과 CSV 진단 행은 `2 Hz`로 발행·기록하고, ready는 최신 안전 상태를 평가한 뒤 `10 Hz` heartbeat로 발행합니다. CSV는 표준 escaping 후 매 행 flush하며 종료 시 handle을 닫습니다.
 - RViz goal bridge는 `/localization_supervisor/ready` 전에는 goal을 거부하고, ready가 false로 바��면 이미 수락된 goal을 취소합니다. send-goal 응답과 ready false가 경합할 때에도 응답 뒤 취소하도록 처리했습니다.
 - 패키지 entry point 및 `nav_msgs`, `tf2_msgs` 런타임 의존성을 추가했습니다.
 
@@ -90,4 +90,13 @@
 - focused: `py -3 -m pytest test/test_localization_supervisor.py test/test_cmd_vel_gate_core.py test/test_goal_gate.py test/test_rviz_goal_bridge_readiness.py -q -p no:cacheprovider` — 51 passed.
 - AMCL heartbeat 즉시 loss, stale heartbeat 즉시 non-ready, heartbeat/status 연속 평가의 retry 자세 1회 발행을 검증했습니다.
 - 전체 패키지: `py -3 -m pytest test -q -p no:cacheprovider` — 145 passed, 1 skipped.
+- 구문 검증: `py -3 -m compileall -q omx_navigation` — 성공.
+
+## 최종 리뷰 Fix A3
+
+- stale heartbeat 회귀는 초기 입력 부재로 shortcut하지 않고, map/scan/SLAM/TF와 품질이 모두 fresh인 `READY` 상태를 먼저 구성한 뒤 `0.50 s` 한계를 막 지난 시각의 단일 heartbeat에서 `DEGRADED/false`가 되는 계약을 검증합니다.
+- retry 회귀는 heartbeat 직후 attempt가 `2`로 증가하고 refined pose가 정확히 한 번 발행된 것을 먼저 확인한 뒤, 이어지는 status timer가 추가 발행하지 않는 것을 별도로 확인합니다.
+- 설계와 구현 계획의 발행률 계약을 status JSON·CSV `2 Hz`, ready heartbeat `10 Hz`로 통일했습니다.
+- 집중 회귀: `py -3 -m pytest test/test_localization_supervisor.py test/test_cmd_vel_gate_core.py test/test_goal_gate.py test/test_rviz_goal_bridge_readiness.py -q -p no:cacheprovider` — 51 passed.
+- 전체 패키지: `py -3 -m pytest test -q -p no:cacheprovider` — 154 passed, 1 skipped.
 - 구문 검증: `py -3 -m compileall -q omx_navigation` — 성공.

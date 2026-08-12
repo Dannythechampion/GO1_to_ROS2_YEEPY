@@ -525,7 +525,7 @@ On user initial pose:
 5. Publish the refined pose to `/slam_localization/initialpose`.
 6. Verify `/slam_toolbox/pose` for 3 seconds through the state machine.
 
-At `2 Hz`, publish a JSON status and `ready`. Detect `/amcl` in `get_node_names()` as `TF_CONFLICT`. Detect odom jumps above `3.0 m/s` between valid samples as `ODOM_RESET`. Append each status row to the configured `diagnostics_csv` with `flush()` after every write.
+At `2 Hz`, publish the JSON status and append the same row to the configured `diagnostics_csv`, calling `flush()` after every write. Publish the evaluated `ready` heartbeat at `10 Hz` so the velocity gate retains margin inside its `0.30 s` timeout. Detect an `amcl` node basename in `get_node_names()` as `TF_CONFLICT`. Detect odom jumps above `3.0 m/s` between valid samples as `ODOM_RESET`.
 
 - [ ] **Step 5: Make RViz goal bridge readiness-aware**
 
