@@ -33,6 +33,7 @@ setup(
     maintainer_email="maintainer@example.com",
     description="RViz-driven Nav2 bringup for a differential-drive OMX robot.",
     license="Apache-2.0",
+    tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "cmd_vel_safety_gate = omx_navigation.cmd_vel_safety_gate:main",

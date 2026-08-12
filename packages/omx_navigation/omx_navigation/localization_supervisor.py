@@ -179,21 +179,43 @@ class LocalizationSupervisor(Node):
         self._try_start_search()
 
     def _on_initial_pose(self, message: PoseWithCovarianceStamped) -> None:
+        now = self._now()
         self._begin_initial_pose_generation()
-        if message.header.frame_id != "map":
-            self._last_transition = self._machine.reject_initial_pose(self._now())
+        if getattr(getattr(message, "header", None), "frame_id", None) != "map":
+            self._last_transition = self._machine.reject_initial_pose(now)
             return
         try:
             pose = message.pose.pose
-            initial = Pose2D(pose.position.x, pose.position.y, quaternion_to_yaw(
-                pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w
-            ))
-        except (TypeError, ValueError):
+            values = (
+                float(pose.position.x), float(pose.position.y), float(pose.position.z),
+                float(pose.orientation.x), float(pose.orientation.y),
+                float(pose.orientation.z), float(pose.orientation.w),
+            )
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError("initial pose must be finite")
+            quaternion = values[3:]
+            if math.hypot(*quaternion) <= 1e-12:
+                raise ValueError("initial pose quaternion must not be near zero")
+            initial = Pose2D(values[0], values[1], quaternion_to_yaw(*quaternion))
+            covariance = tuple(message.pose.covariance)
+        except (AttributeError, TypeError, ValueError):
+            self._last_transition = self._machine.reject_initial_pose(now)
             return
         if self._grid is not None and self._grid.world_to_cell(initial.x, initial.y) is None:
-            self._last_transition = self._machine.reject_initial_pose(self._now())
+            self._last_transition = self._machine.reject_initial_pose(now)
             return
-        self._initial_pose = (initial, tuple(message.pose.covariance))
+        self._initial_pose = (initial, covariance)
+        self._last_transition = self._machine.receive_initial_pose(now)
+
+    def _begin_initial_pose_generation(self) -> None:
+        """Invalidate queued work before accepting or rejecting a user click."""
+        with self._search_lock:
+            self._generation += 1
+            self._required_scan_sequence = self._scan_sequence
+            self._pending_search = None
+            self._initial_pose = None
+            if self._search_future is not None:
+                self._search_future.cancel()
         self._slam_pose = None
         self._slam_received_at = None
         self._slam_pose_handshake = False
@@ -207,17 +229,6 @@ class LocalizationSupervisor(Node):
         self._quality_error_latched = False
         self._quality_received_at = None
         self._odom_reset = False
-        self._last_transition = self._machine.receive_initial_pose(self._now())
-
-    def _begin_initial_pose_generation(self) -> None:
-        """Invalidate queued work before accepting or rejecting a user click."""
-        with self._search_lock:
-            self._generation += 1
-            self._required_scan_sequence = self._scan_sequence
-            self._pending_search = None
-            self._initial_pose = None
-            if self._search_future is not None:
-                self._search_future.cancel()
 
     def _on_slam_pose(self, message: PoseWithCovarianceStamped) -> None:
         if message.header.frame_id != "map":

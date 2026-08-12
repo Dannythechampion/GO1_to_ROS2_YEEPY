@@ -268,6 +268,37 @@ def publisher(node, topic):
     return next(item for item in node.publishers if item.topic == topic)
 
 
+@pytest.mark.parametrize("invalid_kind", ("missing_header", "malformed_covariance", "malformed", "nonfinite", "near_zero_quaternion"))
+def test_invalid_new_initialpose_revokes_existing_ready_and_clears_prior_localization(invalid_kind, supervisor_module, monkeypatch):
+    from omx_navigation.localization_state import ErrorCode, LocalizationState
+
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    advance_to_ready(node)
+    assert node._machine.state is LocalizationState.READY
+
+    invalid = pose_message()
+    if invalid_kind == "missing_header":
+        del invalid.header
+    elif invalid_kind == "malformed_covariance":
+        invalid.pose.covariance = None
+    elif invalid_kind == "malformed":
+        invalid.pose.pose.orientation.w = "not-a-number"
+    elif invalid_kind == "nonfinite":
+        invalid.pose.pose.orientation.w = float("nan")
+    else:
+        invalid.pose.pose.orientation.w = 1e-13
+    node._on_initial_pose(invalid)
+    node._on_ready_heartbeat()
+
+    assert node._machine.state is LocalizationState.LOST
+    assert node._last_transition.error is ErrorCode.POSE_OUTSIDE_MAP
+    assert node._slam_pose is None
+    assert node._slam_pose_handshake is False
+    assert node._current_base_pose is None
+    assert node._quality_received_at is None
+    assert publisher(node, "~/ready").messages[-1].data is False
+
+
 def test_stationary_tf_updates_keep_verification_alive_after_one_slam_handshake(supervisor_module, monkeypatch):
     from omx_navigation.localization_state import LocalizationState
 
