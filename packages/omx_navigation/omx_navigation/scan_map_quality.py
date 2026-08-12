@@ -49,6 +49,8 @@ class GridMap:
         c, s = math.cos(self.origin_yaw), math.sin(self.origin_yaw)
         gx = (c * dx + s * dy) / self.resolution
         gy = (-s * dx + c * dy) / self.resolution
+        gx = _normalize_cell_coordinate(gx, self.width)
+        gy = _normalize_cell_coordinate(gy, self.height)
         ix, iy = math.floor(gx), math.floor(gy)
         return (ix, iy) if 0 <= ix < self.width and 0 <= iy < self.height else None
 
@@ -224,15 +226,30 @@ def _aabb_is_outside_grid(
         return False
     dx, dy = pose.x - grid.origin_x, pose.y - grid.origin_y
     c, s = math.cos(grid.origin_yaw), math.sin(grid.origin_yaw)
-    translation_x = c * dx + s * dy
-    translation_y = -s * dx + c * dy
+    translation_x = (c * dx + s * dy) / grid.resolution
+    translation_y = (-s * dx + c * dy) / grid.resolution
     min_x, max_x, min_y, max_y = bounds
     return (
-        translation_x + min_x < 0.0
-        or translation_x + max_x >= grid.width * grid.resolution
-        or translation_y + min_y < 0.0
-        or translation_y + max_y >= grid.height * grid.resolution
+        not _cell_coordinate_is_inside(translation_x + min_x / grid.resolution, grid.width)
+        or not _cell_coordinate_is_inside(translation_x + max_x / grid.resolution, grid.width)
+        or not _cell_coordinate_is_inside(translation_y + min_y / grid.resolution, grid.height)
+        or not _cell_coordinate_is_inside(translation_y + max_y / grid.resolution, grid.height)
     )
+
+
+def _cell_coordinate_is_inside(value: float, extent: int) -> bool:
+    value = _normalize_cell_coordinate(value, extent)
+    return 0.0 <= value < extent
+
+
+def _normalize_cell_coordinate(value: float, extent: int) -> float:
+    """Snap only round-off-scale values to cell-grid boundaries."""
+    tolerance = 32.0 * max(math.ulp(value), math.ulp(float(extent)), math.ulp(1.0))
+    if abs(value) <= tolerance:
+        return 0.0
+    if abs(value - extent) <= tolerance:
+        return float(extent)
+    return value
 
 
 def _score_value(overlap: float, mean_distance: float) -> float:

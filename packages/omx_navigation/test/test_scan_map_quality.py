@@ -1,8 +1,11 @@
 import math
+import random
 
 import pytest
 
 from omx_navigation.scan_map_quality import (
+    _aabb_is_outside_grid,
+    _rotated_point_bounds,
     GridMap,
     Pose2D,
     ScanPoint,
@@ -210,3 +213,68 @@ def test_original_scan_boundary_check_scales_with_yaw_count_not_candidate_count(
     grid = GridMap(100, 100, 1.0, 0.0, 0.0, 0.0, (100,) * 10000)
     coarse_search(grid, points, Pose2D(50.0, 50.0, 0.0), SearchWindow())
     assert points.iterations <= 13
+
+
+def _world_from_cell_coordinates(grid: GridMap, x: float, y: float) -> tuple[float, float]:
+    c, s = math.cos(grid.origin_yaw), math.sin(grid.origin_yaw)
+    return grid.origin_x + c * x - s * y, grid.origin_y + s * x + c * y
+
+
+def _pose_for_endpoint(grid: GridMap, endpoint_x: float, endpoint_y: float, point: ScanPoint, yaw: float) -> Pose2D:
+    c, s = math.cos(yaw), math.sin(yaw)
+    world_x, world_y = _world_from_cell_coordinates(
+        grid, endpoint_x * grid.resolution, endpoint_y * grid.resolution
+    )
+    return Pose2D(world_x - c * point.x + s * point.y, world_y - s * point.x - c * point.y, yaw)
+
+
+def test_rotated_grid_strict_edges_match_world_to_cell_and_aabb():
+    grid = GridMap(7, 5, 0.3, 10.1, -3.7, 0.001, (100,) * 35)
+    point = ScanPoint(1.1, -0.7)
+    yaw = -3.14
+    lower = _pose_for_endpoint(grid, 0.0, 1.5, point, yaw)
+    upper = _pose_for_endpoint(grid, 7.0, 1.5, point, yaw)
+    bounds = _rotated_point_bounds((point,), yaw - grid.origin_yaw)
+    lower_endpoint = (lower.x + math.cos(yaw) * point.x - math.sin(yaw) * point.y,
+                      lower.y + math.sin(yaw) * point.x + math.cos(yaw) * point.y)
+    upper_endpoint = (upper.x + math.cos(yaw) * point.x - math.sin(yaw) * point.y,
+                      upper.y + math.sin(yaw) * point.x + math.cos(yaw) * point.y)
+
+    assert grid.world_to_cell(*lower_endpoint) == (0, 1)
+    assert _aabb_is_outside_grid(grid, lower, bounds) is False
+    assert grid.world_to_cell(*upper_endpoint) is None
+    assert _aabb_is_outside_grid(grid, upper, bounds) is True
+
+
+def test_rotated_upper_edge_omitted_by_downsampling_still_disqualifies_search():
+    grid = GridMap(7, 5, 0.3, 10.1, -3.7, 0.001, (100,) * 35)
+    point = ScanPoint(1.1, -0.7)
+    yaw = -3.14
+    points = [ScanPoint(0.0, 0.0)] * 181
+    points[90] = point
+    result = coarse_search(
+        grid,
+        tuple(points),
+        _pose_for_endpoint(grid, 7.0, 1.5, point, yaw),
+        SearchWindow(1e-16, 1e-16, 1e-16, 1e-16, max_scan_points=180),
+    )
+    assert result.best.score == pytest.approx(-0.20)
+
+
+def test_aabb_boundary_check_agrees_with_direct_endpoint_checks():
+    grid = GridMap(11, 9, 0.3, 10.1, -3.7, 0.73, (100,) * 99)
+    generator = random.Random(7)
+    for _ in range(100):
+        pose = Pose2D(
+            generator.uniform(8.0, 14.0),
+            generator.uniform(-6.0, 0.0),
+            generator.uniform(-math.pi, math.pi),
+        )
+        points = tuple(ScanPoint(generator.uniform(-2.0, 2.0), generator.uniform(-2.0, 2.0)) for _ in range(8))
+        c, s = math.cos(pose.yaw), math.sin(pose.yaw)
+        direct_outside = any(
+            grid.world_to_cell(pose.x + c * point.x - s * point.y, pose.y + s * point.x + c * point.y) is None
+            for point in points
+        )
+        bounds = _rotated_point_bounds(points, pose.yaw - grid.origin_yaw)
+        assert _aabb_is_outside_grid(grid, pose, bounds) is direct_outside
