@@ -6,7 +6,7 @@
 - `LocalizationSupervisor`는 `/map`, `/scan`, `/Odometry`, `/initialpose`, `/slam_toolbox/pose`, `/tf`를 구독하고, 보정 자세는 `/slam_localization/initialpose`로만 발행합니다. 따라서 사용자의 `/initialpose` 입력이 SLAM 출력과 다시 연결되지 않습니다.
 - 신선한 map/scan에서 bounded coarse search를 수행하며, LOW_OVERLAP·AMBIGUOUS·입력 누락·AMCL TF 충돌·3.0 m/s 초과/시간 역행 odom reset을 상태 머신에 전달합니다.
 - 상태 JSON(`state`, `error`, `message_ko`, `attempt`, `overlap`, `ambiguity_margin`, `stamp`)과 CSV 진단 행은 `2 Hz`로 발행·기록하고, ready는 최신 안전 상태를 평가한 뒤 `10 Hz` heartbeat로 발행합니다. CSV는 표준 escaping 후 매 행 flush하며 종료 시 handle을 닫습니다.
-- RViz goal bridge는 `/localization_supervisor/ready` 전에는 goal을 거부하고, ready가 false로 바��면 이미 수락된 goal을 취소합니다. send-goal 응답과 ready false가 경합할 때에도 응답 뒤 취소하도록 처리했습니다.
+- RViz goal bridge는 `/localization_supervisor/ready` 전에는 goal을 거부하고, ready가 false로 바뀌면 이미 수락된 goal을 취소합니다. send-goal 응답과 ready false가 경합할 때에도 응답 뒤 취소하도록 처리했습니다.
 - 패키지 entry point 및 `nav_msgs`, `tf2_msgs` 런타임 의존성을 추가했습니다.
 
 ## TDD와 검증
@@ -66,7 +66,7 @@
 
 ## 최종 리뷰 Fix A
 
-- 2 Hz 상태/CSV timer는 유지하고 ready 전용 10 Hz timer를 추가했습니다. 상태 발행 때도 ready를 함께 발행할 수 있지만 CSV 기록은 계속 2 Hz이므로 진단 파일 증가율은 바뀌지 않습니다. 0.10초 heartbeat는 safety gate의 0.30초 timeout에 충분한 실행 여유를 제공하며, 상태 머신이 READY를 ��으면 다음 heartbeat가 즉시 false를 발행합니다.
+- 2 Hz 상태/CSV timer는 유지하고 ready 전용 10 Hz timer를 추가했습니다. 상태 발행 때도 ready를 함께 발행할 수 있지만 CSV 기록은 계속 2 Hz이므로 진단 파일 증가율은 바뀌지 않습니다. 0.10초 heartbeat는 safety gate의 0.30초 timeout에 충분한 실행 여유를 제공하며, 상태 머신이 READY를 잃으면 다음 heartbeat가 즉시 false를 발행합니다.
 - coarse search의 최종 후보 중심이 지도 밖이면 보정 자세를 발행하지 않고 `LOST/POSE_OUTSIDE_MAP`으로 전환합니다. epoch 이후 `/slam_toolbox/pose` 중심이 지도 밖이어도 SLAM baseline을 제거하고 같은 오류로 fail-closed 처리합니다.
 - AMCL 충돌은 전체 노드명이 아니라 ROS namespace를 제거한 basename이 정확히 `amcl`인지 판정합니다. 따라서 `/fallback/amcl`은 충돌이고 `/fallback/amcl_helper`는 충돌이 아닙니다.
 
@@ -100,3 +100,18 @@
 - 집중 회귀: `py -3 -m pytest test/test_localization_supervisor.py test/test_cmd_vel_gate_core.py test/test_goal_gate.py test/test_rviz_goal_bridge_readiness.py -q -p no:cacheprovider` — 51 passed.
 - 전체 패키지: `py -3 -m pytest test -q -p no:cacheprovider` — 154 passed, 1 skipped.
 - 구문 검증: `py -3 -m compileall -q omx_navigation` — 성공.
+
+## 최종 리뷰 Fix E
+
+- 최초 coarse search에서 만든 지도 distance field를 보존하고, 이후 최신 `/scan`을 현재 `/slam_toolbox/pose`에 투영해 scan-map overlap을 계속 다시 계산합니다. 초기 정합값을 READY 이후에도 고정 재사용하지 않습니다.
+- 최신 overlap이 `0.45` 아래로 내려가면 첫 10 Hz heartbeat에서 `DEGRADED/LOW_OVERLAP`과 `ready=false`를 발행해 velocity gate를 닫습니다.
+- `/Odometry` 수신 시각도 map/scan/SLAM/TF와 함께 `input_max_age=0.50 s` freshness 계약에 포함합니다. odometry가 정지하거나 비유한 위치를 보내면 `DEGRADED/INPUT_MISSING`으로 fail-closed 처리합니다.
+- 비동기 coarse search 중 지도가 갱신되면 실행 중이던 이전 지도 결과와 distance field를 폐기하고 최신 지도 스냅샷으로 검색을 다시 제출합니다.
+- 한국어 상태 문자열에 남아 있던 UTF-8 replacement character를 제거하고, 진단 문자열 전체에 `U+FFFD`가 없음을 회귀 테스트로 고정했습니다.
+
+### 최종 리뷰 Fix E 검증
+
+- RED: READY 이후 불일치 scan에서도 초기 overlap이 유지되는 문제, odometry 정지에도 READY가 유지되는 문제, 검색 중 map 변경 시 이전 distance field가 수용되는 문제, 손상된 한국어 진단 문자열을 각각 재현했습니다.
+- focused: `py -3 -m pytest packages/omx_navigation/test/test_scan_map_quality.py packages/omx_navigation/test/test_localization_supervisor.py -q -p no:cacheprovider` — 49 passed.
+- 전체 Windows 명시 세트: go1_driver, omx_navigation, migration 테스트 — 184 passed, 8 skipped.
+- WSL ROS 2 Humble 및 Jetson ARM64 실기 검증은 이번 Windows-only 수정 뒤 아직 재실행하지 않았습니다.

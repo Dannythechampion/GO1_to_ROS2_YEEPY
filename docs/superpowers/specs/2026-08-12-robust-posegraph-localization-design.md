@@ -120,6 +120,13 @@ WAITING_INPUT -> ALIGNING -> VERIFYING -> READY
 - `camera_init -> body`, `map -> camera_init` TF
 - 중복 TF 소유자와 FAST-LIO odom reset 징후
 - 초기 자세가 지도 안에 있는지 여부
+- 최초 coarse search의 distance field를 재사용한 현재 SLAM 자세의 scan-map overlap
+
+`READY` 이후에도 최신 scan을 현재 `/slam_toolbox/pose`에 투영해 overlap을 계속
+다시 계산한다. 초기 coarse search 점수를 고정 재사용하지 않는다. scan, odometry,
+SLAM pose, 관련 TF 가운데 하나라도 `0.50 s`보다 오래되면 `ready=false`로
+fail-closed 처리한다. 실행 중 map 스냅샷이 바뀌면 이전 map의 비동기 search 결과와
+distance field를 폐기한다.
 
 `~/status`에는 기계 판독 가능한 상태·오류 코드와 한국어 설명을 `2 Hz`로 발행하고,
 같은 상태 행을 CSV 진단 기록에 `2 Hz`로 남긴다. `~/ready`에는 safety gate가
@@ -173,6 +180,7 @@ frame을 각각 `map`, `camera_init`, `body_nav`로 고정한다. `body_nav`는 
 - 자동 초기 재시도: `3회`
 - VERIFYING 최소 지속시간: `3 s`
 - 최소 scan-map overlap: `0.45`
+- live scan/odometry/SLAM pose/TF 최대 age: `0.50 s`
 - 최대 연속 위치 jump: `0.30 m`
 - 최대 연속 방향 jump: `10 deg`
 - ready heartbeat timeout: `0.30 s`
@@ -234,6 +242,8 @@ frame을 각각 `map`, `camera_init`, `body_nav`로 고정한다. `body_nav`는 
 - 상태 머신의 정상, timeout, retry, degraded, lost, recovery 분기가 모두 테스트된다.
 - 합성 occupancy map과 scan으로 정상 정합, 지도 밖, 낮은 overlap, 대칭 모호성이
   테스트된다.
+- READY 이후 현재 scan-map overlap 저하와 odometry 정지가 첫 heartbeat에서
+  `ready=false`로 전환되는지 테스트한다.
 - safety gate 코어가 READY 이외 상태와 stale heartbeat에서 항상 0 속도를 반환한다.
 - launch/YAML/package manifest가 Python에서 파싱되고 frame, topic, 안전 기본값 계약을
   만족한다.

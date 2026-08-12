@@ -164,8 +164,18 @@ def score_pose(
     return PoseScore(pose, overlap, mean_distance, _score_value(overlap, mean_distance), used)
 
 
-def coarse_search(grid: GridMap, points: Sequence[ScanPoint], initial: Pose2D, window: SearchWindow) -> SearchResult:
-    field = build_distance_field(grid)
+def coarse_search(
+    grid: GridMap,
+    points: Sequence[ScanPoint],
+    initial: Pose2D,
+    window: SearchWindow,
+    field: Sequence[float] | None = None,
+) -> SearchResult:
+    """Search a bounded pose window, optionally reusing a validated distance field."""
+    if field is None:
+        field = build_distance_field(grid)
+    elif len(field) != len(grid.cells):
+        raise ValueError("distance field must match grid dimensions")
     sampled_points = _evenly_sample(points, window.max_scan_points)
     poses = _candidate_poses(initial, window)
     relative_yaws = {yaw: yaw - grid.origin_yaw for yaw in dict.fromkeys(pose.yaw for pose in poses)}

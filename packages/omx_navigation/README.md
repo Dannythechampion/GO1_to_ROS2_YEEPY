@@ -224,3 +224,8 @@ ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
 입력 누락/오래된 입력, `LOW_OVERLAP`·`AMBIGUOUS`는 scan-map 정합 품질 부족,
 `ODOM_RESET`·`TF_CONFLICT`는 odometry 또는 TF를 먼저 복구해야 함,
 `EXTRINSIC_UNCALIBRATED`는 센서 장착 보정이 필요함을 의미합니다.
+
+`READY` 이후에도 supervisor는 최신 scan을 현재 SLAM 자세에서 지도와 다시
+대조합니다. scan-map overlap이 `0.45` 아래로 내려가거나 `/scan`, `/Odometry`,
+`/slam_toolbox/pose`, 관련 TF 중 하나가 `0.50 s` 넘게 갱신되지 않으면 다음
+heartbeat에서 `ready=false`가 되어 속도 gate가 닫힙니다.

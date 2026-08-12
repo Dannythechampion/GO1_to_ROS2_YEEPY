@@ -4,7 +4,7 @@
 
 **Goal:** 한 번의 대략적인 RViz 초기 자세 입력을 정리된 2D 지도에서 `±3 m`, `±90 deg` 범위로 보정하고, 검증된 pose-graph localization 상태에서만 Nav2 속도를 Go1 dry-run driver로 전달한다.
 
-**Architecture:** ROS 비의존 코어가 coarse scan-to-map search, 상태 전이, 속도 gate 결정을 담당하고 ROS2 노드는 토픽과 TF만 연결한다. Map server는 정리된 occupancy map을, SLAM Toolbox localization은 저장 pose graph를 사용하며 유일하게 `map -> camera_init`을 발행한다. Nav2 출력은 `/cmd_vel_nav`를 거쳐 localization safety gate가 `READY`일 때만 `/cmd_vel`로 전달한다.
+**Architecture:** ROS 비의존 코어가 coarse scan-to-map search, 현재 자세의 연속 scan-map overlap, 상태 전이, 속도 gate 결정을 담당하고 ROS2 노드는 토픽과 TF만 연결한다. Map server는 정리된 occupancy map을, SLAM Toolbox localization은 저장 pose graph를 사용하며 유일하게 `map -> camera_init`을 발행한다. Nav2 출력은 `/cmd_vel_nav`를 거쳐 localization safety gate가 `READY`일 때만 `/cmd_vel`로 전달한다.
 
 **Tech Stack:** Python 3.10+, ROS2 Humble, rclpy, Nav2, SLAM Toolbox, pytest, PyYAML, WSL2 Ubuntu 22.04
 
@@ -524,6 +524,7 @@ On user initial pose:
 4. If overlap is below `0.45`, emit `LOW_OVERLAP`; if ambiguous, emit `AMBIGUOUS`.
 5. Publish the refined pose to `/slam_localization/initialpose`.
 6. Verify `/slam_toolbox/pose` for 3 seconds through the state machine.
+7. Re-score every fresh scan at the current SLAM pose using the retained distance field; require fresh scan, odometry, SLAM pose, and TF before every READY heartbeat.
 
 At `2 Hz`, publish the JSON status and append the same row to the configured `diagnostics_csv`, calling `flush()` after every write. Publish the evaluated `ready` heartbeat at `10 Hz` so the velocity gate retains margin inside its `0.30 s` timeout. Detect an `amcl` node basename in `get_node_names()` as `TF_CONFLICT`. Detect odom jumps above `3.0 m/s` between valid samples as `ODOM_RESET`.
 

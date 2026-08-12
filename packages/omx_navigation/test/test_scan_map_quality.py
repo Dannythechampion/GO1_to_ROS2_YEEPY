@@ -121,6 +121,39 @@ def test_distance_field_has_exact_orthogonal_and_diagonal_costs():
     assert field[0] == pytest.approx(math.sqrt(2.0) * 0.5)
 
 
+def test_coarse_search_reuses_a_valid_supplied_distance_field(monkeypatch):
+    import omx_navigation.scan_map_quality as quality
+
+    grid = corridor_map()
+    field = build_distance_field(grid)
+    monkeypatch.setattr(
+        quality,
+        "build_distance_field",
+        lambda _grid: (_ for _ in ()).throw(AssertionError("field rebuilt")),
+    )
+
+    result = quality.coarse_search(
+        grid,
+        symmetric_corridor_scan(),
+        Pose2D(5.0, 5.0, 0.0),
+        SearchWindow(0.5, 0.5, math.radians(15), math.radians(15)),
+        field=field,
+    )
+
+    assert result.best.points_used == 2
+
+
+def test_coarse_search_rejects_a_supplied_field_with_wrong_size():
+    with pytest.raises(ValueError, match="distance field"):
+        coarse_search(
+            corridor_map(),
+            symmetric_corridor_scan(),
+            Pose2D(5.0, 5.0, 0.0),
+            SearchWindow(0.5, 0.5, math.radians(15), math.radians(15)),
+            field=(0.0,),
+        )
+
+
 def test_world_to_cell_honors_a_rotated_map_origin():
     grid = GridMap(5, 5, 1.0, 10.0, 20.0, math.pi / 2, (0,) * 25)
     assert grid.world_to_cell(7.5, 21.5) == (1, 2)

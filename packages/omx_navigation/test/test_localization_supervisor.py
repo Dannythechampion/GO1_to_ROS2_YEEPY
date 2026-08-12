@@ -135,7 +135,12 @@ def pose_message(x=0.0, y=0.0, frame_id="map", covariance=None):
     )
 
 
-def map_message():
+def map_message(*, occupied_world=()):
+    data = [0] * 121
+    for x, y in occupied_world:
+        column = math.floor(x + 5.0)
+        row = math.floor(y + 5.0)
+        data[row * 11 + column] = 100
     return SimpleNamespace(
         header=header(),
         info=SimpleNamespace(
@@ -145,19 +150,108 @@ def map_message():
                 orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
             ),
         ),
-        data=[0] * 121,
+        data=data,
     )
 
 
-def scan_message():
+def scan_message(*, ranges=(1.0,)):
     return SimpleNamespace(
-        header=header("laser"), ranges=[1.0], angle_min=0.0, angle_increment=1.0,
+        header=header("laser"), ranges=list(ranges), angle_min=0.0, angle_increment=0.0,
         range_min=0.1, range_max=10.0,
     )
 
 
+def odom_message(x=0.0, y=0.0, *, sec=0, nanosec=0):
+    return SimpleNamespace(
+        header=SimpleNamespace(stamp=SimpleNamespace(sec=sec, nanosec=nanosec)),
+        pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(x=x, y=y))),
+    )
+
+
+def slam_message(x=0.0, y=0.0, yaw=0.0):
+    return SimpleNamespace(
+        header=header(),
+        pose=SimpleNamespace(
+            position=SimpleNamespace(x=x, y=y),
+            orientation=SimpleNamespace(
+                x=0.0, y=0.0, z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0)
+            ),
+        ),
+    )
+
+
+def relevant_tf():
+    return SimpleNamespace(transforms=[SimpleNamespace(
+        header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav"
+    )])
+
+
+class ImmediateFuture:
+    def __init__(self, function, *args):
+        self._result = function(*args)
+
+    def done(self):
+        return True
+
+    def cancel(self):
+        return False
+
+    def result(self):
+        return self._result
+
+
+class ImmediateExecutor:
+    def submit(self, function, *args):
+        return ImmediateFuture(function, *args)
+
+    def shutdown(self, **_kwargs):
+        pass
+
+
+def use_immediate_search(node):
+    node._search_executor.shutdown(wait=False, cancel_futures=True)
+    node._search_executor = ImmediateExecutor()
+
+
+def initialize_high_quality_search(supervisor_module, monkeypatch):
+    from omx_navigation.scan_map_quality import Pose2D, PoseScore, SearchResult
+
+    result = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.9, 0.0, 0.9, 1), None, False)
+    monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args, **_kwargs: result)
+    node = supervisor_module.LocalizationSupervisor()
+    use_immediate_search(node)
+    node._on_map(map_message(occupied_world=((1.0, 0.0),)))
+    node._on_scan(scan_message())
+    node.clock.seconds = 0.05
+    node._on_initial_pose(pose_message())
+    node.clock.seconds = 0.10
+    node._on_scan(scan_message())
+    node.clock.seconds = 0.20
+    node._on_status_timer()
+    return node
+
+
+def feed_matching_live_inputs(node, now):
+    node.clock.seconds = now
+    node._on_odom(odom_message())
+    node._on_tf(relevant_tf())
+    node._on_scan(scan_message())
+    node._on_slam_pose(slam_message())
+
+
+def advance_to_ready(node):
+    feed_matching_live_inputs(node, 0.30)
+    node._on_ready_heartbeat()
+    feed_matching_live_inputs(node, 3.40)
+    node._on_ready_heartbeat()
+
+
 def publisher(node, topic):
     return next(item for item in node.publishers if item.topic == topic)
+
+
+def test_korean_diagnostic_messages_do_not_contain_replacement_characters(supervisor_module):
+    assert all("\ufffd" not in message for message in supervisor_module._MESSAGES_KO.values())
 
 
 def test_supervisor_wires_topics_refines_map_pose_and_emits_finite_json(supervisor_module, monkeypatch):
@@ -170,7 +264,7 @@ def test_supervisor_wires_topics_refines_map_pose_and_emits_finite_json(supervis
     assert {sub.topic for sub in node.subscriptions} == {"/map", "/scan", "/Odometry", "/initialpose", "/slam_toolbox/pose", "/tf"}
     assert {pub.topic for pub in node.publishers} == {"/slam_localization/initialpose", "~/status", "~/ready"}
 
-    node._on_map(map_message())
+    node._on_map(map_message(occupied_world=((2.0, 2.0),)))
     node._on_scan(scan_message())
     covariance = [float(index) for index in range(36)]
     node._on_initial_pose(pose_message(covariance=covariance))
@@ -185,11 +279,13 @@ def test_supervisor_wires_topics_refines_map_pose_and_emits_finite_json(supervis
     assert refined.pose.pose.orientation.z == pytest.approx(math.sin(0.25))
 
     node.clock.seconds = 0.1
+    node._on_odom(odom_message())
     node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
     node._on_slam_pose(SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=2.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
     node._on_status_timer()
     node.clock.seconds = 3.1
-    node._on_map(map_message())
+    node._on_map(map_message(occupied_world=((2.0, 2.0),)))
+    node._on_odom(odom_message())
     node._on_scan(scan_message())
     node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
     node._on_slam_pose(SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=2.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
@@ -204,7 +300,7 @@ def test_supervisor_wires_topics_refines_map_pose_and_emits_finite_json(supervis
 def test_supervisor_rejects_stale_inputs_odom_time_rollback_and_amcl(supervisor_module):
     module = supervisor_module
     node = module.LocalizationSupervisor()
-    node._on_map(map_message())
+    node._on_map(map_message(occupied_world=((2.0, 2.0),)))
     node._on_scan(scan_message())
     node.clock.seconds = 1.0
     node._on_initial_pose(pose_message())
@@ -237,10 +333,11 @@ def test_supervisor_reports_search_quality_failures(supervisor_module, monkeypat
     search = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), overlap, 0.0, overlap, 1), None, ambiguous)
     monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: search)
     node = supervisor_module.LocalizationSupervisor()
-    node._on_map(map_message())
+    node._on_map(map_message(occupied_world=((2.0, 2.0),)))
     node._on_scan(scan_message())
     node._on_initial_pose(pose_message())
     node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
+    node._on_odom(odom_message())
     node._on_scan(scan_message())
     node._on_status_timer()
     assert json.loads(publisher(node, "~/status").messages[-1].data)["error"] == error
@@ -264,10 +361,10 @@ def test_supervisor_rejects_non_map_initialpose_and_flushes_csv(supervisor_modul
 
     node._csv_file = FlushingCsv()
     node._csv_writer = module.csv.DictWriter(node._csv_file, fieldnames=("state", "error", "message_ko", "attempt", "overlap", "ambiguity_margin", "stamp"))
-    monkeypatch.setitem(module._MESSAGES_KO, node._last_transition.error, '��표,따��표"')
+    monkeypatch.setitem(module._MESSAGES_KO, node._last_transition.error, '쉼표,따옴표"')
     node._publish_status()
     assert node._csv_file.flushed is True
-    assert '"��표,따��표"""' in node._csv_file.getvalue()
+    assert '"쉼표,따옴표"""' in node._csv_file.getvalue()
     node.destroy_node()
     assert node.destroyed is True
 
@@ -279,7 +376,7 @@ def test_supervisor_waits_for_post_click_scan_and_fresh_slam_tf_before_ready(sup
     result = SearchResult(PoseScore(Pose2D(1.0, 2.0, 0.0), 0.8, 0.0, 0.8, 1), None, False)
     monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: search_calls.append(1) or result)
     node = supervisor_module.LocalizationSupervisor()
-    node._on_map(map_message())
+    node._on_map(map_message(occupied_world=((2.0, 2.0),)))
     node._on_scan(scan_message())
     node._on_initial_pose(pose_message())
     node._on_status_timer()
@@ -290,6 +387,7 @@ def test_supervisor_waits_for_post_click_scan_and_fresh_slam_tf_before_ready(sup
     assert search_calls == [1]
     node.clock.seconds = 3.1
     node._on_scan(scan_message())
+    node._on_odom(odom_message())
     node._on_status_timer()
     assert json.loads(publisher(node, "~/status").messages[-1].data)["state"] != "READY"
 
@@ -297,6 +395,7 @@ def test_supervisor_waits_for_post_click_scan_and_fresh_slam_tf_before_ready(sup
     node._on_slam_pose(SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=2.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
     node._on_status_timer()
     node.clock.seconds = 6.2
+    node._on_odom(odom_message())
     node._on_scan(scan_message())
     node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
     node._on_slam_pose(SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=1.1, y=2.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
@@ -312,7 +411,7 @@ def test_supervisor_clears_invalid_data_and_uses_required_qos(supervisor_module)
     assert subscriptions["/Odometry"].qos == "sensor_data"
     assert subscriptions["/tf"].qos == "sensor_data"
 
-    node._on_map(map_message())
+    node._on_map(map_message(occupied_world=((1.0, 0.0), (2.0, 0.0))))
     invalid = map_message()
     invalid.data = []
     node._on_map(invalid)
@@ -344,18 +443,20 @@ def test_supervisor_rejects_large_consecutive_slam_pose_jump(supervisor_module, 
     result = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.8, 0.0, 0.8, 1), None, False)
     monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: result)
     node = supervisor_module.LocalizationSupervisor()
-    node._on_map(map_message())
+    node._on_map(map_message(occupied_world=((1.0, 0.0), (2.0, 0.0))))
     node._on_scan(scan_message())
     node._on_initial_pose(pose_message())
     node._on_scan(scan_message())
     node._on_status_timer()
     node.clock.seconds = 0.1
+    node._on_odom(odom_message())
     node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
     slam = lambda x: SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=x, y=0.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)))
     node._on_slam_pose(slam(0.0))
     node._on_scan(scan_message())
     node._on_status_timer()
     node.clock.seconds = 0.2
+    node._on_odom(odom_message())
     node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
     node._on_slam_pose(slam(1.0))
     node._on_scan(scan_message())
@@ -477,14 +578,71 @@ def test_new_click_without_scan_discards_older_pending_search(supervisor_module)
     assert len(node._search_executor.futures) == 1
 
 
+def test_map_change_discards_running_search_and_restarts_on_latest_grid(supervisor_module, monkeypatch):
+    from omx_navigation.scan_map_quality import Pose2D, PoseScore, SearchResult
+
+    result = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.8, 0.0, 0.8, 1), None, False)
+    monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: result)
+
+    class DeferredFuture:
+        def __init__(self, function, *args):
+            self._function = function
+            self._args = args
+            self._done = False
+            self._result = None
+
+        def finish(self):
+            self._result = self._function(*self._args)
+            self._done = True
+
+        def done(self):
+            return self._done
+
+        def cancel(self):
+            return False
+
+        def result(self):
+            return self._result
+
+    class DeferredExecutor:
+        def __init__(self):
+            self.futures = []
+
+        def submit(self, function, *args):
+            future = DeferredFuture(function, *args)
+            self.futures.append(future)
+            return future
+
+        def shutdown(self, **_kwargs):
+            pass
+
+    node = supervisor_module.LocalizationSupervisor()
+    node._search_executor.shutdown(wait=False, cancel_futures=True)
+    node._search_executor = DeferredExecutor()
+    node._on_map(map_message(occupied_world=((1.0, 0.0),)))
+    node._on_scan(scan_message())
+    node._on_initial_pose(pose_message())
+    node._on_scan(scan_message())
+    assert len(node._search_executor.futures) == 1
+
+    node._on_map(map_message(occupied_world=((2.0, 0.0),)))
+    node._search_executor.futures[0].finish()
+    node._on_status_timer()
+
+    assert len(node._search_executor.futures) == 2
+    assert node._distance_field is None
+
+
 def test_ready_heartbeat_keeps_velocity_gate_fresh_for_more_than_one_second(supervisor_module):
     from omx_navigation.cmd_vel_gate_core import VelocityCommand, VelocityGate
     from omx_navigation.localization_state import LocalizationState
+    from omx_navigation.scan_map_quality import build_distance_field
 
     node = supervisor_module.LocalizationSupervisor()
     node._machine.state = LocalizationState.READY
     node._last_transition = node._machine._transition()
-    node._on_map(map_message())
+    node._on_map(map_message(occupied_world=((1.0, 0.0),)))
+    node._distance_field = build_distance_field(node._grid)
     node._slam_epoch = 0.0
     node._overlap = 0.8
     node._ambiguity_margin = 0.2
@@ -494,6 +652,7 @@ def test_ready_heartbeat_keeps_velocity_gate_fresh_for_more_than_one_second(supe
     for step in range(12):
         now = step * 0.1
         node.clock.seconds = now
+        node._on_odom(odom_message())
         node._on_scan(scan_message())
         node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
         node._on_slam_pose(SimpleNamespace(
@@ -632,3 +791,55 @@ def test_retry_republishes_refined_pose_once_across_both_timers(supervisor_modul
     node._on_status_timer()
 
     assert len(publisher(node, "/slam_localization/initialpose").messages) == 1
+
+
+def test_ready_degrades_when_current_scan_no_longer_matches_slam_pose(supervisor_module, monkeypatch):
+    from omx_navigation.localization_state import ErrorCode, LocalizationState
+
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    advance_to_ready(node)
+    assert node._machine.state is LocalizationState.READY
+
+    node.clock.seconds = 3.50
+    node._on_odom(odom_message())
+    node._on_tf(relevant_tf())
+    node._on_scan(scan_message(ranges=(4.0,)))
+    node._on_slam_pose(slam_message())
+    node._on_ready_heartbeat()
+
+    assert node._overlap == 0.0
+    assert node._machine.state is LocalizationState.DEGRADED
+    assert node._last_transition.error is ErrorCode.LOW_OVERLAP
+    assert publisher(node, "~/ready").messages[-1].data is False
+
+
+def test_ready_degrades_when_odometry_stops_while_other_inputs_remain_fresh(supervisor_module, monkeypatch):
+    from omx_navigation.localization_state import ErrorCode, LocalizationState
+
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    advance_to_ready(node)
+    assert node._machine.state is LocalizationState.READY
+
+    node.clock.seconds = 3.91
+    node._on_tf(relevant_tf())
+    node._on_scan(scan_message())
+    node._on_slam_pose(slam_message())
+    node._on_ready_heartbeat()
+
+    assert node._machine.state is LocalizationState.DEGRADED
+    assert node._last_transition.error is ErrorCode.INPUT_MISSING
+    assert publisher(node, "~/ready").messages[-1].data is False
+    node._publish_status()
+    status = json.loads(publisher(node, "~/status").messages[-1].data)
+    assert status["message_ko"] == "지도 또는 센서 입력이 오래되었거나 없습니다."
+
+
+def test_nonfinite_odometry_clears_freshness(supervisor_module):
+    node = supervisor_module.LocalizationSupervisor()
+    node.clock.seconds = 1.0
+    node._on_odom(odom_message())
+    assert node._odom_received_at == 1.0
+
+    invalid = odom_message(x=float("nan"))
+    node._on_odom(invalid)
+    assert node._odom_received_at is None
