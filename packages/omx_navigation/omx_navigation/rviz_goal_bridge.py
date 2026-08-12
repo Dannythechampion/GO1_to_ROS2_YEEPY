@@ -21,13 +21,12 @@ class RvizGoalBridge(Node):
         action_name = self.declare_parameter(
             "navigate_to_pose_action", "navigate_to_pose"
         ).value
-        self._server_timeout = float(
-            self.declare_parameter("server_timeout", 2.0).value
-        )
-
         self._action_client = ActionClient(self, NavigateToPose, action_name)
         self._goal_gate = GoalGate()
         self._active_goal_handle = None
+        self._active_token = None
+        self._pending_token = None
+        self._goal_token = 0
         self._goal_subscription = self.create_subscription(
             PoseStamped, goal_topic, self._on_goal_pose, 10
         )
@@ -43,11 +42,14 @@ class RvizGoalBridge(Node):
         if not self._goal_gate.accept_goal():
             self.get_logger().warning("Ignoring navigation goal until localization is ready")
             return
+        if self._pending_token is not None or self._active_goal_handle is not None:
+            self.get_logger().warning("Ignoring navigation goal while another goal is pending or active")
+            return
         if not pose.header.frame_id:
             self.get_logger().error("Ignoring goal without a frame_id")
             return
 
-        if not self._action_client.wait_for_server(timeout_sec=self._server_timeout):
+        if not self._action_client.wait_for_server(timeout_sec=0.0):
             self.get_logger().error(
                 "Nav2 NavigateToPose action is not available yet; try the goal again"
             )
@@ -59,16 +61,22 @@ class RvizGoalBridge(Node):
             "Sending goal in %s: x=%.2f, y=%.2f"
             % (pose.header.frame_id, pose.pose.position.x, pose.pose.position.y)
         )
+        self._goal_token += 1
+        token = self._goal_token
+        self._pending_token = token
         future = self._action_client.send_goal_async(
             goal, feedback_callback=self._on_feedback
         )
-        future.add_done_callback(self._on_goal_response)
+        future.add_done_callback(lambda response: self._on_goal_response(response, token))
 
     def _on_ready(self, message: Bool) -> None:
         if self._goal_gate.update_ready(message.data):
             self._cancel_active_goal()
 
-    def _on_goal_response(self, future) -> None:
+    def _on_goal_response(self, future, token) -> None:
+        if token != self._pending_token:
+            return
+        self._pending_token = None
         try:
             goal_handle = future.result()
         except Exception as exc:  # rclpy reports transport failures through the future
@@ -81,12 +89,13 @@ class RvizGoalBridge(Node):
 
         self.get_logger().info("Navigation goal accepted")
         self._active_goal_handle = goal_handle
+        self._active_token = token
         self._goal_gate.set_goal_active(True)
         result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(lambda result: self._on_result(result, goal_handle))
+        result_future.add_done_callback(lambda result: self._on_result(result, goal_handle, token))
         # Readiness can be revoked while Nav2 is processing send_goal_async().
         if not self._goal_gate.ready:
-            self._cancel_active_goal(goal_handle)
+            self._cancel_active_goal(goal_handle, token)
 
     def _on_feedback(self, feedback_msg) -> None:
         now_ns = self.get_clock().now().nanoseconds
@@ -96,8 +105,8 @@ class RvizGoalBridge(Node):
         distance = feedback_msg.feedback.distance_remaining
         self.get_logger().info(f"Distance remaining: {distance:.2f} m")
 
-    def _on_result(self, future, goal_handle=None) -> None:
-        self._clear_active_goal(goal_handle)
+    def _on_result(self, future, goal_handle=None, token=None) -> None:
+        self._clear_active_goal(goal_handle, token)
         try:
             wrapped_result = future.result()
         except Exception as exc:
@@ -111,21 +120,23 @@ class RvizGoalBridge(Node):
                 f"Navigation finished with action status {wrapped_result.status}"
             )
 
-    def _cancel_active_goal(self, goal_handle=None) -> None:
+    def _cancel_active_goal(self, goal_handle=None, token=None) -> None:
         handle = goal_handle or self._active_goal_handle
         if handle is None:
             return
         self._goal_gate.set_goal_active(False)
         try:
             future = handle.cancel_goal_async()
-            future.add_done_callback(lambda _future: self._clear_active_goal(handle))
+            active_token = self._active_token if token is None else token
+            future.add_done_callback(lambda _future: self._clear_active_goal(handle, active_token))
         except Exception as exc:
             self.get_logger().error(f"Failed to cancel navigation goal: {exc}")
-            self._clear_active_goal(handle)
+            self._clear_active_goal(handle, token)
 
-    def _clear_active_goal(self, goal_handle=None) -> None:
-        if goal_handle is None or self._active_goal_handle is goal_handle:
+    def _clear_active_goal(self, goal_handle=None, token=None) -> None:
+        if (goal_handle is None or self._active_goal_handle is goal_handle) and (token is None or self._active_token == token):
             self._active_goal_handle = None
+            self._active_token = None
             self._goal_gate.set_goal_active(False)
 
 

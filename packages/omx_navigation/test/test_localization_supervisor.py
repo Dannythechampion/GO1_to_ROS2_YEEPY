@@ -46,8 +46,8 @@ class Node:
         self.publishers.append(publisher)
         return publisher
 
-    def create_subscription(self, _type, topic, callback, _depth):
-        subscription = SimpleNamespace(topic=topic, callback=callback)
+    def create_subscription(self, _type, topic, callback, qos):
+        subscription = SimpleNamespace(topic=topic, callback=callback, qos=qos)
         self.subscriptions.append(subscription)
         return subscription
 
@@ -103,6 +103,13 @@ def supervisor_module(monkeypatch):
     node_module = ModuleType("rclpy.node")
     node_module.Node = Node
     modules["rclpy.node"] = node_module
+    qos_module = ModuleType("rclpy.qos")
+    qos_module.QoSProfile = lambda **kwargs: SimpleNamespace(**kwargs)
+    qos_module.ReliabilityPolicy = SimpleNamespace(RELIABLE="reliable")
+    qos_module.DurabilityPolicy = SimpleNamespace(TRANSIENT_LOCAL="transient_local", VOLATILE="volatile")
+    qos_module.HistoryPolicy = SimpleNamespace(KEEP_LAST="keep_last")
+    qos_module.qos_profile_sensor_data = "sensor_data"
+    modules["rclpy.qos"] = qos_module
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
     sys.modules.pop("omx_navigation.localization_supervisor", None)
@@ -167,6 +174,8 @@ def test_supervisor_wires_topics_refines_map_pose_and_emits_finite_json(supervis
     node._on_scan(scan_message())
     covariance = [float(index) for index in range(36)]
     node._on_initial_pose(pose_message(covariance=covariance))
+    node._on_scan(scan_message())
+    node._on_status_timer()
 
     refined = publisher(node, "/slam_localization/initialpose").messages[-1]
     assert refined.header.frame_id == "map"
@@ -176,11 +185,13 @@ def test_supervisor_wires_topics_refines_map_pose_and_emits_finite_json(supervis
     assert refined.pose.pose.orientation.z == pytest.approx(math.sin(0.25))
 
     node.clock.seconds = 0.1
+    node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
     node._on_slam_pose(SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=2.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
     node._on_status_timer()
     node.clock.seconds = 3.1
     node._on_map(map_message())
     node._on_scan(scan_message())
+    node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
     node._on_slam_pose(SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=2.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
     node._on_status_timer()
     status = json.loads(publisher(node, "~/status").messages[-1].data)
@@ -229,6 +240,8 @@ def test_supervisor_reports_search_quality_failures(supervisor_module, monkeypat
     node._on_map(map_message())
     node._on_scan(scan_message())
     node._on_initial_pose(pose_message())
+    node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
+    node._on_scan(scan_message())
     node._on_status_timer()
     assert json.loads(publisher(node, "~/status").messages[-1].data)["error"] == error
 
@@ -257,3 +270,94 @@ def test_supervisor_rejects_non_map_initialpose_and_flushes_csv(supervisor_modul
     assert '"��표,따��표"""' in node._csv_file.getvalue()
     node.destroy_node()
     assert node.destroyed is True
+
+
+def test_supervisor_waits_for_post_click_scan_and_fresh_slam_tf_before_ready(supervisor_module, monkeypatch):
+    from omx_navigation.scan_map_quality import Pose2D, PoseScore, SearchResult
+
+    search_calls = []
+    result = SearchResult(PoseScore(Pose2D(1.0, 2.0, 0.0), 0.8, 0.0, 0.8, 1), None, False)
+    monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: search_calls.append(1) or result)
+    node = supervisor_module.LocalizationSupervisor()
+    node._on_map(map_message())
+    node._on_scan(scan_message())
+    node._on_initial_pose(pose_message())
+    node._on_status_timer()
+    assert search_calls == []
+
+    node._on_scan(scan_message())
+    node._on_status_timer()
+    assert search_calls == [1]
+    node.clock.seconds = 3.1
+    node._on_scan(scan_message())
+    node._on_status_timer()
+    assert json.loads(publisher(node, "~/status").messages[-1].data)["state"] != "READY"
+
+    node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
+    node._on_slam_pose(SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=2.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
+    node._on_status_timer()
+    node.clock.seconds = 6.2
+    node._on_scan(scan_message())
+    node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
+    node._on_slam_pose(SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=1.1, y=2.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
+    node._on_status_timer()
+    assert json.loads(publisher(node, "~/status").messages[-1].data)["state"] == "READY"
+
+
+def test_supervisor_clears_invalid_data_and_uses_required_qos(supervisor_module):
+    node = supervisor_module.LocalizationSupervisor()
+    subscriptions = {subscription.topic: subscription for subscription in node.subscriptions}
+    assert subscriptions["/map"].qos.durability == "transient_local"
+    assert subscriptions["/scan"].qos == "sensor_data"
+    assert subscriptions["/Odometry"].qos == "sensor_data"
+    assert subscriptions["/tf"].qos == "sensor_data"
+
+    node._on_map(map_message())
+    invalid = map_message()
+    invalid.data = []
+    node._on_map(invalid)
+    assert node._grid is None and node._map_received_at is None
+    node._on_scan(scan_message())
+    invalid_scan = scan_message()
+    invalid_scan.range_min = 10.0
+    invalid_scan.range_max = 1.0
+    node._on_scan(invalid_scan)
+    assert node._points is None and node._scan_received_at is None
+
+
+def test_supervisor_uses_odom_source_time_and_resets_fault_on_new_initial_pose(supervisor_module):
+    node = supervisor_module.LocalizationSupervisor()
+    odom = lambda x, sec: SimpleNamespace(
+        header=SimpleNamespace(stamp=SimpleNamespace(sec=sec, nanosec=0)),
+        pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(x=x, y=0.0))),
+    )
+    node._on_odom(odom(0.0, 10))
+    node._on_odom(odom(0.1, 9))
+    assert node._odom_reset is True
+    node._on_initial_pose(pose_message())
+    assert node._odom_reset is False
+
+
+def test_supervisor_rejects_large_consecutive_slam_pose_jump(supervisor_module, monkeypatch):
+    from omx_navigation.scan_map_quality import Pose2D, PoseScore, SearchResult
+
+    result = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.8, 0.0, 0.8, 1), None, False)
+    monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: result)
+    node = supervisor_module.LocalizationSupervisor()
+    node._on_map(map_message())
+    node._on_scan(scan_message())
+    node._on_initial_pose(pose_message())
+    node._on_scan(scan_message())
+    node._on_status_timer()
+    node.clock.seconds = 0.1
+    node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
+    slam = lambda x: SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=x, y=0.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)))
+    node._on_slam_pose(slam(0.0))
+    node._on_scan(scan_message())
+    node._on_status_timer()
+    node.clock.seconds = 0.2
+    node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
+    node._on_slam_pose(slam(1.0))
+    node._on_scan(scan_message())
+    node._on_status_timer()
+    assert json.loads(publisher(node, "~/status").messages[-1].data)["error"] == "POSE_OUTSIDE_MAP"

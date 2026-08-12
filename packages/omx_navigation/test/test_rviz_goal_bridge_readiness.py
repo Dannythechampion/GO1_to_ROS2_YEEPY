@@ -40,14 +40,18 @@ class GoalHandle:
 class ActionClient:
     def __init__(self, *_args):
         self.sent = []
-        self.response = Future(GoalHandle())
+        self.responses = []
+        self.wait_timeouts = []
 
     def wait_for_server(self, **_kwargs):
+        self.wait_timeouts.append(_kwargs["timeout_sec"])
         return True
 
     def send_goal_async(self, goal, **_kwargs):
         self.sent.append(goal)
-        return self.response
+        future = Future()
+        self.responses.append(future)
+        return future
 
 
 class Node:
@@ -114,8 +118,44 @@ def test_goal_bridge_rejects_until_ready_and_cancels_response_race(bridge_module
     node._on_goal_pose(pose())
     assert len(node._action_client.sent) == 1
     node._on_ready(SimpleNamespace(data=False))
-    node._action_client.response.complete()
-    handle = node._action_client.response.value
+    response = node._action_client.responses[0]
+    response.value = GoalHandle()
+    response.complete()
+    handle = response.value
     assert handle.cancelled is True
     handle.cancel_future.complete()
     assert node._active_goal_handle is None
+
+
+def test_goal_bridge_allows_one_inflight_or_active_goal_and_ignores_stale_callbacks(bridge_module):
+    node = bridge_module.RvizGoalBridge()
+    node._on_ready(SimpleNamespace(data=True))
+    node._on_goal_pose(pose())
+    node._on_goal_pose(pose())
+    assert len(node._action_client.sent) == 1
+    pending = node._action_client.responses[0]
+    pending.value = GoalHandle()
+    pending.complete()
+    node._on_goal_pose(pose())
+    assert len(node._action_client.sent) == 1
+    pending.value.result_future.complete()
+    node._on_goal_pose(pose())
+    assert len(node._action_client.sent) == 2
+    assert node._action_client.wait_timeouts == [0.0, 0.0]
+
+
+def test_goal_bridge_rejected_or_stale_response_never_claims_active_goal(bridge_module):
+    node = bridge_module.RvizGoalBridge()
+    node._on_ready(SimpleNamespace(data=True))
+    node._on_goal_pose(pose())
+    response = node._action_client.responses[0]
+    response.value = SimpleNamespace(accepted=False)
+    response.complete()
+    assert node._active_goal_handle is None
+    node._on_goal_pose(pose())
+    next_response = node._action_client.responses[1]
+    node._on_goal_response(response, 1)  # stale callback after a new request
+    assert node._active_goal_handle is None
+    next_response.value = GoalHandle()
+    next_response.complete()
+    assert node._active_goal_handle is next_response.value

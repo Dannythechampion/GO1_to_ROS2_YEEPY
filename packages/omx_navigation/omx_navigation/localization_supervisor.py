@@ -6,11 +6,19 @@ import csv
 import json
 import math
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, String
 from tf2_msgs.msg import TFMessage
@@ -57,20 +65,34 @@ class LocalizationSupervisor(Node):
             yaw_step=float(self.declare_parameter("coarse_search_yaw_step", math.radians(15.0)).value),
         )
         self._machine = LocalizationStateMachine(LocalizationPolicy())
+        self._camera_init_frame = str(self.declare_parameter("camera_init_frame", "camera_init").value)
+        self._source_base_frame = str(self.declare_parameter("source_base_frame", "body").value)
+        self._base_frame = str(self.declare_parameter("base_frame", "body_nav").value)
         self._grid = None
         self._points = None
         self._map_received_at = None
         self._scan_received_at = None
         self._initial_pose = None
+        self._generation = 0
+        self._scan_generation = 0
+        self._search_generation = None
+        self._search_future = None
+        self._search_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="localization_search")
         self._refined_pose = None
         self._search_pose_available = False
         self._overlap = 0.0
         self._ambiguity_margin = 0.0
         self._ambiguous = False
+        self._quality_error_latched = False
         self._slam_pose = None
         self._slam_received_at = None
+        self._slam_epoch = None
+        self._last_slam_pose = None
+        self._slam_position_jump = 0.0
+        self._slam_yaw_jump = 0.0
+        self._tf_received_at = None
         self._odom_position = None
-        self._odom_received_at = None
+        self._odom_source_stamp = None
         self._odom_reset = False
         self._last_transition = self._machine._transition()
         self._csv_file = None
@@ -80,12 +102,14 @@ class LocalizationSupervisor(Node):
         self._initialpose_publisher = self.create_publisher(PoseWithCovarianceStamped, "/slam_localization/initialpose", 10)
         self._status_publisher = self.create_publisher(String, "~/status", 10)
         self._ready_publisher = self.create_publisher(Bool, "~/ready", 10)
-        self._map_subscription = self.create_subscription(OccupancyGrid, "/map", self._on_map, 10)
-        self._scan_subscription = self.create_subscription(LaserScan, "/scan", self._on_scan, 10)
-        self._odom_subscription = self.create_subscription(Odometry, "/Odometry", self._on_odom, 10)
-        self._initialpose_subscription = self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self._on_initial_pose, 10)
-        self._slam_pose_subscription = self.create_subscription(PoseStamped, "/slam_toolbox/pose", self._on_slam_pose, 10)
-        self._tf_subscription = self.create_subscription(TFMessage, "/tf", self._on_tf, 10)
+        reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE)
+        map_qos = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._map_subscription = self.create_subscription(OccupancyGrid, "/map", self._on_map, map_qos)
+        self._scan_subscription = self.create_subscription(LaserScan, "/scan", self._on_scan, qos_profile_sensor_data)
+        self._odom_subscription = self.create_subscription(Odometry, "/Odometry", self._on_odom, qos_profile_sensor_data)
+        self._initialpose_subscription = self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self._on_initial_pose, reliable_qos)
+        self._slam_pose_subscription = self.create_subscription(PoseStamped, "/slam_toolbox/pose", self._on_slam_pose, reliable_qos)
+        self._tf_subscription = self.create_subscription(TFMessage, "/tf", self._on_tf, qos_profile_sensor_data)
         self._status_timer = self.create_timer(0.5, self._on_status_timer)
 
     def _on_map(self, message: OccupancyGrid) -> None:
@@ -98,9 +122,10 @@ class LocalizationSupervisor(Node):
                 message.data,
             )
             self._map_received_at = self._now()
+            self._try_start_search()
         except (TypeError, ValueError):
             self._grid = None
-        self._try_align()
+            self._map_received_at = None
 
     def _on_scan(self, message: LaserScan) -> None:
         try:
@@ -111,7 +136,9 @@ class LocalizationSupervisor(Node):
             self._scan_received_at = self._now()
         except (TypeError, ValueError):
             self._points = None
-        self._try_align()
+            self._scan_received_at = None
+        self._scan_generation += 1
+        self._try_start_search()
 
     def _on_initial_pose(self, message: PoseWithCovarianceStamped) -> None:
         if message.header.frame_id != "map":
@@ -128,20 +155,39 @@ class LocalizationSupervisor(Node):
             self._last_transition = self._machine.reject_initial_pose(self._now())
             return
         self._initial_pose = (initial, tuple(message.pose.covariance))
+        self._generation += 1
         self._slam_pose = None
+        self._slam_received_at = None
+        self._slam_epoch = None
+        self._last_slam_pose = None
+        self._slam_position_jump = 0.0
+        self._slam_yaw_jump = 0.0
         self._search_pose_available = False
+        self._refined_pose = None
+        self._overlap = 0.0
+        self._ambiguity_margin = 0.0
+        self._ambiguous = False
+        self._quality_error_latched = False
+        self._odom_reset = False
         self._last_transition = self._machine.receive_initial_pose(self._now())
-        self._try_align()
 
     def _on_slam_pose(self, message: PoseStamped) -> None:
         if message.header.frame_id != "map":
             return
         try:
             pose = message.pose
-            self._slam_pose = Pose2D(pose.position.x, pose.position.y, quaternion_to_yaw(
+            current = Pose2D(pose.position.x, pose.position.y, quaternion_to_yaw(
                 pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w
             ))
-            self._slam_received_at = self._now()
+            now = self._now()
+            if self._slam_epoch is None or now < self._slam_epoch:
+                return
+            if self._last_slam_pose is not None:
+                self._slam_position_jump = math.hypot(current.x - self._last_slam_pose.x, current.y - self._last_slam_pose.y)
+                self._slam_yaw_jump = abs((current.yaw - self._last_slam_pose.yaw + math.pi) % (2.0 * math.pi) - math.pi)
+            self._slam_pose = current
+            self._last_slam_pose = current
+            self._slam_received_at = now
         except (TypeError, ValueError):
             self._slam_pose = None
 
@@ -151,26 +197,47 @@ class LocalizationSupervisor(Node):
         current = (float(position.x), float(position.y))
         if not all(math.isfinite(value) for value in current):
             return
-        if self._odom_position is not None and self._odom_received_at is not None:
-            elapsed = now - self._odom_received_at
+        source_stamp = self._source_stamp(message, now)
+        if self._odom_position is not None and self._odom_source_stamp is not None:
+            elapsed = source_stamp - self._odom_source_stamp
             speed = math.hypot(current[0] - self._odom_position[0], current[1] - self._odom_position[1]) / elapsed if elapsed > 0.0 else math.inf
             if elapsed <= 0.0 or speed > 3.0:
                 self._odom_reset = True
         self._odom_position = current
-        self._odom_received_at = now
+        self._odom_source_stamp = source_stamp
 
-    def _on_tf(self, _message: TFMessage) -> None:
-        # The subscription makes TF freshness observable in rosbag diagnostics.
-        return
+    def _on_tf(self, message: TFMessage) -> None:
+        for transform in getattr(message, "transforms", ()):
+            parent = getattr(getattr(transform, "header", None), "frame_id", "")
+            child = getattr(transform, "child_frame_id", "")
+            if parent == self._camera_init_frame and child in (self._source_base_frame, self._base_frame):
+                self._tf_received_at = self._now()
+                return
 
-    def _try_align(self) -> None:
-        if self._initial_pose is None or self._grid is None or self._points is None or not self._inputs_fresh():
+    def _try_start_search(self) -> None:
+        if self._initial_pose is None or self._grid is None or self._points is None:
+            return
+        if self._scan_generation < self._generation or self._search_generation == self._generation:
             return
         initial, covariance = self._initial_pose
         if self._grid.world_to_cell(initial.x, initial.y) is None:
             self._last_transition = self._machine.observe(self._observation(pose_available=False))
             return
-        result = coarse_search(self._grid, self._points, initial, self._window)
+        self._search_generation = self._generation
+        self._search_future = self._search_executor.submit(coarse_search, self._grid, self._points, initial, self._window)
+
+    def _apply_search_result(self) -> None:
+        if self._search_future is None or not self._search_future.done():
+            return
+        future, self._search_future = self._search_future, None
+        generation = self._search_generation
+        try:
+            result = future.result()
+        except Exception:
+            return
+        if generation != self._generation or self._initial_pose is None or self._grid is None or self._points is None:
+            return
+        _initial, covariance = self._initial_pose
         self._overlap = result.best.overlap
         self._search_pose_available = True
         self._ambiguous = result.ambiguous
@@ -180,13 +247,16 @@ class LocalizationSupervisor(Node):
         if result.best.overlap < self._machine.policy.min_overlap or result.ambiguous:
             # Search completed against a valid user pose, so preserve its
             # specific quality error instead of classifying it as missing SLAM.
-            self._last_transition = self._machine.observe(self._observation(pose_available=True))
+            self._quality_error_latched = True
             return
         self._refined_pose = result.best.pose
         self._publish_refined_pose(result.best.pose, covariance)
 
     def _on_status_timer(self) -> None:
-        self._last_transition = self._machine.observe(self._observation())
+        self._apply_search_result()
+        self._last_transition = self._machine.observe(
+            self._observation(pose_available=True if self._quality_error_latched else None)
+        )
         if self._last_transition.republish_initial_pose and self._refined_pose is not None and self._initial_pose is not None:
             self._publish_refined_pose(self._refined_pose, self._initial_pose[1])
         self._publish_status()
@@ -194,17 +264,15 @@ class LocalizationSupervisor(Node):
     def _observation(self, pose_available: bool | None = None) -> QualityObservation:
         now = self._now()
         if pose_available is None:
-            pose_available = self._search_pose_available or (
-                self._slam_pose is not None and self._slam_pose_fresh(now)
-            )
+            pose_available = self._slam_pose is not None and self._slam_pose_fresh(now)
         return QualityObservation(
             now=now,
-            inputs_fresh=self._inputs_fresh(now),
+            inputs_fresh=self._inputs_fresh(now) and self._tf_fresh(now),
             pose_available=pose_available,
             overlap=self._finite_or_zero(self._overlap),
             ambiguity_margin=(0.0 if self._ambiguous else self._finite_or_zero(self._ambiguity_margin)),
-            position_jump=0.0,
-            yaw_jump=0.0,
+            position_jump=self._slam_position_jump,
+            yaw_jump=self._slam_yaw_jump,
             odom_reset=self._odom_reset,
             tf_conflict=self._has_amcl(),
         )
@@ -222,6 +290,7 @@ class LocalizationSupervisor(Node):
         if len(message.pose.covariance) < 36:
             message.pose.covariance.extend([0.0] * (36 - len(message.pose.covariance)))
         self._initialpose_publisher.publish(message)
+        self._slam_epoch = self._now()
 
     def _publish_status(self) -> None:
         transition = self._last_transition
@@ -246,10 +315,27 @@ class LocalizationSupervisor(Node):
 
     def _inputs_fresh(self, now: float | None = None) -> bool:
         now = self._now() if now is None else now
-        return all(value is not None and 0.0 <= now - value <= self._input_max_age for value in (self._map_received_at, self._scan_received_at))
+        # A map-server snapshot is durable state, unlike a scan.  It must be
+        # structurally valid, but clicking initial pose must not require it to
+        # be republished.  The scan is live data and therefore age-limited.
+        return self._grid is not None and self._scan_received_at is not None and 0.0 <= now - self._scan_received_at <= self._input_max_age
 
     def _slam_pose_fresh(self, now: float) -> bool:
-        return self._slam_received_at is not None and 0.0 <= now - self._slam_received_at <= self._input_max_age
+        return self._slam_epoch is not None and self._slam_received_at is not None and self._slam_received_at >= self._slam_epoch and 0.0 <= now - self._slam_received_at <= self._input_max_age
+
+    def _tf_fresh(self, now: float) -> bool:
+        return self._tf_received_at is not None and 0.0 <= now - self._tf_received_at <= self._input_max_age
+
+    @staticmethod
+    def _source_stamp(message, fallback: float) -> float:
+        stamp = getattr(getattr(message, "header", None), "stamp", None)
+        seconds = getattr(stamp, "sec", 0) if stamp is not None else 0
+        nanoseconds = getattr(stamp, "nanosec", 0) if stamp is not None else 0
+        try:
+            value = float(seconds) + float(nanoseconds) / 1_000_000_000.0
+        except (TypeError, ValueError):
+            return fallback
+        return value if math.isfinite(value) and value > 0.0 else fallback
 
     def _has_amcl(self) -> bool:
         return any(str(name).rstrip("/") == "/amcl" or str(name) == "amcl" for name in self.get_node_names())
@@ -266,6 +352,7 @@ class LocalizationSupervisor(Node):
             self._csv_file.flush()
 
     def destroy_node(self):
+        self._search_executor.shutdown(wait=False, cancel_futures=True)
         if self._csv_file is not None:
             self._csv_file.close()
             self._csv_file = None
