@@ -5,6 +5,7 @@ private map topic and is the sole publisher of ``map -> camera_init``.
 """
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -12,10 +13,10 @@ import yaml
 try:  # Keeping input validation importable makes dry-run checks ROS-independent.
     from ament_index_python.packages import get_package_share_directory
     from launch import LaunchDescription
-    from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable
+    from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable
     from launch.conditions import IfCondition, UnlessCondition
     from launch.launch_description_sources import PythonLaunchDescriptionSource
-    from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+    from launch.substitutions import LaunchConfiguration
     from launch_ros.actions import ComposableNodeContainer, LoadComposableNodes, Node, SetRemap
     from launch_ros.descriptions import ComposableNode
     from nav2_common.launch import RewrittenYaml
@@ -197,6 +198,47 @@ def _validate_launch_inputs(context, *_args, **_kwargs):
     return []
 
 
+def _supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, diagnostics_csv):
+    """Create the supervisor with either a session CSV or no filesystem output."""
+    return Node(
+        package="omx_navigation", executable="localization_supervisor", name="localization_supervisor", output="screen",
+        parameters=[{"camera_init_frame": odom_frame, "source_base_frame": source_base_frame, "base_frame": base_frame,
+                     "diagnostics_csv": diagnostics_csv}],
+        remappings=[("/scan", scan_topic), ("/Odometry", odom_topic)],
+    )
+
+
+def _setup_diagnostics(context, *_args, **_kwargs):
+    """Create one optional recording session without invoking a shell."""
+    record_localization = parse_launch_boolean(
+        LaunchConfiguration("record_localization").perform(context), "record_localization"
+    )
+    record_cloud = parse_launch_boolean(LaunchConfiguration("record_cloud").perform(context), "record_cloud")
+    odom_frame = LaunchConfiguration("odom_frame")
+    source_base_frame = LaunchConfiguration("source_base_frame")
+    base_frame = LaunchConfiguration("base_frame")
+    scan_topic = LaunchConfiguration("scan_topic")
+    odom_topic = LaunchConfiguration("odom_topic")
+    if not record_localization:
+        return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, "")]
+
+    root = Path(LaunchConfiguration("diagnostics_root").perform(context)).expanduser()
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    session_dir = root / f"posegraph_{timestamp}_{os.getpid()}"
+    session_dir.mkdir(parents=True, exist_ok=False)
+    topics = [
+        "/scan", "/Odometry", "/tf", "/tf_static", "/initialpose", "/slam_toolbox/pose",
+        "/localization_supervisor/status", "/localization_supervisor/ready", "/cmd_vel_nav", "/cmd_vel",
+    ]
+    if record_cloud:
+        topics.append("/cloud_registered_body")
+    bag = ExecuteProcess(
+        cmd=["ros2", "bag", "record", "--output", str(session_dir / "rosbag"), *topics],
+        output="screen",
+    )
+    return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, str(session_dir / "localization_status.csv")), bag]
+
+
 def generate_launch_description() -> "LaunchDescription":
     if get_package_share_directory is None:
         raise RuntimeError("ROS 2 launch dependencies are unavailable")
@@ -325,12 +367,6 @@ def generate_launch_description() -> "LaunchDescription":
         package="nav2_lifecycle_manager", executable="lifecycle_manager", name="navigation_lifecycle_manager", output="screen",
         parameters=[{"autostart": True, "node_names": [item[0] for item in nav2_node_specs]}],
     )
-    supervisor = Node(
-        package="omx_navigation", executable="localization_supervisor", name="localization_supervisor", output="screen",
-        parameters=[{"camera_init_frame": odom_frame, "source_base_frame": source_base_frame, "base_frame": base_frame,
-                     "diagnostics_csv": PathJoinSubstitution([LaunchConfiguration("diagnostics_root"), "localization.csv"])}],
-        remappings=[("/scan", scan_topic), ("/Odometry", odom_topic)],
-    )
     gate = Node(
         package="omx_navigation", executable="cmd_vel_safety_gate", name="cmd_vel_safety_gate", output="screen",
         parameters=[{"input_topic": "/cmd_vel_nav", "output_topic": "/cmd_vel"}],
@@ -372,7 +408,8 @@ def generate_launch_description() -> "LaunchDescription":
         # Register the component container before LoadComposableNodes. This is
         # launch ordering rather than a readiness barrier; the loader waits for
         # the target container service.
-        planar_frame, scan_projection, map_server, map_lifecycle, slam_localization, supervisor,
+        planar_frame, scan_projection, map_server, map_lifecycle, slam_localization,
+        OpaqueFunction(function=_setup_diagnostics),
         nav2_container, *nav2_nodes, nav2_component_loader, nav2_lifecycle,
         gate, rviz, go1_driver,
     ])

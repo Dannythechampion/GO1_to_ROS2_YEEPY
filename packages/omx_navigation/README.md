@@ -175,3 +175,52 @@ cd /mnt/t500/go1_ros2_project
 - 기존 지도와 실시간 scan이 맞지 않으면 새 지도를 작성해야 합니다.
 - 실제 주행은 고정 TF·extrinsic, 정지 watchdog, 초기 자세와 좁은 복도
   검증을 모두 마친 뒤 별도 단계에서 진행합니다.
+
+## 포즈 그래프 진단 및 안전한 dry-run
+
+이 절차는 실제 Jetson·센서 동작을 확인했다는 뜻이 아닙니다. 모든 bringup은
+`arm:=false`로만 실행하며, 센서 장착 위치와 extrinsic 보정이 완료되기 전에는
+armed launch를 구현하거나 실행하지 않습니다.
+
+### Windows 테스트
+
+```powershell
+py -3 -m pytest migration/test_posegraph_scripts.py packages/omx_navigation/test/test_posegraph_launch.py -q
+```
+
+### WSL 빌드·테스트
+
+```bash
+cd /mnt/c/Users/npgy2/Documents/go1/GO1_to_ROS2_YEEPY
+bash -n migration/verify_posegraph_navigation.sh
+python3 -m pytest migration/test_posegraph_scripts.py packages/omx_navigation/test/test_posegraph_launch.py -q
+source /opt/ros/humble/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
+cd /mnt/t500/go1_ros2_ws
+colcon build --symlink-install --packages-select go1_driver omx_navigation
+colcon test --packages-select omx_navigation
+colcon test-result --verbose
+```
+
+### 향후 Jetson dry-run
+
+```bash
+ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
+  start_go1_driver:=true arm:=false record_localization:=true record_cloud:=true \
+  diagnostics_root:=/mnt/t500/localization_logs
+```
+
+`record_localization:=true`이면 UTC 시각 기반 세션 디렉터리
+`/mnt/t500/localization_logs/posegraph_*/`가 생성됩니다. 그 안의
+`localization_status.csv`와 `rosbag/`가 같은 세션의 진단 결과입니다.
+`record_localization:=false`이면 진단 디렉터리와 rosbag 프로세스를 만들지 않습니다.
+
+검증은 `./migration/verify_posegraph_navigation.sh preflight` 다음
+`./migration/verify_posegraph_navigation.sh ready` 순서로 실행합니다. `ready`는
+`/amcl` 미실행, TF `map -> camera_init -> body_nav`, 모든 Nav2 lifecycle active,
+그리고 `/go1_driver`의 `arm=false`를 요구합니다.
+
+상태 토픽의 `error`는 다음처럼 해석합니다: `NONE`은 준비됨, `INPUT_MISSING`은
+입력 누락/오래된 입력, `LOW_OVERLAP`·`AMBIGUOUS`는 scan-map 정합 품질 부족,
+`ODOM_RESET`·`TF_CONFLICT`는 odometry 또는 TF를 먼저 복구해야 함,
+`EXTRINSIC_UNCALIBRATED`는 센서 장착 보정이 필요함을 의미합니다.

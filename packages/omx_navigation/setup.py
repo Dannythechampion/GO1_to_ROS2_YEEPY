@@ -5,6 +5,9 @@ from setuptools import find_packages, setup
 
 
 package_name = "omx_navigation"
+map_files = glob("maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f*") or glob(
+    "../../maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f*"
+)
 
 
 setup(
@@ -21,7 +24,7 @@ setup(
             os.path.join(
                 "share", package_name, "maps", "hanyang_9f", "20260728_204825", "slam_toolbox"
             ),
-            glob("../../maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f*"),
+            map_files,
         ),
     ],
     install_requires=["setuptools"],

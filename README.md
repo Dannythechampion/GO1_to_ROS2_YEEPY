@@ -1188,3 +1188,40 @@ arm:=true 재실행
     ↓
 저속 실제 주행
 ```
+
+## 포즈 그래프 localization 진단
+
+이 저장소의 포즈 그래프 절차는 실제 하드웨어 성공을 주장하지 않습니다. Jetson에서
+실행할 때에도 반드시 `arm:=false` dry-run으로 시작하며, LiDAR/Go1 센서 장착과
+extrinsic 보정이 완료되기 전에는 armed launch를 구현하거나 실행하지 않습니다.
+
+Windows PowerShell 테스트:
+
+```powershell
+py -3 -m pytest migration/test_posegraph_scripts.py packages/omx_navigation/test/test_posegraph_launch.py -q
+```
+
+WSL에서 문법·빌드·테스트:
+
+```bash
+cd /mnt/c/Users/npgy2/Documents/go1/GO1_to_ROS2_YEEPY
+bash -n migration/verify_posegraph_navigation.sh
+source /opt/ros/humble/setup.bash
+source /mnt/t500/go1_ros2_ws/install/setup.bash
+python3 -m pytest migration/test_posegraph_scripts.py packages/omx_navigation/test/test_posegraph_launch.py -q
+cd /mnt/t500/go1_ros2_ws && colcon build --symlink-install --packages-select go1_driver omx_navigation
+```
+
+향후 Jetson dry-run 예시는 다음과 같습니다.
+
+```bash
+ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
+  start_go1_driver:=true arm:=false record_localization:=true \
+  diagnostics_root:=/mnt/t500/localization_logs
+```
+
+기록을 켜면 `/mnt/t500/localization_logs/posegraph_*/localization_status.csv`와
+동일 세션의 `rosbag/`가 생성됩니다. 상태 토픽 `error`가 `INPUT_MISSING`,
+`LOW_OVERLAP`, `AMBIGUOUS`, `ODOM_RESET`, `TF_CONFLICT`, 또는
+`EXTRINSIC_UNCALIBRATED`이면 이동하지 말고 해당 입력·정합·TF·보정을 먼저
+복구하십시오. `ready` 검증은 `/amcl` 미실행, TF, Nav2 lifecycle, `arm=false`를 확인합니다.
