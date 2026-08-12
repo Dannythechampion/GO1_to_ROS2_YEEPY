@@ -111,11 +111,23 @@ class LocalizationStateMachine:
         self._verification_started_at: float | None = None
         self._degraded_started_at: float | None = None
 
+    @property
+    def attempts(self) -> int:
+        """Number of alignment attempts in the current initial-pose session."""
+        return self._attempts
+
     def receive_initial_pose(self, now: float) -> Transition:
         self._validate_now(now)
         self._attempts = 1
         self._alignment_deadline = now + self.policy.alignment_timeout
         self._start_alignment(now)
+        return self._transition()
+
+    def reject_initial_pose(self, now: float) -> Transition:
+        """Record an invalid user supplied pose without attempting alignment."""
+        self._validate_now(now)
+        self._attempts = 1
+        self._lose(ErrorCode.POSE_OUTSIDE_MAP)
         return self._transition()
 
     def retry(self, now: float) -> Transition:

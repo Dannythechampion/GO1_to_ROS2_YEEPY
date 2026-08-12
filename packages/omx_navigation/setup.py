@@ -28,6 +28,7 @@ setup(
         "console_scripts": [
             "cmd_vel_safety_gate = omx_navigation.cmd_vel_safety_gate:main",
             "planar_base_frame = omx_navigation.planar_base_frame:main",
+            "localization_supervisor = omx_navigation.localization_supervisor:main",
             "rviz_goal_bridge = omx_navigation.rviz_goal_bridge:main",
         ],
     },
