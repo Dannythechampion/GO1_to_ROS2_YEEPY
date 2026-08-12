@@ -46,9 +46,13 @@ class GridMap:
         if not math.isfinite(x) or not math.isfinite(y):
             return None
         dx, dy = x - self.origin_x, y - self.origin_y
+        if not math.isfinite(dx) or not math.isfinite(dy):
+            return None
         c, s = math.cos(self.origin_yaw), math.sin(self.origin_yaw)
         gx = (c * dx + s * dy) / self.resolution
         gy = (-s * dx + c * dy) / self.resolution
+        if not math.isfinite(gx) or not math.isfinite(gy):
+            return None
         gx = _normalize_cell_coordinate(gx, self.width)
         gy = _normalize_cell_coordinate(gy, self.height)
         ix, iy = math.floor(gx), math.floor(gy)
@@ -169,7 +173,7 @@ def coarse_search(grid: GridMap, points: Sequence[ScanPoint], initial: Pose2D, w
     candidates = []
     for pose in poses:
         score = score_pose(grid, field, sampled_points, pose, window.hit_distance)
-        if _aabb_is_outside_grid(grid, pose, bounds_by_yaw[pose.yaw]):
+        if _candidate_has_outside_endpoint(grid, points, pose, bounds_by_yaw[pose.yaw]):
             score = PoseScore(score.pose, 0.0, math.inf, _score_value(0.0, math.inf), score.points_used)
         candidates.append(score)
     candidates.sort(key=lambda item: (-item.score, -item.overlap, item.mean_distance, item.pose.x, item.pose.y, item.pose.yaw))
@@ -219,22 +223,73 @@ def _rotated_point_bounds(points: Sequence[ScanPoint], yaw: float) -> tuple[floa
     return None if math.isinf(min_x) else (min_x, max_x, min_y, max_y)
 
 
-def _aabb_is_outside_grid(
-    grid: GridMap, pose: Pose2D, bounds: tuple[float, float, float, float] | None
+def _candidate_has_outside_endpoint(
+    grid: GridMap,
+    points: Sequence[ScanPoint],
+    pose: Pose2D,
+    bounds: tuple[float, float, float, float] | None,
 ) -> bool:
+    status = _aabb_boundary_status(grid, pose, bounds)
+    return status is True or (status is None and _has_outside_endpoint_exact(grid, points, pose))
+
+
+def _aabb_boundary_status(
+    grid: GridMap, pose: Pose2D, bounds: tuple[float, float, float, float] | None
+) -> bool | None:
     if bounds is None:
         return False
     dx, dy = pose.x - grid.origin_x, pose.y - grid.origin_y
+    if not math.isfinite(dx) or not math.isfinite(dy):
+        return None
     c, s = math.cos(grid.origin_yaw), math.sin(grid.origin_yaw)
     translation_x = (c * dx + s * dy) / grid.resolution
     translation_y = (-s * dx + c * dy) / grid.resolution
+    if not math.isfinite(translation_x) or not math.isfinite(translation_y):
+        return None
     min_x, max_x, min_y, max_y = bounds
-    return (
-        not _cell_coordinate_is_inside(translation_x + min_x / grid.resolution, grid.width)
-        or not _cell_coordinate_is_inside(translation_x + max_x / grid.resolution, grid.width)
-        or not _cell_coordinate_is_inside(translation_y + min_y / grid.resolution, grid.height)
-        or not _cell_coordinate_is_inside(translation_y + max_y / grid.resolution, grid.height)
+    values = (
+        (translation_x + min_x / grid.resolution, grid.width),
+        (translation_x + max_x / grid.resolution, grid.width),
+        (translation_y + min_y / grid.resolution, grid.height),
+        (translation_y + max_y / grid.resolution, grid.height),
     )
+    uncertainty = _aabb_uncertainty_cells(grid, pose, bounds)
+    states = tuple(_classify_cell_coordinate(value, extent, uncertainty) for value, extent in values)
+    if any(state == "outside" for state in states):
+        return True
+    return False if all(state == "inside" for state in states) else None
+
+
+def _has_outside_endpoint_exact(grid: GridMap, points: Sequence[ScanPoint], pose: Pose2D) -> bool:
+    c, s = math.cos(pose.yaw), math.sin(pose.yaw)
+    for point in points:
+        if not math.isfinite(point.x) or not math.isfinite(point.y):
+            continue
+        x = pose.x + c * point.x - s * point.y
+        y = pose.y + s * point.x + c * point.y
+        if not math.isfinite(x) or not math.isfinite(y) or grid.world_to_cell(x, y) is None:
+            return True
+    return False
+
+
+def _aabb_uncertainty_cells(grid: GridMap, pose: Pose2D, bounds: tuple[float, float, float, float]) -> float:
+    scale = max(
+        1.0,
+        abs(pose.x), abs(pose.y), abs(grid.origin_x), abs(grid.origin_y),
+        *(abs(value) for value in bounds),
+    ) / grid.resolution
+    return 128.0 * math.ulp(scale)
+
+
+def _classify_cell_coordinate(value: float, extent: int, uncertainty: float) -> str:
+    if not math.isfinite(value):
+        return "uncertain"
+    value = _normalize_cell_coordinate(value, extent)
+    if value < -uncertainty or value > extent + uncertainty:
+        return "outside"
+    if uncertainty < value < extent - uncertainty:
+        return "inside"
+    return "uncertain"
 
 
 def _cell_coordinate_is_inside(value: float, extent: int) -> bool:
