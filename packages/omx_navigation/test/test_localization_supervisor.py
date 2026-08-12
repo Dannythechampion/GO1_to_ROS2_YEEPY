@@ -434,3 +434,44 @@ def test_rapid_clicks_keep_only_latest_search_queued(supervisor_module):
     node._on_scan(scan_message())
     assert len(node._search_executor.futures) == 1
     assert node._search_executor.futures[0].cancel_called is True
+
+
+def test_new_click_without_scan_discards_older_pending_search(supervisor_module):
+    class Future:
+        def __init__(self):
+            self._done = False
+            self.cancel_called = False
+
+        def done(self):
+            return self._done
+
+        def cancel(self):
+            self.cancel_called = True
+            return False
+
+        def result(self):
+            from omx_navigation.scan_map_quality import Pose2D, PoseScore, SearchResult
+            return SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.8, 0.0, 0.8, 1), None, False)
+
+    class Executor:
+        def __init__(self):
+            self.futures = []
+
+        def submit(self, *_args):
+            future = Future()
+            self.futures.append(future)
+            return future
+
+    node = supervisor_module.LocalizationSupervisor()
+    node._search_executor = Executor()
+    node._on_map(map_message())
+    node._on_scan(scan_message())
+    node._on_initial_pose(pose_message())  # gen1
+    node._on_scan(scan_message())
+    assert len(node._search_executor.futures) == 1
+    node._on_initial_pose(pose_message())  # gen2
+    node._on_scan(scan_message())          # gen2 becomes pending behind gen1
+    node._on_initial_pose(pose_message())  # gen3, no post-click scan
+    node._search_executor.futures[0]._done = True
+    node._on_status_timer()
+    assert len(node._search_executor.futures) == 1

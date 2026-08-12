@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
@@ -80,6 +81,7 @@ class LocalizationSupervisor(Node):
         self._completed_search_generation = None
         self._search_future = None
         self._pending_search = None
+        self._search_lock = Lock()
         self._search_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="localization_search")
         self._refined_pose = None
         self._search_pose_available = False
@@ -144,6 +146,7 @@ class LocalizationSupervisor(Node):
         self._try_start_search()
 
     def _on_initial_pose(self, message: PoseWithCovarianceStamped) -> None:
+        self._begin_initial_pose_generation()
         if message.header.frame_id != "map":
             self._last_transition = self._machine.reject_initial_pose(self._now())
             return
@@ -158,8 +161,6 @@ class LocalizationSupervisor(Node):
             self._last_transition = self._machine.reject_initial_pose(self._now())
             return
         self._initial_pose = (initial, tuple(message.pose.covariance))
-        self._generation += 1
-        self._required_scan_sequence = self._scan_sequence
         self._slam_pose = None
         self._slam_received_at = None
         self._slam_epoch = None
@@ -174,6 +175,16 @@ class LocalizationSupervisor(Node):
         self._quality_error_latched = False
         self._odom_reset = False
         self._last_transition = self._machine.receive_initial_pose(self._now())
+
+    def _begin_initial_pose_generation(self) -> None:
+        """Invalidate queued work before accepting or rejecting a user click."""
+        with self._search_lock:
+            self._generation += 1
+            self._required_scan_sequence = self._scan_sequence
+            self._pending_search = None
+            self._initial_pose = None
+            if self._search_future is not None:
+                self._search_future.cancel()
 
     def _on_slam_pose(self, message: PoseStamped) -> None:
         if message.header.frame_id != "map":
@@ -221,56 +232,59 @@ class LocalizationSupervisor(Node):
     def _try_start_search(self) -> None:
         if self._initial_pose is None or self._grid is None or self._points is None:
             return
-        if self._required_scan_sequence is None or self._scan_sequence <= self._required_scan_sequence:
-            return
-        if self._completed_search_generation == self._generation or self._active_search_generation == self._generation:
-            return
         initial, covariance = self._initial_pose
         if self._grid.world_to_cell(initial.x, initial.y) is None:
             self._last_transition = self._machine.observe(self._observation(pose_available=False))
             return
-        snapshot = (self._generation, self._grid, self._points, initial, covariance)
-        if self._search_future is not None:
-            if self._search_future.cancel():
-                self._search_future = None
-                self._active_search_generation = None
-            else:
-                self._pending_search = snapshot
+        with self._search_lock:
+            if self._required_scan_sequence is None or self._scan_sequence <= self._required_scan_sequence:
                 return
-        self._submit_search(snapshot)
+            if self._completed_search_generation == self._generation or self._active_search_generation == self._generation:
+                return
+            snapshot = (self._generation, self._grid, self._points, initial, covariance)
+            if self._search_future is not None:
+                if self._search_future.cancel():
+                    self._search_future = None
+                    self._active_search_generation = None
+                else:
+                    self._pending_search = snapshot
+                    return
+            self._submit_search_locked(snapshot)
 
-    def _submit_search(self, snapshot) -> None:
+    def _submit_search_locked(self, snapshot) -> None:
+        """Submit with `_search_lock` held; worker never mutates node state."""
         generation, grid, points, initial, _covariance = snapshot
         self._active_search_generation = generation
         self._search_future = self._search_executor.submit(coarse_search, grid, points, initial, self._window)
 
     def _apply_search_result(self) -> None:
-        if self._search_future is None or not self._search_future.done():
-            return
-        future, self._search_future = self._search_future, None
-        generation, self._active_search_generation = self._active_search_generation, None
+        with self._search_lock:
+            if self._search_future is None or not self._search_future.done():
+                return
+            future, self._search_future = self._search_future, None
+            generation, self._active_search_generation = self._active_search_generation, None
         try:
             result = future.result()
         except Exception:
             result = None
-        if result is not None and generation == self._generation and self._initial_pose is not None and self._grid is not None and self._points is not None:
-            self._completed_search_generation = generation
-            _initial, covariance = self._initial_pose
-            self._overlap = result.best.overlap
-            self._search_pose_available = True
-            self._ambiguous = result.ambiguous
-            self._ambiguity_margin = (
-                result.best.score - result.runner_up.score if result.runner_up is not None else 1.0
-            )
-            if result.best.overlap < self._machine.policy.min_overlap or result.ambiguous:
-                self._quality_error_latched = True
-            else:
-                self._refined_pose = result.best.pose
-                self._publish_refined_pose(result.best.pose, covariance)
-        if self._pending_search is not None:
+        with self._search_lock:
+            if result is not None and generation == self._generation and self._initial_pose is not None and self._grid is not None and self._points is not None:
+                self._completed_search_generation = generation
+                _initial, covariance = self._initial_pose
+                self._overlap = result.best.overlap
+                self._search_pose_available = True
+                self._ambiguous = result.ambiguous
+                self._ambiguity_margin = (
+                    result.best.score - result.runner_up.score if result.runner_up is not None else 1.0
+                )
+                if result.best.overlap < self._machine.policy.min_overlap or result.ambiguous:
+                    self._quality_error_latched = True
+                else:
+                    self._refined_pose = result.best.pose
+                    self._publish_refined_pose(result.best.pose, covariance)
             pending, self._pending_search = self._pending_search, None
-            if pending[0] != self._completed_search_generation:
-                self._submit_search(pending)
+            if pending is not None and pending[0] == self._generation and self._search_future is None:
+                self._submit_search_locked(pending)
 
     def _on_status_timer(self) -> None:
         self._apply_search_result()

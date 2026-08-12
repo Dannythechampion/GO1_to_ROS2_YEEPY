@@ -50,3 +50,16 @@
 - focused: `py -3 -m pytest test/test_localization_supervisor.py test/test_rviz_goal_bridge_readiness.py test/test_goal_gate.py -q -p no:cacheprovider` — 19 passed.
 - 전체 패키지: `py -3 -m pytest test -q -p no:cacheprovider` — 125 passed, 1 skipped.
 - 구문 검증: `py -3 -m compileall -q omx_navigation` — 성공.
+
+## Fix 3 세대 무효화
+
+- 모든 `/initialpose` 수신(유효·무효 포함)은 lock 안에서 generation을 증가시키고 `_pending_search` 및 이전 initial pose를 제거합니다. 실행 중 future에는 cancel을 시도하지만, 실행 중인 작업은 강제 중단하지 않습니다.
+- future/pending/generation snapshot의 확인·제출·완료 적용을 단일 `threading.Lock`으로 보호했습니다. worker는 node 상태를 직접 바꾸지 않으며, timer만 완료 결과를 적용합니다.
+- 따라서 gen1 실행 중 gen2의 scan으로 대기 스냅샷이 생긴 뒤 gen3 클릭에 새 scan이 없으면, gen1 완료가 gen2를 제출하지 않습니다.
+
+### Fix 3 검증
+
+- RED: gen1 실행, gen2 pending, gen3 무scan 클릭 후 gen1 완료가 gen2 search를 재제출하는 기존 동작을 확인했습니다.
+- focused: `py -3 -m pytest test/test_localization_supervisor.py test/test_rviz_goal_bridge_readiness.py test/test_goal_gate.py -q -p no:cacheprovider` — 20 passed.
+- 전체 패키지: `py -3 -m pytest test -q -p no:cacheprovider` — 126 passed, 1 skipped.
+- 구문 검증: `py -3 -m compileall -q omx_navigation` — 성공.
