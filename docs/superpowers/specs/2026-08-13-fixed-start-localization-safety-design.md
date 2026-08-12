@@ -20,6 +20,7 @@ Go1을 매번 동일한 바닥 타일에 앞발과 진행 방향을 맞춰 배�
 - localization과 E-stop 상태에 따른 속도 명령 차단
 - localization 완료 전 RViz goal 거부
 - AMCL 재시작 또는 FAST-LIO 재시작 감지와 자동 차단
+- 초기 좌표를 나중에 측정할 수 있는 commissioning 절차와 안전한 미설정 상태
 - dry-run, rosbag 재생 및 실제 로봇 단계별 검증
 
 ### 제외
@@ -101,9 +102,25 @@ Nav2 controller 출력은 `/cmd_vel_nav`로 remap한다. `go1_driver`는 `/cmd_v
 
 초기 variance는 위치 표준편차 0.15 m, yaw 표준편차 10 deg에 해당한다. 실제 배치 반복 시험 결과가 더 작더라도 최초 현장 검증 전에는 이보다 좁게 설정하지 않는다.
 
-좌표는 최초 설치 시 기존 RViz 절차로 한 번 측정한다. 동일 타일에 10회 재배치해 얻은 자세의 평균을 프리셋 값으로 저장하고, 최대 오차가 설계 범위를 넘으면 바닥 표시를 개선한 뒤 다시 측정한다. 프리셋 파일이 없거나 필드가 유효하지 않으면 launch는 노드를 시작하지 않는다.
+좌표는 최초 설치 시 기존 RViz 절차로 측정한다. 동일 타일에 10회 재배치해 얻은 자세의 평균을 프리셋 값으로 저장하고, 최대 오차가 설계 범위를 넘으면 바닥 표시를 개선한 뒤 다시 측정한다.
 
-### 6.2 `localization_supervisor`
+초기 좌표가 아직 없는 개발 단계에서는 launch 인자 `start_pose_file`을 빈 값으로 둔다. 이 경우 supervisor는 `UNCOMMISSIONED` 상태와 `ready=false`만 발행하며 `/initialpose`를 자동 발행하지 않는다. `arm:=false` dry-run은 허용하지만 `arm:=true`는 launch 단계에서 거부한다. 프리셋 파일이 지정됐지만 파싱 또는 스키마 검증에 실패한 경우에는 arm 값과 관계없이 launch를 실패시킨다.
+
+### 6.2 초기 자세 commissioning
+
+초기 위치 측정은 구현 완료를 막지 않으며, 실제 현장 적용 전에 다음 절차로 수행한다.
+
+1. `arm:=false`, `start_pose_file:=""`로 bringup하고 기존 RViz `2D Pose Estimate`로 수동 localization한다.
+2. Go1을 지정 타일에 맞춘 각 배치에서 AMCL covariance와 지도-스캔 정합이 안정된 뒤 commissioning 도구로 자세 한 개를 기록한다.
+3. 로봇을 타일에서 완전히 치웠다가 다시 배치하는 절차를 총 10회 반복한다.
+4. commissioning 도구는 x/y 산술 평균, yaw circular mean, 최대 위치 편차 및 최대 yaw 편차를 계산한다.
+5. 최대 위치 편차가 0.15 m 또는 최대 yaw 편차가 10 deg를 넘으면 프리셋 생성을 거부한다.
+6. 통과하면 명시적으로 지정한 출력 경로에 `start_pose.yaml`을 생성한다.
+7. 생성된 파일을 `start_pose_file:=`로 전달하고 `arm:=false` 자동 localization 시험을 10회 통과한 뒤에만 armed 시험으로 진행한다.
+
+commissioning 표본과 생성된 운영 좌표는 현장별 데이터이므로 소스 저장소에 기본값으로 커밋하지 않는다. 테스트에서는 별도의 fixture 프리셋을 사용한다.
+
+### 6.3 `localization_supervisor`
 
 단일 책임은 초기 자세 공급과 localization 상태 판정이다. 속도 명령은 처리하지 않는다.
 
@@ -130,7 +147,7 @@ Nav2 controller 출력은 `/cmd_vel_nav`로 remap한다. `go1_driver`는 `/cmd_v
 
 `ready=true`는 latched 신호로 사용하지 않는다. 10 Hz heartbeat로 발행하고 소비자는 마지막 수신 후 0.30 s가 지나면 준비되지 않은 것으로 처리한다.
 
-### 6.3 정지 상태 지도-스캔 검증기
+### 6.4 정지 상태 지도-스캔 검증기
 
 AMCL covariance만으로 잘못된 지도 위치 수렴을 판정할 수 없으므로 독립적인 2D 정합 점수를 계산한다.
 
@@ -145,11 +162,13 @@ AMCL covariance만으로 잘못된 지도 위치 수렴을 판정할 수 없으�
 - 10개 이상 연속 scan 수집
 - endpoint 거리 중앙값 0.15 m 이하
 - endpoint 거리 80 percentile 0.30 m 이하
+- AMCL 추정 자세와 프리셋의 평면 거리 0.25 m 이하
+- AMCL 추정 yaw와 프리셋 yaw의 최단 각도 차이 15 deg 이하
 - 위 조건을 2초 동안 연속 만족
 
 문, 유리, 사람과 가구 변화의 영향을 고려해 한 프레임의 결과만으로 통과시키지 않는다. 이 값들은 rosbag과 현장 dry-run에서 false accept가 0회가 되도록 더 엄격한 방향으로만 조정한 후 운용한다.
 
-### 6.4 `motion_gate`
+### 6.5 `motion_gate`
 
 `motion_gate`는 `go1_driver` 내부 기능이 아니라 `omx_navigation` 패키지의 독립 ROS 2 노드로 구현한다. Nav2와 하드웨어 driver 사이의 토픽 경계를 강제하며, driver에는 localization 판정이나 Nav2 의존성을 추가하지 않는다. 노드가 종료되면 `/cmd_vel_safe` 발행이 끊기고 기존 driver watchdog이 `STAND`로 전환한다.
 
@@ -173,7 +192,7 @@ AMCL covariance만으로 잘못된 지도 위치 수렴을 판정할 수 없으�
 
 조건 하나라도 실패하면 즉시 0 속도를 발행한다. E-stop은 latch 방식이며 프로세스 시작 시 기본값은 정지 상태다. 해제는 명시적 service 호출로만 가능하다. localization이 한번 상실된 뒤 회복되더라도 자동으로 E-stop을 해제하거나 이전 goal을 재개하지 않는다.
 
-### 6.5 `go1_driver` 보강
+### 6.6 `go1_driver` 보강
 
 - 기본 입력 토픽을 `/cmd_vel_safe`로 변경한다.
 - `arm`은 UDP 사용 여부만 결정하고 안전 준비 상태를 의미하지 않도록 문서화한다.
@@ -182,7 +201,7 @@ AMCL covariance만으로 잘못된 지도 위치 수렴을 판정할 수 없으�
 - 정지 원인을 `/go1/control_state`에 구조적으로 기록한다.
 - shutdown 시 기존 repeated stand 동작을 유지한다.
 
-### 6.6 RViz goal bridge
+### 6.7 RViz goal bridge
 
 `/localization/ready`가 유효하지 않으면 goal을 action server로 전달하지 않고 거부 이유를 로그로 남긴다. 이는 사용자 경험을 위한 추가 방어이며, 실제 안전 보장은 motion gate와 driver가 담당한다.
 
@@ -190,6 +209,7 @@ AMCL covariance만으로 잘못된 지도 위치 수렴을 판정할 수 없으�
 
 ```text
 BOOT
+  -> UNCOMMISSIONED
   -> WAIT_INPUTS
   -> SEEDING
   -> VALIDATING
@@ -198,6 +218,7 @@ BOOT
 ```
 
 - `BOOT`: 설정 파일과 파라미터 검증
+- `UNCOMMISSIONED`: start pose가 없으며 heartbeat false를 유지하는 dry-run 전용 상태
 - `WAIT_INPUTS`: `/map`, `/scan`, `/Odometry`, `camera_init -> body`를 기다림
 - `SEEDING`: `/initialpose`를 발행하고 AMCL 응답을 기다림
 - `VALIDATING`: TF, covariance 및 지도-스캔 정합을 연속 검증
@@ -223,6 +244,8 @@ FAULT 전환 시 진행 중 goal을 취소하고 motion gate와 driver는 `STAND
 - `map -> camera_init -> body` TF chain이 존재함
 - pose timestamp와 TF가 현재 시각 기준 0.30 s 이내임
 - AMCL covariance `x <= 0.04 m^2`, `y <= 0.04 m^2`, `yaw <= 0.0305 rad^2`
+- AMCL 추정 자세와 프리셋의 평면 거리 차이가 0.25 m 이하임
+- AMCL 추정 yaw와 프리셋 yaw의 최단 각도 차이가 15 deg 이하임
 - 지도-스캔 정합 기준을 2초 동안 연속 만족
 
 정지 검증을 위해 AMCL 업데이트가 움직임 threshold에 막히지 않도록 startup 운용 설정에서는 `update_min_d`와 `update_min_a`를 0으로 설정한다. Jetson 부하가 증가하면 localization supervisor가 READY가 된 뒤 원래 운용값으로 되돌리는 동적 변경 대신, 매 scan 업데이트를 유지한 상태의 CPU 사용률을 먼저 측정한다. 동적 파라미터 전환은 1차 범위에 포함하지 않는다.
@@ -232,7 +255,7 @@ FAULT 전환 시 진행 중 goal을 취소하고 motion gate와 driver는 `STAND
 단일 bringup이 다음 순서를 보장한다.
 
 1. Livox 및 FAST-LIO 입력 존재 확인
-2. map 파일과 start pose 파일 검증
+2. map 파일과 start pose 설정을 검증하고, 미설정 dry-run이면 `UNCOMMISSIONED`로 제한
 3. AMCL, supervisor 및 motion gate 시작
 4. Nav2를 시작하되 controller 출력을 `/cmd_vel_nav`로 remap
 5. Go1 driver를 `/cmd_vel_safe` 입력으로 시작
@@ -240,11 +263,13 @@ FAULT 전환 시 진행 중 goal을 취소하고 motion gate와 driver는 `STAND
 7. 운영자가 localization 상태를 확인하고 E-stop을 명시적으로 해제
 8. 이후에만 goal 입력 허용
 
-`arm:=true`여도 6~7단계를 통과하지 않으면 걷기 명령은 전달되지 않는다.
+`arm:=true`여도 6~7단계를 통과하지 않으면 걷기 명령은 전달되지 않는다. `start_pose_file`이 비어 있으면 `arm:=true` launch 자체를 거부한다.
 
 ## 10. 오류 처리와 복구
 
-- 프리셋 없음/파싱 오류: launch 실패, UDP driver 시작 안 함
+- 프리셋 미설정 + `arm:=false`: `UNCOMMISSIONED`, ready false, 자동 `/initialpose` 없음
+- 프리셋 미설정 + `arm:=true`: launch 실패, UDP driver 시작 안 함
+- 프리셋 파싱/스키마 오류: launch 실패
 - 지도 없음: launch 실패
 - 센서 또는 TF 미준비: `WAIT_INPUTS`, heartbeat false
 - 정합 실패: `FAULT`, 프리셋 및 배치 확인 요구
@@ -260,6 +285,8 @@ FAULT 전환 시 진행 중 goal을 취소하고 motion gate와 driver는 `STAND
 ### 11.1 단위 시험
 
 - start pose 스키마와 covariance 검증
+- 10회 commissioning 표본의 평균, circular mean 및 허용 편차 판정
+- 미설정 프리셋의 `UNCOMMISSIONED` 전이와 armed launch 거부
 - 상태 전이와 fault latch
 - heartbeat timeout
 - NaN/Inf 및 속도 제한
@@ -270,7 +297,8 @@ FAULT 전환 시 진행 중 goal을 취소하고 motion gate와 driver는 `STAND
 - Nav2 출력이 `/cmd_vel_nav`로만 연결됨
 - driver 입력이 `/cmd_vel_safe`임
 - `arm` 기본값 false 유지
-- preset/map 누락 시 launch 실패
+- preset 미설정 dry-run 허용 및 armed launch 거부
+- 지정된 preset 또는 map이 유효하지 않으면 launch 실패
 - localization 미완료 상태에서 goal 거부
 
 ### 11.3 rosbag 재생 시험
@@ -298,8 +326,10 @@ FAULT 전환 시 진행 중 goal을 취소하고 motion gate와 driver는 `STAND
 ## 12. 완료 기준
 
 - 정상 타일 배치 시 RViz 조작 없이 5초 이내 READY
+- 초기 좌표가 없어도 `arm:=false`로 전체 노드와 gate를 안전하게 시험할 수 있음
 - localization 과정에서 Go1이 움직이지 않음
 - 정상 배치 10회 모두 READY, 지정 오배치 10회 모두 READY 거부
+- 프리셋과 AMCL 결과가 0.25 m 또는 15 deg를 초과하면 READY 거부
 - localization, 센서 또는 TF 상실 후 0.30 s 이내 안전 정지
 - localization 전과 E-stop latch 중 실제 UDP walk 명령이 생성되지 않음
 - 기존 command filter, watchdog 및 shutdown stand 시험이 유지됨
