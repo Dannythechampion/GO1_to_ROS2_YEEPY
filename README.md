@@ -1233,7 +1233,12 @@ ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
 ```
 
 기본 진단 루트는 `/mnt/t500/localization_logs`이며, 기록을 켜면 `/mnt/t500/localization_logs/posegraph_*/localization_status.csv`와
-동일 세션의 `rosbag/`가 생성됩니다. 상태 토픽 `error`가 `INPUT_MISSING`,
+동일 세션의 `rosbag/`가 생성됩니다. 기록 토픽에는 `/slam_localization/pose`가
+포함됩니다. `[0, 0, 0]` `map_start_pose`는 저장 graph를 여는 용도이고 READY를 열지
+않습니다. 보정 초기 자세 뒤의 `/slam_localization/pose` 한 번은 scan-match handshake이며,
+계속적인 위치·품질 판정은 신선한 `map -> camera_init`와
+`camera_init -> body_nav` TF heartbeat로 수행합니다. 상태 토픽 `error`가 `INPUT_MISSING`,
 `LOW_OVERLAP`, `AMBIGUOUS`, `ODOM_RESET`, `TF_CONFLICT`, 또는
 `EXTRINSIC_UNCALIBRATED`이면 이동하지 말고 해당 입력·정합·TF·보정을 먼저
-복구하십시오. `ready` 검증은 `/amcl` 미실행, TF, Nav2 lifecycle, `arm=false`를 확인합니다.
+복구하십시오. `ready` 검증은 저장 `.posegraph`·`.data` artifact, `/amcl` 미실행, 두 TF
+edge, `READY/NONE` 상태, Nav2 lifecycle, `arm=false`를 확인합니다.

@@ -3,7 +3,7 @@
 ## 구현
 
 - ROS 메시지 비의존 변환 모듈에서 유한 범위 LaserScan 점 변환·균등 샘플링, quaternion yaw 정규화, occupancy map cell 수 검증을 구현했습니다.
-- `LocalizationSupervisor`는 `/map`, `/scan`, `/Odometry`, `/initialpose`, `/slam_toolbox/pose`, `/tf`를 구독하고, 보정 자세는 `/slam_localization/initialpose`로만 발행합니다. 따라서 사용자의 `/initialpose` 입력이 SLAM 출력과 다시 연결되지 않습니다.
+- `LocalizationSupervisor`는 `/map`, `/scan`, `/Odometry`, `/initialpose`, `/slam_localization/pose`, `/tf`를 구독하고, 보정 자세는 `/slam_localization/initialpose`로만 발행합니다. 따라서 사용자의 `/initialpose` 입력이 SLAM 출력과 다시 연결되지 않습니다.
 - 신선한 map/scan에서 bounded coarse search를 수행하며, LOW_OVERLAP·AMBIGUOUS·입력 누락·AMCL TF 충돌·3.0 m/s 초과/시간 역행 odom reset을 상태 머신에 전달합니다.
 - 상태 JSON(`state`, `error`, `message_ko`, `attempt`, `overlap`, `ambiguity_margin`, `stamp`)과 CSV 진단 행은 `2 Hz`로 발행·기록하고, ready는 최신 안전 상태를 평가한 뒤 `10 Hz` heartbeat로 발행합니다. CSV는 표준 escaping 후 매 행 flush하며 종료 시 handle을 닫습니다.
 - RViz goal bridge는 `/localization_supervisor/ready` 전에는 goal을 거부하고, ready가 false로 바뀌면 이미 수락된 goal을 취소합니다. send-goal 응답과 ready false가 경합할 때에도 응답 뒤 취소하도록 처리했습니다.
@@ -25,7 +25,7 @@
 
 - `/map`은 transient-local/reliable depth 1로 구독하여 유효한 map-server snapshot을 보존합니다. 정적 map_server가 사용자 클릭 뒤 map을 다시 발행하지 않는 정상 동작이므로, map 재발행을 초기화 선행 조건으로 삼지 않았습니다. 대신 구조적으로 잘못된 최신 map은 snapshot과 수신 시각을 모두 제거합니다.
 - `/scan`은 sensor-data QoS이며 각 `/initialpose` 세대 뒤의 새 scan이 들어올 때만 한 번 search worker에 제출합니다. scan은 0.50초 신선도 조건을 유지하고, 변환 실패 시 data와 timestamp를 모두 제거합니다. worker 결과는 2 Hz timer가 generation token을 확인한 후 적용하므로 ROS callback을 막지 않습니다.
-- 보정 자세 발행 시 SLAM epoch/baseline을 재설정합니다. epoch 이후의 fresh `/slam_toolbox/pose` 첫 샘플이 VERIFYING을 시작하고, 이후 연속 pose의 위치·yaw jump를 state machine에 전달합니다. 관련 `camera_init -> body` 또는 `camera_init -> body_nav` TF가 0.50초 이내에 없거나 SLAM pose가 없으면 READY가 될 수 없습니다.
+- 보정 자세 발행 시 SLAM epoch/baseline을 재설정합니다. epoch 이후의 `/slam_localization/pose` 첫 샘플은 VERIFYING을 시작하는 one-shot scan-match handshake입니다. 이후 위치·yaw 품질은 신선한 `map -> camera_init`와 `camera_init -> body_nav` TF를 합성해 판정합니다. 두 TF edge가 0.50초 이내에 없거나 handshake가 없으면 READY가 될 수 없습니다.
 - Odom reset은 message header source timestamp가 양수·유한하면 이를 사용하고, zero/invalid stamp는 receive time으로 fallback합니다. source time 역행·0 이하 dt·3.0 m/s 초과는 현재 initial-pose attempt에 latch하며 새 initial pose에서 초기화합니다.
 - RViz bridge는 `wait_for_server(0.0)`만 사용하고 pending/active 중복 goal을 거부합니다. generation token으로 stale send response/result/cancel callback이 최신 handle을 지우지 못하게 했습니다.
 
@@ -67,7 +67,7 @@
 ## 최종 리뷰 Fix A
 
 - 2 Hz 상태/CSV timer는 유지하고 ready 전용 10 Hz timer를 추가했습니다. 상태 발행 때도 ready를 함께 발행할 수 있지만 CSV 기록은 계속 2 Hz이므로 진단 파일 증가율은 바뀌지 않습니다. 0.10초 heartbeat는 safety gate의 0.30초 timeout에 충분한 실행 여유를 제공하며, 상태 머신이 READY를 잃으면 다음 heartbeat가 즉시 false를 발행합니다.
-- coarse search의 최종 후보 중심이 지도 밖이면 보정 자세를 발행하지 않고 `LOST/POSE_OUTSIDE_MAP`으로 전환합니다. epoch 이후 `/slam_toolbox/pose` 중심이 지도 밖이어도 SLAM baseline을 제거하고 같은 오류로 fail-closed 처리합니다.
+- coarse search의 최종 후보 중심이 지도 밖이면 보정 자세를 발행하지 않고 `LOST/POSE_OUTSIDE_MAP`으로 전환합니다. epoch 이후 합성한 TF 중심이 지도 밖이어도 pose baseline을 제거하고 같은 오류로 fail-closed 처리합니다.
 - AMCL 충돌은 전체 노드명이 아니라 ROS namespace를 제거한 basename이 정확히 `amcl`인지 판정합니다. 따라서 `/fallback/amcl`은 충돌이고 `/fallback/amcl_helper`는 충돌이 아닙니다.
 
 ### 최종 리뷰 Fix A 검증
@@ -103,7 +103,7 @@
 
 ## 최종 리뷰 Fix E
 
-- 최초 coarse search에서 만든 지도 distance field를 보존하고, 이후 최신 `/scan`을 현재 `/slam_toolbox/pose`에 투영해 scan-map overlap을 계속 다시 계산합니다. 초기 정합값을 READY 이후에도 고정 재사용하지 않습니다.
+- 최초 coarse search에서 만든 지도 distance field를 보존하고, 이후 최신 `/scan`을 두 live TF edge에서 합성한 현재 자세에 투영해 scan-map overlap을 계속 다시 계산합니다. 초기 정합값을 READY 이후에도 고정 재사용하지 않습니다.
 - 최신 overlap이 `0.45` 아래로 내려가면 첫 10 Hz heartbeat에서 `DEGRADED/LOW_OVERLAP`과 `ready=false`를 발행해 velocity gate를 닫습니다.
 - `/Odometry` 수신 시각도 map/scan/SLAM/TF와 함께 `input_max_age=0.50 s` freshness 계약에 포함합니다. odometry가 정지하거나 비유한 위치를 보내면 `DEGRADED/INPUT_MISSING`으로 fail-closed 처리합니다.
 - 비동기 coarse search 중 지도가 갱신되면 실행 중이던 이전 지도 결과와 distance field를 폐기하고 최신 지도 스냅샷으로 검색을 다시 제출합니다.

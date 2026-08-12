@@ -22,12 +22,12 @@ SCRIPT = ROOT / "migration" / "verify_posegraph_navigation.sh"
 LAUNCH = ROOT / "packages" / "omx_navigation" / "launch" / "go1_posegraph_navigation.launch.py"
 STAGE = ROOT / "migration" / "stage_local_ros2_packages.sh"
 BASE_TOPICS = (
-    "/scan", "/Odometry", "/map", "/slam_toolbox/pose",
+    "/scan", "/Odometry", "/map", "/slam_localization/pose",
     "/localization_supervisor/status", "/localization_supervisor/ready",
     "/cmd_vel_nav", "/cmd_vel",
 )
 BAG_TOPICS = (
-    "/scan", "/Odometry", "/tf", "/tf_static", "/initialpose", "/slam_toolbox/pose",
+    "/scan", "/Odometry", "/tf", "/tf_static", "/initialpose", "/slam_localization/pose",
     "/localization_supervisor/status", "/localization_supervisor/ready", "/cmd_vel_nav", "/cmd_vel",
 )
 
@@ -69,6 +69,14 @@ def _fake_ros_environment(tmp_path: Path) -> dict[str, str]:
     install_setup = workspace / "install" / "setup.bash"
     install_setup.parent.mkdir(parents=True)
     install_setup.write_text("# fake workspace setup\n", encoding="utf-8")
+    omx_prefix = tmp_path / "omx-prefix"
+    graph_base = (
+        omx_prefix / "share" / "omx_navigation" / "maps" / "hanyang_9f"
+        / "20260728_204825" / "slam_toolbox" / "hanyang_9f"
+    )
+    graph_base.parent.mkdir(parents=True)
+    for suffix in (".posegraph", ".data"):
+        (Path(str(graph_base) + suffix)).write_text("fake graph artifact\n", encoding="utf-8")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     _write_executable(
@@ -87,12 +95,18 @@ exec "$@"
         """#!/usr/bin/env bash
 set -euo pipefail
 case "$1 $2" in
-  "pkg prefix") printf '/fake/%s\\n' "$3" ;;
+  "pkg prefix")
+    if [[ "$3" == "omx_navigation" ]]; then
+      printf '%s\\n' "${FAKE_OMX_PREFIX}"
+    else
+      printf '/fake/%s\\n' "$3"
+    fi
+    ;;
   "topic list") cat <<'TOPICS'
 /scan
 /Odometry
 /map
-/slam_toolbox/pose
+/slam_localization/pose
 /localization_supervisor/status
 /localization_supervisor/ready
 /cmd_vel_nav
@@ -129,6 +143,7 @@ esac
         "PATH": str(bin_dir) + os.pathsep + environment["PATH"],
         "ROS_SETUP_FILE": str(setup),
         "GO1_ROS2_WS": str(workspace),
+        "FAKE_OMX_PREFIX": str(omx_prefix),
     })
     return environment
 
@@ -170,6 +185,7 @@ def test_verifier_executes_preflight_and_ready_with_fake_ros():
         ({"FAKE_NODE_LIST_FAIL": "1"}, "노드 목록"),
         ({"FAKE_NODES": "/robot/amcl"}, "AMCL"),
         ({"FAKE_TIMEOUT_MODE": "echo"}, "상태 토픽"),
+        ({"FAKE_OMX_PREFIX": "/missing/omx-prefix"}, "posegraph artifact"),
     ],
 )
 def test_ready_verifier_fails_closed_for_bad_runtime_values(overrides, expected):

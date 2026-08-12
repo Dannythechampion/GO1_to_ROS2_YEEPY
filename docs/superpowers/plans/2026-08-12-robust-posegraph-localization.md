@@ -478,7 +478,7 @@ git commit -m "feat: add gravity aligned navigation frame"
 - Modify: `packages/omx_navigation/package.xml`
 
 **Interfaces:**
-- Subscribes: `/map`, `/scan`, `/Odometry`, `/initialpose`, `/slam_toolbox/pose`, `/tf`
+- Subscribes: `/map`, `/scan`, `/Odometry`, `/initialpose`, `/slam_localization/pose`, `/tf`
 - Publishes: `/slam_localization/initialpose`, `~/status` (`std_msgs/String`), `~/ready` (`std_msgs/Bool`)
 - `status` JSON keys: `state`, `error`, `message_ko`, `attempt`, `overlap`, `ambiguity_margin`, `stamp`
 - `GoalGate.update_ready(bool) -> bool` returns whether an active goal must be cancelled
@@ -523,8 +523,8 @@ On user initial pose:
 3. Run `coarse_search` within the configured window.
 4. If overlap is below `0.45`, emit `LOW_OVERLAP`; if ambiguous, emit `AMBIGUOUS`.
 5. Publish the refined pose to `/slam_localization/initialpose`.
-6. Verify `/slam_toolbox/pose` for 3 seconds through the state machine.
-7. Re-score every fresh scan at the current SLAM pose using the retained distance field; require fresh scan, odometry, SLAM pose, and TF before every READY heartbeat.
+6. Require one post-refinement `/slam_localization/pose` scan-match handshake; this is not a periodic heartbeat.
+7. Re-score every fresh scan at the current pose composed from `map -> camera_init` and `camera_init -> body_nav`; require fresh scan, odometry, both TF edges, and the handshake before every READY heartbeat.
 
 At `2 Hz`, publish the JSON status and append the same row to the configured `diagnostics_csv`, calling `flush()` after every write. Publish the evaluated `ready` heartbeat at `10 Hz` so the velocity gate retains margin inside its `0.30 s` timeout. Detect an `amcl` node basename in `get_node_names()` as `TF_CONFLICT`. Detect odom jumps above `3.0 m/s` between valid samples as `ODOM_RESET`.
 
@@ -670,7 +670,7 @@ Run scripts through `bash -n` when bash is available and parse their declared to
 /scan
 /Odometry
 /map
-/slam_toolbox/pose
+/slam_localization/pose
 /localization_supervisor/status
 /localization_supervisor/ready
 /cmd_vel_nav
@@ -686,7 +686,7 @@ Assert ready mode rejects `/amcl`, requires `map -> camera_init -> body_nav`, ch
 The launch creates a timestamped directory only when `record_localization:=true`, starts:
 
 ```bash
-ros2 bag record --output "${session_dir}/rosbag" /scan /Odometry /tf /tf_static /initialpose /slam_toolbox/pose /localization_supervisor/status /localization_supervisor/ready /cmd_vel_nav /cmd_vel
+ros2 bag record --output "${session_dir}/rosbag" /scan /Odometry /tf /tf_static /initialpose /slam_localization/pose /localization_supervisor/status /localization_supervisor/ready /cmd_vel_nav /cmd_vel
 ```
 
 and passes `${session_dir}/localization_status.csv` to the supervisor. With

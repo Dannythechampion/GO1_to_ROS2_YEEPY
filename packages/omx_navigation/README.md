@@ -225,7 +225,11 @@ ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
 `ODOM_RESET`·`TF_CONFLICT`는 odometry 또는 TF를 먼저 복구해야 함,
 `EXTRINSIC_UNCALIBRATED`는 센서 장착 보정이 필요함을 의미합니다.
 
-`READY` 이후에도 supervisor는 최신 scan을 현재 SLAM 자세에서 지도와 다시
-대조합니다. scan-map overlap이 `0.45` 아래로 내려가거나 `/scan`, `/Odometry`,
-`/slam_toolbox/pose`, 관련 TF 중 하나가 `0.50 s` 넘게 갱신되지 않으면 다음
-heartbeat에서 `ready=false`가 되어 속도 gate가 닫힙니다.
+`[0, 0, 0]`의 `map_start_pose`는 저장 graph를 여는 시작값일 뿐 READY를 열지
+않습니다. 사용자의 보정 초기 자세 뒤 `/slam_localization/pose`가 한 번 도착해야
+scan-match handshake가 성립합니다. 그 뒤에는 `/slam_localization/pose`를 heartbeat로
+취급하지 않습니다. supervisor는 신선한 `map -> camera_init` 및
+`camera_init -> body_nav` TF를 합성한 현재 자세에서 최신 scan을 지도와 계속
+대조합니다. scan-map overlap이 `0.45` 아래로 내려가거나 `/scan`, `/Odometry`, 두 TF
+edge 중 하나가 `0.50 s` 넘게 갱신되지 않으면 다음 heartbeat에서 `ready=false`가 되어
+속도 gate가 닫힙니다.

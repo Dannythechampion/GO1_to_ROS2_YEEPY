@@ -15,7 +15,7 @@ required_topics=(
   /scan
   /Odometry
   /map
-  /slam_toolbox/pose
+  /slam_localization/pose
   /localization_supervisor/status
   /localization_supervisor/ready
   /cmd_vel_nav
@@ -66,6 +66,19 @@ require_package() {
     fail "ROS 2 패키지가 없습니다: $package (workspace build/source 상태를 확인)"
   fi
   printf '통과: 의존 패키지 %s\n' "$package"
+}
+
+require_posegraph_artifacts() {
+  local omx_prefix graph_base suffix
+  if ! omx_prefix="$(ros2 pkg prefix omx_navigation 2>"$tmp_output")"; then
+    cat "$tmp_output" >&2
+    fail 'omx_navigation 설치 경로를 읽지 못했습니다'
+  fi
+  graph_base="$omx_prefix/share/omx_navigation/maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f"
+  for suffix in .posegraph .data; do
+    [[ -s "${graph_base}${suffix}" ]] || fail "필수 posegraph artifact가 없거나 비어 있습니다: ${graph_base}${suffix}"
+  done
+  printf '통과: 저장 posegraph artifact 확인\n'
 }
 
 topic_exists() {
@@ -209,6 +222,7 @@ if status.get("state") != "READY" or status.get("error") != "NONE":
 for package in omx_navigation go1_driver nav2_map_server nav2_lifecycle_manager slam_toolbox; do
   require_package "$package"
 done
+require_posegraph_artifacts
 
 if ! topic_list="$(timeout 10 ros2 topic list)"; then
   fail '토픽 목록을 읽지 못했습니다: ROS_DOMAIN_ID와 launch 상태를 확인'
@@ -228,7 +242,7 @@ if [[ "$mode" == "ready" ]]; then
   fi
   printf '통과: amcl 노드 미실행\n'
   require_message /map
-  require_message /slam_toolbox/pose
+  require_message /slam_localization/pose
   require_supervisor_status
   require_supervisor_ready
   require_tf map camera_init
