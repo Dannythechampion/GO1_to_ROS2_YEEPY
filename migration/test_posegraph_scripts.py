@@ -119,6 +119,10 @@ TOPICS
       [[ "$arg" != "-n" ]] || exit 65
     done
     [[ " $* " == *" --once "* ]] || exit 66
+    if [[ "${FAKE_FAIL_SLAM_POSE_ECHO:-0}" == 1 && " $* " == *" /slam_localization/pose "* ]]; then
+      printf 'delayed one-shot pose is intentionally unavailable\n' >&2
+      exit 67
+    fi
     for arg in "$@"; do
       case "$arg" in
         /localization_supervisor/ready) printf '\\n%s\\n---\\n\\n' "${FAKE_READY:-true}"; exit 0 ;;
@@ -175,6 +179,16 @@ def test_verifier_executes_preflight_and_ready_with_fake_ros():
         tmp_path = Path(temp_dir)
         assert _run_verifier(tmp_path / "preflight", "preflight").returncode == 0
         assert _run_verifier(tmp_path / "ready", "ready").returncode == 0
+
+
+def test_ready_verifier_uses_supervisor_evidence_after_the_one_shot_pose():
+    """READY/NONE and ready=true prove the prior one-shot handshake completed."""
+    _bash()
+    with TemporaryDirectory() as temp_dir:
+        result = _run_verifier(
+            Path(temp_dir), "ready", FAKE_FAIL_SLAM_POSE_ECHO="1"
+        )
+        assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(

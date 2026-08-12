@@ -1242,3 +1242,7 @@ ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
 `EXTRINSIC_UNCALIBRATED`이면 이동하지 말고 해당 입력·정합·TF·보정을 먼저
 복구하십시오. `ready` 검증은 저장 `.posegraph`·`.data` artifact, `/amcl` 미실행, 두 TF
 edge, `READY/NONE` 상태, Nav2 lifecycle, `arm=false`를 확인합니다.
+`/slam_localization/pose`는 존재 여부만 요구하는 one-shot handshake 토픽이므로,
+ready 검증은 이미 조용해진 pose를 다시 echo하지 않습니다. 대신 supervisor의
+`status=READY/error=NONE`와 `ready=true`를 handshake 완료의 fail-closed 증거로
+사용합니다.

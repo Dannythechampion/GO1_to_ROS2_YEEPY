@@ -242,7 +242,9 @@ if [[ "$mode" == "ready" ]]; then
   fi
   printf '통과: amcl 노드 미실행\n'
   require_message /map
-  require_message /slam_localization/pose
+  # /slam_localization/pose is a one-shot post-refinement handshake, not a
+  # heartbeat. READY/NONE and ready=true from the supervisor prove it completed
+  # without rejecting a healthy but now-quiet localization topic.
   require_supervisor_status
   require_supervisor_ready
   require_tf map camera_init

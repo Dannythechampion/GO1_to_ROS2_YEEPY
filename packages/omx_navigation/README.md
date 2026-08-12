@@ -218,7 +218,10 @@ ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
 검증은 `./migration/verify_posegraph_navigation.sh preflight` 다음
 `./migration/verify_posegraph_navigation.sh ready` 순서로 실행합니다. `ready`는
 `/amcl` 미실행, TF `map -> camera_init -> body_nav`, 모든 Nav2 lifecycle active,
-그리고 `/go1_driver`의 `arm=false`를 요구합니다.
+그리고 `/go1_driver`의 `arm=false`를 요구합니다. `/slam_localization/pose`는
+토픽 존재만 확인합니다. 보정 뒤 한 번만 오는 handshake가 이미 끝났다는 증거는
+supervisor의 `status=READY/error=NONE` 및 `ready=true`이며, ready verifier는
+조용해진 one-shot pose를 다시 echo하지 않습니다.
 
 상태 토픽의 `error`는 다음처럼 해석합니다: `NONE`은 준비됨, `INPUT_MISSING`은
 입력 누락/오래된 입력, `LOW_OVERLAP`·`AMBIGUOUS`는 scan-map 정합 품질 부족,
