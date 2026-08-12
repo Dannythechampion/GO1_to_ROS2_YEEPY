@@ -475,3 +475,83 @@ def test_new_click_without_scan_discards_older_pending_search(supervisor_module)
     node._search_executor.futures[0]._done = True
     node._on_status_timer()
     assert len(node._search_executor.futures) == 1
+
+
+def test_ready_heartbeat_keeps_velocity_gate_fresh_for_more_than_one_second(supervisor_module):
+    from omx_navigation.cmd_vel_gate_core import VelocityCommand, VelocityGate
+    from omx_navigation.localization_state import LocalizationState
+
+    node = supervisor_module.LocalizationSupervisor()
+    node._machine.state = LocalizationState.READY
+    node._last_transition = node._machine._transition()
+    assert sorted(timer.period for timer in node.timers) == [0.1, 0.5]
+    gate = VelocityGate(ready_timeout=0.30, command_timeout=0.30)
+
+    for step in range(12):
+        now = step * 0.1
+        node.clock.seconds = now
+        node._on_ready_timer()
+        heartbeat = publisher(node, "~/ready").messages[-1]
+        gate.update_ready(heartbeat.data, now)
+        assert gate.filter(VelocityCommand(0.1, 0.0, 0.0), now).reason == "command_passed"
+        assert gate.watchdog(now + 0.09).reason == "command_fresh"
+
+    node._machine.state = LocalizationState.LOST
+    node._last_transition = node._machine._transition()
+    node.clock.seconds = 1.2
+    node._on_ready_timer()
+    decision = gate.update_ready(publisher(node, "~/ready").messages[-1].data, 1.2)
+    assert decision.reason == "localization_not_ready"
+
+
+def test_outside_coarse_candidate_is_rejected_before_refined_publish(supervisor_module, monkeypatch):
+    from omx_navigation.scan_map_quality import Pose2D, PoseScore, SearchResult
+
+    outside = SearchResult(PoseScore(Pose2D(100.0, 100.0, 0.0), 0.9, 0.0, 0.9, 1), None, False)
+    monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: outside)
+    node = supervisor_module.LocalizationSupervisor()
+    node._on_map(map_message())
+    node._on_scan(scan_message())
+    node._on_initial_pose(pose_message())
+    node._on_scan(scan_message())
+    node._on_status_timer()
+
+    assert publisher(node, "/slam_localization/initialpose").messages == []
+    status = json.loads(publisher(node, "~/status").messages[-1].data)
+    assert status["state"] == "LOST"
+    assert status["error"] == "POSE_OUTSIDE_MAP"
+    assert publisher(node, "~/ready").messages[-1].data is False
+
+
+def test_outside_slam_pose_fails_closed(supervisor_module, monkeypatch):
+    from omx_navigation.scan_map_quality import Pose2D, PoseScore, SearchResult
+
+    inside = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.9, 0.0, 0.9, 1), None, False)
+    monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: inside)
+    node = supervisor_module.LocalizationSupervisor()
+    node._on_map(map_message())
+    node._on_scan(scan_message())
+    node._on_initial_pose(pose_message())
+    node._on_scan(scan_message())
+    node._on_status_timer()
+    node._on_slam_pose(SimpleNamespace(
+        header=header(),
+        pose=SimpleNamespace(
+            position=SimpleNamespace(x=100.0, y=100.0),
+            orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+        ),
+    ))
+    node._on_status_timer()
+
+    status = json.loads(publisher(node, "~/status").messages[-1].data)
+    assert status["state"] == "LOST"
+    assert status["error"] == "POSE_OUTSIDE_MAP"
+    assert publisher(node, "~/ready").messages[-1].data is False
+
+
+def test_namespaced_amcl_is_a_conflict_but_similar_name_is_not(supervisor_module):
+    node = supervisor_module.LocalizationSupervisor()
+    node.node_names = ["/fallback/amcl"]
+    assert node._has_amcl() is True
+    node.node_names = ["/fallback/amcl_helper"]
+    assert node._has_amcl() is False

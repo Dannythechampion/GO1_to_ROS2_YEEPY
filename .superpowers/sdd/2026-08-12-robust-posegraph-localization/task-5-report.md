@@ -63,3 +63,17 @@
 - focused: `py -3 -m pytest test/test_localization_supervisor.py test/test_rviz_goal_bridge_readiness.py test/test_goal_gate.py -q -p no:cacheprovider` — 20 passed.
 - 전체 패키지: `py -3 -m pytest test -q -p no:cacheprovider` — 126 passed, 1 skipped.
 - 구문 검증: `py -3 -m compileall -q omx_navigation` — 성공.
+
+## 최종 리뷰 Fix A
+
+- 2 Hz 상태/CSV timer는 유지하고 ready 전용 10 Hz timer를 추가했습니다. 상태 발행 때도 ready를 함께 발행할 수 있지만 CSV 기록은 계속 2 Hz이므로 진단 파일 증가율은 바뀌지 않습니다. 0.10초 heartbeat는 safety gate의 0.30초 timeout에 충분한 실행 여유를 제공하며, 상태 머신이 READY를 ��으면 다음 heartbeat가 즉시 false를 발행합니다.
+- coarse search의 최종 후보 중심이 지도 밖이면 보정 자세를 발행하지 않고 `LOST/POSE_OUTSIDE_MAP`으로 전환합니다. epoch 이후 `/slam_toolbox/pose` 중심이 지도 밖이어도 SLAM baseline을 제거하고 같은 오류로 fail-closed 처리합니다.
+- AMCL 충돌은 전체 노드명이 아니라 ROS namespace를 제거한 basename이 정확히 `amcl`인지 판정합니다. 따라서 `/fallback/amcl`은 충돌이고 `/fallback/amcl_helper`는 충돌이 아닙니다.
+
+### 최종 리뷰 Fix A 검증
+
+- RED: 0.5초 단일 timer, 지도 밖 coarse 후보 발행, 지도 밖 SLAM pose 수용, namespaced AMCL 누락을 기존 구현에서 각각 확인했습니다.
+- focused: `py -3 -m pytest test/test_localization_supervisor.py test/test_cmd_vel_gate_core.py test/test_goal_gate.py test/test_rviz_goal_bridge_readiness.py -q -p no:cacheprovider` — 48 passed.
+- heartbeat 통합 mock은 10 Hz supervisor heartbeat와 실제 `VelocityGate` command/watchdog를 1.1초 동안 함께 구동하여 stale 차단이 발생하지 않고, LOST 전환 직후 false heartbeat가 gate를 닫는 것을 확인합니다.
+- 전체 패키지: `py -3 -m pytest test -q -p no:cacheprovider` — 142 passed, 1 skipped.
+- 구문 검증: `py -3 -m compileall -q omx_navigation` — 성공.

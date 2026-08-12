@@ -116,6 +116,7 @@ class LocalizationSupervisor(Node):
         self._slam_pose_subscription = self.create_subscription(PoseStamped, "/slam_toolbox/pose", self._on_slam_pose, reliable_qos)
         self._tf_subscription = self.create_subscription(TFMessage, "/tf", self._on_tf, qos_profile_sensor_data)
         self._status_timer = self.create_timer(0.5, self._on_status_timer)
+        self._ready_timer = self.create_timer(0.1, self._on_ready_timer)
 
     def _on_map(self, message: OccupancyGrid) -> None:
         try:
@@ -196,6 +197,12 @@ class LocalizationSupervisor(Node):
             ))
             now = self._now()
             if self._slam_epoch is None or now < self._slam_epoch:
+                return
+            if self._grid is not None and self._grid.world_to_cell(current.x, current.y) is None:
+                self._slam_pose = None
+                self._slam_received_at = None
+                self._last_slam_pose = None
+                self._last_transition = self._machine.reject_initial_pose(now)
                 return
             if self._last_slam_pose is not None:
                 self._slam_position_jump = math.hypot(current.x - self._last_slam_pose.x, current.y - self._last_slam_pose.y)
@@ -279,6 +286,9 @@ class LocalizationSupervisor(Node):
                 )
                 if result.best.overlap < self._machine.policy.min_overlap or result.ambiguous:
                     self._quality_error_latched = True
+                elif self._grid.world_to_cell(result.best.pose.x, result.best.pose.y) is None:
+                    self._refined_pose = None
+                    self._last_transition = self._machine.reject_initial_pose(self._now())
                 else:
                     self._refined_pose = result.best.pose
                     self._publish_refined_pose(result.best.pose, covariance)
@@ -294,6 +304,9 @@ class LocalizationSupervisor(Node):
         if self._last_transition.republish_initial_pose and self._refined_pose is not None and self._initial_pose is not None:
             self._publish_refined_pose(self._refined_pose, self._initial_pose[1])
         self._publish_status()
+
+    def _on_ready_timer(self) -> None:
+        self._publish_ready()
 
     def _observation(self, pose_available: bool | None = None) -> QualityObservation:
         now = self._now()
@@ -345,12 +358,15 @@ class LocalizationSupervisor(Node):
         message = String()
         message.data = json.dumps(status, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
         self._status_publisher.publish(message)
-        ready = Bool()
-        ready.data = transition.state is LocalizationState.READY
-        self._ready_publisher.publish(ready)
+        self._publish_ready()
         if self._csv_writer is not None:
             self._csv_writer.writerow(status)
             self._csv_file.flush()
+
+    def _publish_ready(self) -> None:
+        ready = Bool()
+        ready.data = self._machine.state is LocalizationState.READY
+        self._ready_publisher.publish(ready)
 
     def _inputs_fresh(self, now: float | None = None) -> bool:
         now = self._now() if now is None else now
@@ -381,7 +397,7 @@ class LocalizationSupervisor(Node):
         return value if math.isfinite(value) and value > 0.0 else fallback
 
     def _has_amcl(self) -> bool:
-        return any(str(name).rstrip("/") == "/amcl" or str(name) == "amcl" for name in self.get_node_names())
+        return any(str(name).strip("/").split("/")[-1] == "amcl" for name in self.get_node_names())
 
     def _open_diagnostics_csv(self) -> None:
         if not self._diagnostics_csv:
