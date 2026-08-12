@@ -5,6 +5,9 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 
+_MISSING = object()
+
+
 class FakeTransformException(Exception):
     pass
 
@@ -92,7 +95,10 @@ def source_transform(stamp="source-stamp"):
 
 @pytest.fixture
 def planar_module(monkeypatch):
+    import omx_navigation
+
     original_module = sys.modules.get("omx_navigation.planar_base_frame")
+    original_package_attribute = getattr(omx_navigation, "planar_base_frame", _MISSING)
     geometry_msgs = ModuleType("geometry_msgs.msg")
     geometry_msgs.TransformStamped = FakeTransformStamped
     rclpy = ModuleType("rclpy")
@@ -126,6 +132,10 @@ def planar_module(monkeypatch):
     sys.modules.pop("omx_navigation.planar_base_frame", None)
     if original_module is not None:
         sys.modules["omx_navigation.planar_base_frame"] = original_module
+    if original_package_attribute is _MISSING:
+        delattr(omx_navigation, "planar_base_frame")
+    else:
+        setattr(omx_navigation, "planar_base_frame", original_package_attribute)
 
 
 def test_node_derives_body_nav_from_body_without_rebroadcasting_body(planar_module):

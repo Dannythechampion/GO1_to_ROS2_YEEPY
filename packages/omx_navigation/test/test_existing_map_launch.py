@@ -34,7 +34,7 @@ def test_scan_projection_is_low_load_and_planar_framed():
     assert "target_frame: body\n" not in text
 
 
-def test_existing_map_launch_starts_planar_frame_before_scan_projection():
+def test_existing_map_launch_registers_planar_frame_before_scan_projection():
     text = LAUNCH.read_text(encoding="utf-8")
     for expected in (
         'executable="planar_base_frame"',
