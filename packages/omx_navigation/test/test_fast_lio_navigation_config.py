@@ -34,6 +34,16 @@ def test_navigation_profile_keeps_live_mid360_inputs_and_online_extrinsic():
     assert params["mapping"]["extrinsic_est_en"] is True
 
 
+def test_scan_projection_uses_the_planar_navigation_frame():
+    params = yaml.safe_load(
+        (Path(__file__).parents[1] / "config" / "mid360_scan.yaml").read_text(
+            encoding="utf-8"
+        )
+    )["pointcloud_to_laserscan"]["ros__parameters"]
+
+    assert params["target_frame"] == "body_nav"
+
+
 def test_readme_launches_fast_lio_with_low_load_navigation_profile():
     readme = README.read_text(encoding="utf-8")
     assert "config_file:=fast_lio_mid360_navigation.yaml" in readme
