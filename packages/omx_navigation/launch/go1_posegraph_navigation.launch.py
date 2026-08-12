@@ -26,11 +26,11 @@ except ImportError:  # pragma: no cover - exercised on ROS 2 targets.
 def parse_launch_boolean(value: str, name: str) -> bool:
     """Accept only explicit launch boolean spellings before actions start."""
     normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
+    if normalized in {"1", "true"}:
         return True
-    if normalized in {"0", "false", "no", "off"}:
+    if normalized in {"0", "false"}:
         return False
-    raise RuntimeError(f"{name} must be one of true/false/1/0/yes/no/on/off")
+    raise RuntimeError(f"{name} must be one of true/false/1/0")
 
 
 def parse_yaml_mapping(text: str, label: str) -> dict:
@@ -109,10 +109,16 @@ def validate_pgm_bytes(data: bytes) -> None:
     if magic == b"P5":
         if cursor >= len(data) or data[cursor:cursor + 1] not in b" \t\r\n":
             raise RuntimeError("PGM binary header must end with whitespace")
-        cursor += 1
+        cursor += 2 if data[cursor:cursor + 2] == b"\r\n" else 1
         bytes_per_sample = 1 if maxval < 256 else 2
         if len(data) - cursor != samples * bytes_per_sample:
             raise RuntimeError("PGM binary pixel payload is truncated or has extra bytes")
+        if bytes_per_sample == 1 and any(value > maxval for value in data[cursor:]):
+            raise RuntimeError("PGM binary pixel sample is outside maxval")
+        if bytes_per_sample == 2:
+            values = (int.from_bytes(data[index:index + 2], "big") for index in range(cursor, len(data), 2))
+            if any(value > maxval for value in values):
+                raise RuntimeError("PGM binary pixel sample is outside maxval")
         return
     tokens = []
     while True:
@@ -210,14 +216,21 @@ def generate_launch_description() -> "LaunchDescription":
     scan_params = LaunchConfiguration("scan_params_file")
     use_composition = LaunchConfiguration("use_composition")
 
+    nav2_rewrite_paths = {
+        "map_server.ros__parameters.yaml_filename": map_yaml,
+        "bt_navigator.ros__parameters.odom_topic": odom_topic,
+        "bt_navigator.ros__parameters.robot_base_frame": base_frame,
+        "local_costmap.local_costmap.ros__parameters.global_frame": odom_frame,
+        "local_costmap.local_costmap.ros__parameters.robot_base_frame": base_frame,
+        "local_costmap.local_costmap.ros__parameters.obstacle_layer.scan.topic": scan_topic,
+        "global_costmap.global_costmap.ros__parameters.robot_base_frame": base_frame,
+        "global_costmap.global_costmap.ros__parameters.obstacle_layer.scan.topic": scan_topic,
+        "behavior_server.ros__parameters.global_frame": odom_frame,
+        "behavior_server.ros__parameters.robot_base_frame": base_frame,
+    }
     configured_nav2 = RewrittenYaml(
         source_file=nav2_params,
-        param_rewrites={
-            "map_server.ros__parameters.yaml_filename": map_yaml,
-            "bt_navigator.ros__parameters.odom_topic": odom_topic,
-            "local_costmap.local_costmap.ros__parameters.global_frame": odom_frame,
-            "behavior_server.ros__parameters.global_frame": odom_frame,
-        },
+        param_rewrites=nav2_rewrite_paths,
         convert_types=True,
     )
     configured_slam = RewrittenYaml(
@@ -267,7 +280,7 @@ def generate_launch_description() -> "LaunchDescription":
         ("controller_server", "nav2_controller", "controller_server", "nav2_controller::ControllerServer"),
         ("smoother_server", "nav2_smoother", "smoother_server", "nav2_smoother::SmootherServer"),
         ("planner_server", "nav2_planner", "planner_server", "nav2_planner::PlannerServer"),
-        ("behavior_server", "nav2_behaviors", "behavior_server", "nav2_behaviors::BehaviorServer"),
+        ("behavior_server", "nav2_behaviors", "behavior_server", "behavior_server::BehaviorServer"),
         ("bt_navigator", "nav2_bt_navigator", "bt_navigator", "nav2_bt_navigator::BtNavigator"),
         ("waypoint_follower", "nav2_waypoint_follower", "waypoint_follower", "nav2_waypoint_follower::WaypointFollower"),
         ("velocity_smoother", "nav2_velocity_smoother", "velocity_smoother", "nav2_velocity_smoother::VelocitySmoother"),
@@ -276,7 +289,7 @@ def generate_launch_description() -> "LaunchDescription":
         "controller_server": [("tf", "/tf"), ("tf_static", "/tf_static"), ("cmd_vel", "/nav2_controller_cmd_vel")],
         "smoother_server": [("tf", "/tf"), ("tf_static", "/tf_static")],
         "planner_server": [("tf", "/tf"), ("tf_static", "/tf_static")],
-        "behavior_server": [("tf", "/tf"), ("tf_static", "/tf_static")],
+        "behavior_server": [("tf", "/tf"), ("tf_static", "/tf_static"), ("cmd_vel", "/nav2_controller_cmd_vel")],
         "bt_navigator": [("tf", "/tf"), ("tf_static", "/tf_static")],
         "waypoint_follower": [("tf", "/tf"), ("tf_static", "/tf_static")],
         "velocity_smoother": [

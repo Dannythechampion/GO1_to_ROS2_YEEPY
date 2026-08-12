@@ -50,7 +50,9 @@ def test_parse_launch_boolean_accepts_only_explicit_values():
     assert launch.parse_launch_boolean("1", "use_composition") is True
     assert launch.parse_launch_boolean("0", "use_composition") is False
     with pytest.raises(RuntimeError, match="use_composition"):
-        launch.parse_launch_boolean("maybe", "use_composition")
+        launch.parse_launch_boolean("yes", "use_composition")
+    with pytest.raises(RuntimeError, match="use_composition"):
+        launch.parse_launch_boolean("on", "use_composition")
     composition_argument = next(
         call for call in _calls("DeclareLaunchArgument")
         if ast.literal_eval(call.args[0]) == "use_composition"
@@ -70,6 +72,12 @@ def test_yaml_and_pgm_pure_validation_rejects_malformed_content():
         launch.validate_pgm_bytes(b"P5\n2 2\n255\n\x00")
     with pytest.raises(RuntimeError, match="pixel"):
         launch.validate_pgm_bytes(b"P2\n1 1\n255\n256")
+    with pytest.raises(RuntimeError, match="outside"):
+        launch.validate_pgm_bytes(b"P5\n1 1\n10\n\x0b")
+    with pytest.raises(RuntimeError, match="outside"):
+        launch.validate_pgm_bytes(b"P5\n1 1\n300\n\x01\xf4")
+    launch.validate_pgm_bytes(b"P5\n1 1\n10\n\x0a")
+    launch.validate_pgm_bytes(b"P5\n1 1\n300\n\x01,")
 
 
 def test_relative_map_image_cannot_escape_map_directory():
@@ -109,6 +117,17 @@ def _assignment_value(name):
     return ast.literal_eval(assignment.value)
 
 
+def _assignment_mapping_keys(name):
+    tree = ast.parse(LAUNCH.read_text(encoding="utf-8"))
+    assignment = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        )
+    )
+    return {ast.literal_eval(key) for key in assignment.value.keys}
+
+
 def test_launch_registers_explicit_nav2_actions_and_velocity_contract():
     containers = _calls("ComposableNodeContainer")
     assert len(containers) == 1
@@ -138,11 +157,28 @@ def test_launch_registers_explicit_nav2_actions_and_velocity_contract():
     gate = next(call for call in _calls("Node") if _keyword_value(call, "executable") == "cmd_vel_safety_gate")
     remaps = _assignment_value("nav2_remaps")
     assert ("cmd_vel", "/nav2_controller_cmd_vel") in remaps["controller_server"]
+    assert ("cmd_vel", "/nav2_controller_cmd_vel") in remaps["behavior_server"]
     assert ("cmd_vel", "/nav2_controller_cmd_vel") in remaps["velocity_smoother"]
     assert ("cmd_vel_smoothed", "/cmd_vel_nav") in remaps["velocity_smoother"]
     assert ("cmd_vel_nav", "/cmd_vel") not in remaps["velocity_smoother"]
     assert ("'input_topic'", "'/cmd_vel_nav'") in _dict_pairs(gate)
     assert ("'output_topic'", "'/cmd_vel'") in _dict_pairs(gate)
+
+
+def test_rewritten_nav2_spec_propagates_frames_and_scan_to_all_consumers():
+    rewrites = _assignment_mapping_keys("nav2_rewrite_paths")
+    for path in (
+        "bt_navigator.ros__parameters.robot_base_frame",
+        "local_costmap.local_costmap.ros__parameters.robot_base_frame",
+        "global_costmap.global_costmap.ros__parameters.robot_base_frame",
+        "behavior_server.ros__parameters.robot_base_frame",
+        "local_costmap.local_costmap.ros__parameters.obstacle_layer.scan.topic",
+        "global_costmap.global_costmap.ros__parameters.obstacle_layer.scan.topic",
+    ):
+        assert path in rewrites
+
+    specs = _assignment_value("nav2_node_specs")
+    assert next(item for item in specs if item[0] == "behavior_server")[3] == "behavior_server::BehaviorServer"
 
 
 def _remap_pairs(call):
