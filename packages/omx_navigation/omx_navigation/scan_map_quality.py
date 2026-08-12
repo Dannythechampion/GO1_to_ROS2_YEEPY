@@ -148,15 +148,19 @@ def score_pose(
         distance = field[cell[1] * grid.width + cell[0]]
         total_distance += distance
         hits += distance <= hit_distance
-    mean_distance = total_distance / used if used and not outside else math.inf
-    overlap = hits / used if used else 0.0
+    if outside:
+        overlap, mean_distance = 0.0, math.inf
+    else:
+        mean_distance = total_distance / used if used else math.inf
+        overlap = hits / used if used else 0.0
     return PoseScore(pose, overlap, mean_distance, overlap - 0.20 * min(mean_distance, 1.0), used)
 
 
 def coarse_search(grid: GridMap, points: Sequence[ScanPoint], initial: Pose2D, window: SearchWindow) -> SearchResult:
     field = build_distance_field(grid)
+    sampled_points = _evenly_sample(points, window.max_scan_points)
     candidates = [
-        score_pose(grid, field, _evenly_sample(points, window.max_scan_points), pose, window.hit_distance)
+        score_pose(grid, field, sampled_points, pose, window.hit_distance)
         for pose in _candidate_poses(initial, window)
     ]
     candidates.sort(key=lambda item: (-item.score, -item.overlap, item.mean_distance, item.pose.x, item.pose.y, item.pose.yaw))

@@ -8,7 +8,9 @@ from omx_navigation.scan_map_quality import (
     ScanPoint,
     SearchWindow,
     angle_distance,
+    build_distance_field,
     coarse_search,
+    score_pose,
 )
 
 
@@ -91,3 +93,71 @@ def test_coarse_search_supports_a_single_bounded_scan_point():
         SearchWindow(0.5, 0.5, math.radians(15), math.radians(15), max_scan_points=1),
     )
     assert result.best.points_used == 1
+
+
+def test_pose_with_one_outside_endpoint_is_disqualified_even_with_ninety_nine_hits():
+    grid = GridMap(3, 3, 1.0, 0.0, 0.0, 0.0, (100,) * 9)
+    score = score_pose(
+        grid,
+        build_distance_field(grid),
+        (ScanPoint(0.0, 0.0),) * 99 + (ScanPoint(100.0, 100.0),),
+        Pose2D(0.5, 0.5, 0.0),
+        hit_distance=0.25,
+    )
+    assert score.overlap == 0.0
+    assert math.isinf(score.mean_distance)
+    assert score.score == pytest.approx(-0.20)
+
+
+def test_distance_field_has_exact_orthogonal_and_diagonal_costs():
+    grid = GridMap(3, 3, 0.5, 0.0, 0.0, 0.0, (0, 0, 0, 0, 100, 0, 0, 0, 0))
+    field = build_distance_field(grid)
+    assert field[1] == pytest.approx(0.5)
+    assert field[0] == pytest.approx(math.sqrt(2.0) * 0.5)
+
+
+def test_world_to_cell_honors_a_rotated_map_origin():
+    grid = GridMap(5, 5, 1.0, 10.0, 20.0, math.pi / 2, (0,) * 25)
+    assert grid.world_to_cell(7.5, 21.5) == (1, 2)
+
+
+def test_score_pose_uses_the_specified_overlap_distance_formula():
+    grid = GridMap(3, 1, 1.0, 0.0, 0.0, 0.0, (100, 0, 0))
+    score = score_pose(
+        grid, build_distance_field(grid), (ScanPoint(1.1, 0.0),), Pose2D(0.0, 0.0, 0.0), 0.25
+    )
+    assert score.overlap == 0.0
+    assert score.mean_distance == pytest.approx(1.0)
+    assert score.score == pytest.approx(-0.20)
+
+
+def test_runner_up_accepts_the_exact_point_seventy_five_meter_boundary():
+    grid = GridMap(10, 10, 1.0, -5.0, -5.0, 0.0, (100,) * 100)
+    result = coarse_search(
+        grid, (ScanPoint(0.0, 0.0),), Pose2D(0.0, 0.0, 0.0),
+        SearchWindow(0.75, 0.75, math.radians(1), math.radians(1)),
+    )
+    assert result.runner_up is not None
+    assert math.hypot(
+        result.runner_up.pose.x - result.best.pose.x,
+        result.runner_up.pose.y - result.best.pose.y,
+    ) == pytest.approx(0.75)
+
+
+def test_runner_up_accepts_the_exact_twenty_degree_boundary():
+    grid = GridMap(10, 10, 1.0, -5.0, -5.0, 0.0, (100,) * 100)
+    result = coarse_search(
+        grid, (ScanPoint(0.0, 0.0),), Pose2D(0.0, 0.0, 0.0),
+        SearchWindow(0.1, 0.1, math.radians(20), math.radians(20)),
+    )
+    assert result.runner_up is not None
+    assert angle_distance(result.runner_up.pose.yaw, result.best.pose.yaw) == pytest.approx(math.radians(20))
+
+
+def test_coarse_search_includes_translation_and_yaw_window_endpoints():
+    grid = GridMap(20, 20, 1.0, -10.0, -10.0, 0.0, (100,) * 400)
+    result = coarse_search(
+        grid, (ScanPoint(0.0, 0.0),), Pose2D(0.0, 0.0, 0.0),
+        SearchWindow(3.0, 3.0, math.pi / 2, math.pi / 2),
+    )
+    assert result.best.pose == Pose2D(-3.0, -3.0, -math.pi / 2)
