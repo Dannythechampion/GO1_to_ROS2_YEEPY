@@ -38,9 +38,12 @@ def test_existing_map_launch_starts_planar_frame_before_scan_projection():
     text = LAUNCH.read_text(encoding="utf-8")
     for expected in (
         'executable="planar_base_frame"',
-        '"odom_frame": "camera_init"',
-        '"source_base_frame": "body"',
-        '"planar_base_frame": "body_nav"',
+        'planar_base_frame = LaunchConfiguration("planar_base_frame")',
+        '"odom_frame": odom_frame',
+        '"source_base_frame": base_frame',
+        '"planar_base_frame": planar_base_frame',
+        'DeclareLaunchArgument("planar_base_frame", default_value="body_nav")',
+        'parameters=[scan_params_file, {"target_frame": planar_base_frame}]',
     ):
         assert expected in text
     assert text.index("planar_base_frame,") < text.index("scan_projection,")

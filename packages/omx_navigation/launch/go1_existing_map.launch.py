@@ -34,6 +34,7 @@ def generate_launch_description() -> LaunchDescription:
     odom_topic = LaunchConfiguration("odom_topic")
     odom_frame = LaunchConfiguration("odom_frame")
     base_frame = LaunchConfiguration("base_frame")
+    planar_base_frame = LaunchConfiguration("planar_base_frame")
     nav2_params_file = LaunchConfiguration("params_file")
     scan_params_file = LaunchConfiguration("scan_params_file")
     rviz = LaunchConfiguration("rviz")
@@ -47,7 +48,7 @@ def generate_launch_description() -> LaunchDescription:
         name="pointcloud_to_laserscan",
         output="screen",
         remappings=[("cloud_in", cloud_topic), ("scan", scan_topic)],
-        parameters=[scan_params_file],
+        parameters=[scan_params_file, {"target_frame": planar_base_frame}],
     )
 
     planar_base_frame = Node(
@@ -57,9 +58,9 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         parameters=[
             {
-                "odom_frame": "camera_init",
-                "source_base_frame": "body",
-                "planar_base_frame": "body_nav",
+                "odom_frame": odom_frame,
+                "source_base_frame": base_frame,
+                "planar_base_frame": planar_base_frame,
             }
         ],
     )
@@ -104,6 +105,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("odom_topic", default_value="/Odometry"),
             DeclareLaunchArgument("odom_frame", default_value="camera_init"),
             DeclareLaunchArgument("base_frame", default_value="body"),
+            DeclareLaunchArgument("planar_base_frame", default_value="body_nav"),
             DeclareLaunchArgument("ros_domain_id", default_value="100"),
             DeclareLaunchArgument(
                 "params_file",
@@ -132,6 +134,9 @@ def generate_launch_description() -> LaunchDescription:
                 "ROS_DOMAIN_ID", LaunchConfiguration("ros_domain_id")
             ),
             OpaqueFunction(function=validate_map),
+            # This is action registration order, not a TF readiness barrier.
+            # Early clouds may be dropped transiently; conversion resumes once
+            # FAST-LIO publishes the source transform and the planar TF arrives.
             planar_base_frame,
             scan_projection,
             navigation,

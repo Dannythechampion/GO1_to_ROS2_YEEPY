@@ -92,6 +92,7 @@ def source_transform(stamp="source-stamp"):
 
 @pytest.fixture
 def planar_module(monkeypatch):
+    original_module = sys.modules.get("omx_navigation.planar_base_frame")
     geometry_msgs = ModuleType("geometry_msgs.msg")
     geometry_msgs.TransformStamped = FakeTransformStamped
     rclpy = ModuleType("rclpy")
@@ -120,7 +121,11 @@ def planar_module(monkeypatch):
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
     sys.modules.pop("omx_navigation.planar_base_frame", None)
-    return importlib.import_module("omx_navigation.planar_base_frame")
+    module = importlib.import_module("omx_navigation.planar_base_frame")
+    yield module
+    sys.modules.pop("omx_navigation.planar_base_frame", None)
+    if original_module is not None:
+        sys.modules["omx_navigation.planar_base_frame"] = original_module
 
 
 def test_node_derives_body_nav_from_body_without_rebroadcasting_body(planar_module):
