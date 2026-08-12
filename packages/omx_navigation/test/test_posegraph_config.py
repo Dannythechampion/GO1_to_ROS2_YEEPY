@@ -31,6 +31,11 @@ def test_posegraph_localization_owns_map_to_odom_contract():
     assert params["correlation_search_space_dimension"] <= 1.0
 
 
+def test_posegraph_localization_requests_startup_deserialization():
+    params = load_slam()["slam_toolbox"]["ros__parameters"]
+    assert params["map_start_pose"] == [0.0, 0.0, 0.0]
+
+
 def test_posegraph_nav2_has_no_amcl_and_uses_safe_footprint():
     config = load_nav2()
     assert "amcl" not in config

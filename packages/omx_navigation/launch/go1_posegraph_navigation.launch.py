@@ -219,7 +219,7 @@ def prepare_recording_session(record_localization: bool, record_cloud: bool, dia
     session_dir = Path(diagnostics_root).expanduser() / f"posegraph_{timestamp}_{process_id or os.getpid()}"
     session_dir.mkdir(parents=True, exist_ok=False)
     topics = (
-        "/scan", "/Odometry", "/tf", "/tf_static", "/initialpose", "/slam_toolbox/pose",
+        "/scan", "/Odometry", "/tf", "/tf_static", "/initialpose", "/slam_localization/pose",
         "/localization_supervisor/status", "/localization_supervisor/ready", "/cmd_vel_nav", "/cmd_vel",
     )
     if record_cloud:
@@ -312,6 +312,7 @@ def generate_launch_description() -> "LaunchDescription":
     slam_localization = GroupAction(actions=[
         SetRemap(src="/initialpose", dst="/slam_localization/initialpose"),
         SetRemap(src="/map", dst="/slam_localization/map"),
+        SetRemap(src="/pose", dst="/slam_localization/pose"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(slam_share, "launch", "localization_launch.py")),
             launch_arguments={"slam_params_file": configured_slam, "use_sim_time": "false"}.items(),

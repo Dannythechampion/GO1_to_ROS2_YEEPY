@@ -47,7 +47,9 @@ class Node:
         return publisher
 
     def create_subscription(self, _type, topic, callback, qos):
-        subscription = SimpleNamespace(topic=topic, callback=callback, qos=qos)
+        subscription = SimpleNamespace(
+            message_type=_type, topic=topic, callback=callback, qos=qos
+        )
         self.subscriptions.append(subscription)
         return subscription
 
@@ -172,9 +174,11 @@ def slam_message(x=0.0, y=0.0, yaw=0.0):
     return SimpleNamespace(
         header=header(),
         pose=SimpleNamespace(
-            position=SimpleNamespace(x=x, y=y),
-            orientation=SimpleNamespace(
-                x=0.0, y=0.0, z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0)
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=x, y=y),
+                orientation=SimpleNamespace(
+                    x=0.0, y=0.0, z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0)
+                ),
             ),
         ),
     )
@@ -261,7 +265,7 @@ def test_supervisor_wires_topics_refines_map_pose_and_emits_finite_json(supervis
     result = SearchResult(PoseScore(Pose2D(1.0, 2.0, 0.5), 0.8, 0.0, 0.8, 1), None, False)
     monkeypatch.setattr(module, "coarse_search", lambda *_args: result)
     node = module.LocalizationSupervisor()
-    assert {sub.topic for sub in node.subscriptions} == {"/map", "/scan", "/Odometry", "/initialpose", "/slam_toolbox/pose", "/tf"}
+    assert {sub.topic for sub in node.subscriptions} == {"/map", "/scan", "/Odometry", "/initialpose", "/slam_localization/pose", "/tf"}
     assert {pub.topic for pub in node.publishers} == {"/slam_localization/initialpose", "~/status", "~/ready"}
 
     node._on_map(map_message(occupied_world=((2.0, 2.0),)))
@@ -281,20 +285,28 @@ def test_supervisor_wires_topics_refines_map_pose_and_emits_finite_json(supervis
     node.clock.seconds = 0.1
     node._on_odom(odom_message())
     node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
-    node._on_slam_pose(SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=2.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
+    node._on_slam_pose(slam_message(1.0, 2.0))
     node._on_status_timer()
     node.clock.seconds = 3.1
     node._on_map(map_message(occupied_world=((2.0, 2.0),)))
     node._on_odom(odom_message())
     node._on_scan(scan_message())
     node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
-    node._on_slam_pose(SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=2.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
+    node._on_slam_pose(slam_message(1.0, 2.0))
     node._on_status_timer()
     status = json.loads(publisher(node, "~/status").messages[-1].data)
     assert status["state"] == "READY"
     assert status["error"] == "NONE"
     assert math.isfinite(status["stamp"])
     assert publisher(node, "~/ready").messages[-1].data is True
+
+
+def test_supervisor_uses_humble_pose_topic_and_type(supervisor_module):
+    node = supervisor_module.LocalizationSupervisor()
+    subscription = next(
+        item for item in node.subscriptions if item.topic == "/slam_localization/pose"
+    )
+    assert subscription.message_type is PoseWithCovarianceStamped
 
 
 def test_supervisor_rejects_stale_inputs_odom_time_rollback_and_amcl(supervisor_module):
@@ -392,13 +404,13 @@ def test_supervisor_waits_for_post_click_scan_and_fresh_slam_tf_before_ready(sup
     assert json.loads(publisher(node, "~/status").messages[-1].data)["state"] != "READY"
 
     node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
-    node._on_slam_pose(SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=2.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
+    node._on_slam_pose(slam_message(1.0, 2.0))
     node._on_status_timer()
     node.clock.seconds = 6.2
     node._on_odom(odom_message())
     node._on_scan(scan_message())
     node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
-    node._on_slam_pose(SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=1.1, y=2.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))))
+    node._on_slam_pose(slam_message(1.1, 2.0))
     node._on_status_timer()
     assert json.loads(publisher(node, "~/status").messages[-1].data)["state"] == "READY"
 
@@ -451,7 +463,7 @@ def test_supervisor_rejects_large_consecutive_slam_pose_jump(supervisor_module, 
     node.clock.seconds = 0.1
     node._on_odom(odom_message())
     node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
-    slam = lambda x: SimpleNamespace(header=header(), pose=SimpleNamespace(position=SimpleNamespace(x=x, y=0.0), orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0)))
+    slam = lambda x: slam_message(x=x)
     node._on_slam_pose(slam(0.0))
     node._on_scan(scan_message())
     node._on_status_timer()
@@ -655,13 +667,7 @@ def test_ready_heartbeat_keeps_velocity_gate_fresh_for_more_than_one_second(supe
         node._on_odom(odom_message())
         node._on_scan(scan_message())
         node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
-        node._on_slam_pose(SimpleNamespace(
-            header=header(),
-            pose=SimpleNamespace(
-                position=SimpleNamespace(x=0.0, y=0.0),
-                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
-            ),
-        ))
+        node._on_slam_pose(slam_message())
         node._on_ready_heartbeat()
         heartbeat = publisher(node, "~/ready").messages[-1]
         gate.update_ready(heartbeat.data, now)
@@ -706,13 +712,7 @@ def test_outside_slam_pose_fails_closed(supervisor_module, monkeypatch):
     node._on_initial_pose(pose_message())
     node._on_scan(scan_message())
     node._on_status_timer()
-    node._on_slam_pose(SimpleNamespace(
-        header=header(),
-        pose=SimpleNamespace(
-            position=SimpleNamespace(x=100.0, y=100.0),
-            orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
-        ),
-    ))
+    node._on_slam_pose(slam_message(100.0, 100.0))
     node._on_status_timer()
 
     status = json.loads(publisher(node, "~/status").messages[-1].data)
@@ -755,13 +755,7 @@ def test_ready_heartbeat_evaluates_stale_inputs_before_publishing(supervisor_mod
     node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(
         header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav"
     )]))
-    node._on_slam_pose(SimpleNamespace(
-        header=header(),
-        pose=SimpleNamespace(
-            position=SimpleNamespace(x=0.0, y=0.0),
-            orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
-        ),
-    ))
+    node._on_slam_pose(slam_message())
     node._overlap = 0.8
     node._ambiguity_margin = 0.2
     node._machine.state = LocalizationState.READY

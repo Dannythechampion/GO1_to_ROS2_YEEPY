@@ -9,7 +9,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
-from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 import rclpy
 from rclpy.node import Node
@@ -129,7 +129,7 @@ class LocalizationSupervisor(Node):
         self._scan_subscription = self.create_subscription(LaserScan, "/scan", self._on_scan, qos_profile_sensor_data)
         self._odom_subscription = self.create_subscription(Odometry, "/Odometry", self._on_odom, qos_profile_sensor_data)
         self._initialpose_subscription = self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self._on_initial_pose, reliable_qos)
-        self._slam_pose_subscription = self.create_subscription(PoseStamped, "/slam_toolbox/pose", self._on_slam_pose, reliable_qos)
+        self._slam_pose_subscription = self.create_subscription(PoseWithCovarianceStamped, "/slam_localization/pose", self._on_slam_pose, reliable_qos)
         self._tf_subscription = self.create_subscription(TFMessage, "/tf", self._on_tf, qos_profile_sensor_data)
         self._status_timer = self.create_timer(0.5, self._on_status_timer)
         self._ready_timer = self.create_timer(0.1, self._on_ready_heartbeat)
@@ -213,11 +213,11 @@ class LocalizationSupervisor(Node):
             if self._search_future is not None:
                 self._search_future.cancel()
 
-    def _on_slam_pose(self, message: PoseStamped) -> None:
+    def _on_slam_pose(self, message: PoseWithCovarianceStamped) -> None:
         if message.header.frame_id != "map":
             return
         try:
-            pose = message.pose
+            pose = message.pose.pose
             current = Pose2D(pose.position.x, pose.position.y, quaternion_to_yaw(
                 pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w
             ))

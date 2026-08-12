@@ -232,3 +232,15 @@ def test_supervisor_receives_configured_scan_and_odometry_topics():
     pairs = {tuple(ast.literal_eval(item)) if isinstance(item, ast.Constant) else tuple(ast.unparse(part) for part in item.elts) for item in remappings.elts}
     assert ("'/scan'", "scan_topic") in pairs
     assert ("'/Odometry'", "odom_topic") in pairs
+
+
+def test_posegraph_remaps_humble_pose_and_records_the_remapped_topic():
+    pose_remaps = [
+        call for call in _calls("SetRemap")
+        if _keyword_value(call, "src") == "/pose"
+    ]
+    assert len(pose_remaps) == 1
+    assert _keyword_value(pose_remaps[0], "dst") == "/slam_localization/pose"
+    recorder_topics = _assignment_value("topics")
+    assert "/slam_localization/pose" in recorder_topics
+    assert "/slam_toolbox/pose" not in recorder_topics
