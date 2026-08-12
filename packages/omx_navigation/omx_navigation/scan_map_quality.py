@@ -138,6 +138,8 @@ def score_pose(
         raise ValueError("distance field must match grid dimensions")
     if not math.isfinite(hit_distance) or hit_distance <= 0.0:
         raise ValueError("hit_distance must be finite and positive")
+    if not all(math.isfinite(value) for value in (pose.x, pose.y, pose.yaw)):
+        return PoseScore(pose, 0.0, math.inf, _score_value(0.0, math.inf), 0)
     c, s = math.cos(pose.yaw), math.sin(pose.yaw)
     total_distance = 0.0
     hits = 0
@@ -166,14 +168,25 @@ def coarse_search(grid: GridMap, points: Sequence[ScanPoint], initial: Pose2D, w
     field = build_distance_field(grid)
     sampled_points = _evenly_sample(points, window.max_scan_points)
     poses = _candidate_poses(initial, window)
+    relative_yaws = {yaw: yaw - grid.origin_yaw for yaw in dict.fromkeys(pose.yaw for pose in poses)}
     bounds_by_yaw = {
-        yaw: _rotated_point_bounds(points, yaw - grid.origin_yaw)
-        for yaw in dict.fromkeys(pose.yaw for pose in poses)
+        yaw: _rotated_point_bounds(points, relative_yaw)
+        for yaw, relative_yaw in relative_yaws.items()
+        if math.isfinite(relative_yaw)
     }
     candidates = []
     for pose in poses:
         score = score_pose(grid, field, sampled_points, pose, window.hit_distance)
-        if _candidate_has_outside_endpoint(grid, points, pose, bounds_by_yaw[pose.yaw]):
+        if not all(math.isfinite(value) for value in (pose.x, pose.y, pose.yaw)):
+            candidates.append(score)
+            continue
+        relative_yaw = relative_yaws[pose.yaw]
+        outside = (
+            _has_outside_endpoint_exact(grid, points, pose)
+            if not math.isfinite(relative_yaw)
+            else _candidate_has_outside_endpoint(grid, points, pose, bounds_by_yaw[pose.yaw])
+        )
+        if outside:
             score = PoseScore(score.pose, 0.0, math.inf, _score_value(0.0, math.inf), score.points_used)
         candidates.append(score)
     candidates.sort(key=lambda item: (-item.score, -item.overlap, item.mean_distance, item.pose.x, item.pose.y, item.pose.yaw))

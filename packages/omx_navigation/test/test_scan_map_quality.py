@@ -296,3 +296,17 @@ def test_downsampled_review_counterexample_still_disqualifies_search():
 def test_world_to_cell_rejects_nonfinite_intermediate_coordinates():
     grid = GridMap(7, 5, 1.0, -1e308, 0.0, 0.0, (100,) * 35)
     assert grid.world_to_cell(1e308, 0.0) is None
+
+
+def test_coarse_search_handles_overflowing_relative_yaw_with_exact_fallback():
+    grid = GridMap(7, 5, 1.0, 0.0, 0.0, -1e308, (100,) * 35)
+    pose = Pose2D(3.0, 2.0, 1e308)
+    point = ScanPoint(0.0, 0.0)
+    direct = score_pose(grid, build_distance_field(grid), (point,), pose, 0.25)
+    result = coarse_search(
+        grid,
+        (point,),
+        pose,
+        SearchWindow(1e-16, 1e-16, 1e-16, 1e-16),
+    )
+    assert result.best.score == pytest.approx(direct.score)
