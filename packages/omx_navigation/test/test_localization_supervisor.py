@@ -268,7 +268,7 @@ def publisher(node, topic):
     return next(item for item in node.publishers if item.topic == topic)
 
 
-@pytest.mark.parametrize("invalid_kind", ("missing_header", "malformed_covariance", "malformed", "nonfinite", "near_zero_quaternion"))
+@pytest.mark.parametrize("invalid_kind", ("missing_header", "malformed_covariance", "malformed", "nonfinite", "near_zero_quaternion", "overflow_quaternion"))
 def test_invalid_new_initialpose_revokes_existing_ready_and_clears_prior_localization(invalid_kind, supervisor_module, monkeypatch):
     from omx_navigation.localization_state import ErrorCode, LocalizationState
 
@@ -285,8 +285,13 @@ def test_invalid_new_initialpose_revokes_existing_ready_and_clears_prior_localiz
         invalid.pose.pose.orientation.w = "not-a-number"
     elif invalid_kind == "nonfinite":
         invalid.pose.pose.orientation.w = float("nan")
-    else:
+    elif invalid_kind == "near_zero_quaternion":
         invalid.pose.pose.orientation.w = 1e-13
+    else:
+        invalid.pose.pose.orientation.x = 1e308
+        invalid.pose.pose.orientation.y = 1e308
+        invalid.pose.pose.orientation.z = 1e308
+        invalid.pose.pose.orientation.w = 1e308
     node._on_initial_pose(invalid)
     node._on_ready_heartbeat()
 
@@ -296,6 +301,36 @@ def test_invalid_new_initialpose_revokes_existing_ready_and_clears_prior_localiz
     assert node._slam_pose_handshake is False
     assert node._current_base_pose is None
     assert node._quality_received_at is None
+    assert publisher(node, "~/ready").messages[-1].data is False
+
+
+@pytest.mark.parametrize(
+    "invalid_covariance",
+    (
+        [],
+        [0.0] * 35,
+        [0.0] * 37,
+        "0" * 36,
+        [False] + [0.0] * 35,
+        [0.0] * 35 + [float("nan")],
+        [0.0] * 35 + [float("inf")],
+    ),
+    ids=("empty", "short", "long", "string", "bool", "nan", "infinity"),
+)
+def test_invalid_initialpose_covariance_revokes_existing_ready(invalid_covariance, supervisor_module, monkeypatch):
+    from omx_navigation.localization_state import ErrorCode, LocalizationState
+
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    advance_to_ready(node)
+    assert node._machine.state is LocalizationState.READY
+
+    invalid = pose_message()
+    invalid.pose.covariance = invalid_covariance
+    node._on_initial_pose(invalid)
+    node._on_ready_heartbeat()
+
+    assert node._machine.state is LocalizationState.LOST
+    assert node._last_transition.error is ErrorCode.POSE_OUTSIDE_MAP
     assert publisher(node, "~/ready").messages[-1].data is False
 
 

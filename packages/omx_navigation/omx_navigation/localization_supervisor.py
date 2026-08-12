@@ -194,10 +194,21 @@ class LocalizationSupervisor(Node):
             if not all(math.isfinite(value) for value in values):
                 raise ValueError("initial pose must be finite")
             quaternion = values[3:]
-            if math.hypot(*quaternion) <= 1e-12:
+            quaternion_norm = math.hypot(*quaternion)
+            if not math.isfinite(quaternion_norm) or quaternion_norm <= 1e-12:
                 raise ValueError("initial pose quaternion must not be near zero")
             initial = Pose2D(values[0], values[1], quaternion_to_yaw(*quaternion))
-            covariance = tuple(message.pose.covariance)
+            raw_covariance = message.pose.covariance
+            if isinstance(raw_covariance, (str, bytes)):
+                raise ValueError("initial pose covariance must be numeric")
+            covariance = tuple(raw_covariance)
+            if len(covariance) != 36:
+                raise ValueError("initial pose covariance must contain 36 values")
+            if any(isinstance(value, bool) for value in covariance):
+                raise ValueError("initial pose covariance must be numeric")
+            covariance = tuple(float(value) for value in covariance)
+            if not all(math.isfinite(value) for value in covariance):
+                raise ValueError("initial pose covariance must be finite")
         except (AttributeError, TypeError, ValueError):
             self._last_transition = self._machine.reject_initial_pose(now)
             return
