@@ -15,17 +15,25 @@ class CmdVelSafetyGate(Node):
         super().__init__("cmd_vel_safety_gate")
         ready_timeout = self.declare_parameter("ready_timeout", 0.30).value
         command_timeout = self.declare_parameter("command_timeout", 0.30).value
+        input_topic = self._topic_parameter("input_topic", "/cmd_vel_nav")
+        output_topic = self._topic_parameter("output_topic", "/cmd_vel")
         self._gate = VelocityGate(ready_timeout, command_timeout)
         # `/cmd_vel` remains volatile: retaining a moving command could replay it
         # when the driver reconnects. Closed-state timer events publish fresh stops.
-        self._publisher = self.create_publisher(Twist, "/cmd_vel", 10)
+        self._publisher = self.create_publisher(Twist, output_topic, 10)
         self._ready_subscription = self.create_subscription(
             Bool, "/localization_supervisor/ready", self._on_ready, 10
         )
         self._command_subscription = self.create_subscription(
-            Twist, "/cmd_vel_nav", self._on_command, 10
+            Twist, input_topic, self._on_command, 10
         )
         self._watchdog = self.create_timer(0.05, self._on_watchdog)
+
+    def _topic_parameter(self, name: str, default: str) -> str:
+        value = self.declare_parameter(name, default).value
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must be a nonempty string")
+        return value
 
     def _on_ready(self, message: Bool) -> None:
         # A false transition publishes one immediate stop; the 20 Hz timer below

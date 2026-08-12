@@ -6,6 +6,7 @@ import pytest
 
 
 LAUNCH = Path(__file__).parents[1] / "launch" / "go1_posegraph_navigation.launch.py"
+SETUP = Path(__file__).parents[1] / "setup.py"
 
 
 def load_launch_module():
@@ -99,6 +100,13 @@ def _keyword_value(call, keyword):
     return ast.literal_eval(value)
 
 
+def _literal_keyword_or_none(call, keyword):
+    try:
+        return _keyword_value(call, keyword)
+    except (StopIteration, ValueError):
+        return None
+
+
 def _expression_value(value):
     try:
         return ast.literal_eval(value)
@@ -179,6 +187,28 @@ def test_rewritten_nav2_spec_propagates_frames_and_scan_to_all_consumers():
 
     specs = _assignment_value("nav2_node_specs")
     assert next(item for item in specs if item[0] == "behavior_server")[3] == "behavior_server::BehaviorServer"
+
+
+def test_posegraph_bringup_always_starts_installed_readiness_goal_bridge():
+    bridges = [
+        call for call in _calls("Node")
+        if _literal_keyword_or_none(call, "package") == "omx_navigation"
+        and _literal_keyword_or_none(call, "executable") == "rviz_goal_bridge"
+    ]
+    assert len(bridges) == 1
+    assert _keyword_value(bridges[0], "name") == "rviz_goal_bridge"
+    assert all(item.arg != "condition" for item in bridges[0].keywords)
+    setup = SETUP.read_text(encoding="utf-8")
+    assert '"rviz_goal_bridge = omx_navigation.rviz_goal_bridge:main"' in setup
+
+
+def test_goal_bridge_and_gate_cross_contract_is_exact():
+    nodes = _calls("Node")
+    gate = next(call for call in nodes if _literal_keyword_or_none(call, "executable") == "cmd_vel_safety_gate")
+    bridge = next(call for call in nodes if _literal_keyword_or_none(call, "executable") == "rviz_goal_bridge")
+    assert ("'input_topic'", "'/cmd_vel_nav'") in _dict_pairs(gate)
+    assert ("'output_topic'", "'/cmd_vel'") in _dict_pairs(gate)
+    assert all(item.arg != "condition" for item in bridge.keywords)
 
 
 def _remap_pairs(call):

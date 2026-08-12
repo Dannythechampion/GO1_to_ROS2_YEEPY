@@ -385,6 +385,12 @@ def generate_launch_description() -> "LaunchDescription":
         package="omx_navigation", executable="cmd_vel_safety_gate", name="cmd_vel_safety_gate", output="screen",
         parameters=[{"input_topic": "/cmd_vel_nav", "output_topic": "/cmd_vel"}],
     )
+    goal_bridge = Node(
+        package="omx_navigation",
+        executable="rviz_goal_bridge",
+        name="rviz_goal_bridge",
+        output="screen",
+    )
     rviz = Node(
         package="rviz2", executable="rviz2", name="rviz2", output="screen", arguments=["-d", LaunchConfiguration("rviz_config")],
         remappings=[("/scan", scan_topic)], condition=IfCondition(LaunchConfiguration("rviz")),
@@ -425,5 +431,5 @@ def generate_launch_description() -> "LaunchDescription":
         planar_frame, scan_projection, map_server, map_lifecycle, slam_localization,
         OpaqueFunction(function=_setup_diagnostics),
         nav2_container, *nav2_nodes, nav2_component_loader, nav2_lifecycle,
-        gate, rviz, go1_driver,
+        goal_bridge, gate, rviz, go1_driver,
     ])
