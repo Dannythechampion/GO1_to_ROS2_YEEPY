@@ -35,9 +35,12 @@ class VelocityGate:
         self._ready = False
         self._last_ready_at: float | None = None
         self._last_command_at: float | None = None
+        self._last_observed_at: float | None = None
 
     def update_ready(self, ready: bool, now: float) -> GateDecision:
-        self._validate_now(now)
+        time_stop = self._observe_time(now)
+        if time_stop is not None:
+            return time_stop
         if not isinstance(ready, bool):
             raise ValueError("ready must be a boolean")
         if ready:
@@ -49,7 +52,9 @@ class VelocityGate:
         return self._stop("localization_not_ready")
 
     def filter(self, command: VelocityCommand, now: float) -> GateDecision:
-        self._validate_now(now)
+        time_stop = self._observe_time(now)
+        if time_stop is not None:
+            return time_stop
         readiness_stop = self._readiness_stop(now)
         if readiness_stop is not None:
             return readiness_stop
@@ -59,24 +64,41 @@ class VelocityGate:
         return GateDecision(command, True, "command_passed")
 
     def watchdog(self, now: float) -> GateDecision:
-        self._validate_now(now)
+        time_stop = self._observe_time(now)
+        if time_stop is not None:
+            return time_stop
         readiness_stop = self._readiness_stop(now)
         if readiness_stop is not None:
             return readiness_stop
-        if self._last_command_at is None or now - self._last_command_at >= self.command_timeout:
+        if self._last_command_at is None or _expired(
+            now, self._last_command_at, self.command_timeout
+        ):
             return self._stop("command_stale")
         return GateDecision(VelocityCommand.zero(), False, "command_fresh")
 
     def _readiness_stop(self, now: float) -> GateDecision | None:
         if not self._ready:
             return self._stop("localization_not_ready")
-        if self._last_ready_at is None or now - self._last_ready_at >= self.ready_timeout:
+        if self._last_ready_at is None or _expired(
+            now, self._last_ready_at, self.ready_timeout
+        ):
             return self._stop("ready_heartbeat_stale")
         return None
 
     @staticmethod
     def _stop(reason: str) -> GateDecision:
         return GateDecision(VelocityCommand.zero(), True, reason)
+
+    def _observe_time(self, now: float) -> GateDecision | None:
+        self._validate_now(now)
+        if self._last_observed_at is not None and now < self._last_observed_at:
+            self._ready = False
+            self._last_ready_at = None
+            self._last_command_at = None
+            self._last_observed_at = now
+            return self._stop("time_moved_backwards")
+        self._last_observed_at = now
+        return None
 
     @staticmethod
     def _validate_timeout(name: str, value: object) -> None:
@@ -95,3 +117,8 @@ def _is_finite_command(command: VelocityCommand) -> bool:
 
 def _is_finite_number(value: object) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _expired(now: float, marked_at: float, timeout: float) -> bool:
+    elapsed = now - marked_at
+    return elapsed >= timeout or math.isclose(elapsed, timeout, rel_tol=0.0, abs_tol=1e-12)
