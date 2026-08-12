@@ -53,6 +53,11 @@ def test_zero_norm_quaternion_is_rejected():
         planarize_transform(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
+def test_near_zero_norm_quaternion_is_rejected_before_normalization():
+    with pytest.raises(ValueError, match="quaternion"):
+        planarize_transform(0.0, 0.0, 0.0, 0.0, 0.0, 1e-13, 0.0)
+
+
 @pytest.mark.parametrize("value", (math.nan, math.inf, -math.inf))
 def test_nonfinite_transform_components_are_rejected(value):
     with pytest.raises(ValueError, match="finite"):

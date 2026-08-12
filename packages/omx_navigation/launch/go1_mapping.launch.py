@@ -81,6 +81,20 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[scan_params_file],
     )
 
+    planar_base_frame = Node(
+        package="omx_navigation",
+        executable="planar_base_frame",
+        name="planar_base_frame",
+        output="screen",
+        parameters=[
+            {
+                "odom_frame": "camera_init",
+                "source_base_frame": "body",
+                "planar_base_frame": "body_nav",
+            }
+        ],
+    )
+
     mapping = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(package_share, "launch", "rviz_navigation.launch.py")
@@ -167,6 +181,7 @@ def generate_launch_description() -> LaunchDescription:
                 "ROS_DOMAIN_ID", LaunchConfiguration("ros_domain_id")
             ),
             rosbag,
+            planar_base_frame,
             scan_projection,
             mapping,
             go1_driver,

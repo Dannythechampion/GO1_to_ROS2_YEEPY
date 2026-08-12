@@ -6,6 +6,9 @@ import math
 from dataclasses import dataclass
 
 
+MINIMUM_QUATERNION_NORM = 1e-12
+
+
 @dataclass(frozen=True)
 class PlanarTransform:
     """A transform constrained to x, y, and yaw."""
@@ -29,8 +32,11 @@ def planarize_transform(
         raise ValueError("transform components must be finite numbers")
 
     norm = math.hypot(qx, qy, qz, qw)
-    if norm == 0.0:
-        raise ValueError("quaternion must have a non-zero norm")
+    # Unit quaternions can be uniformly scaled by normal transport/serialization,
+    # so normalize any practical non-zero value.  Values below this floor are
+    # numerical noise, not a meaningful orientation, and must not be amplified.
+    if norm <= MINIMUM_QUATERNION_NORM:
+        raise ValueError("quaternion norm is too small to represent an orientation")
     qx, qy, qz, qw = (component / norm for component in (qx, qy, qz, qw))
 
     yaw = math.atan2(

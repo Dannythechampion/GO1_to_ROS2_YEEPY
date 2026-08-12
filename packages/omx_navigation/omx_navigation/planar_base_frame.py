@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 from geometry_msgs.msg import TransformStamped
 import rclpy
@@ -17,6 +18,8 @@ from omx_navigation.planar_transform import planarize_transform
 class PlanarBaseFrame(Node):
     """Broadcast ``odom_frame -> planar_base_frame`` without changing FAST-LIO TF."""
 
+    _ERROR_LOG_INTERVAL_SECONDS = 5.0
+
     def __init__(self) -> None:
         super().__init__("planar_base_frame")
         self._odom_frame = self._frame_parameter("odom_frame", "camera_init")
@@ -24,7 +27,10 @@ class PlanarBaseFrame(Node):
         self._planar_base_frame = self._frame_parameter("planar_base_frame", "body_nav")
         self._validate_frame_topology()
         publish_rate = self._positive_parameter("publish_rate", 20.0)
-        self._transform_timeout = self._nonnegative_parameter("transform_timeout", 0.10)
+        # Keep the 20 Hz publisher responsive even while upstream TF is absent.
+        self._transform_timeout = self._nonnegative_parameter("transform_timeout", 0.04)
+        self._last_error_log_at: float | None = None
+        self._transform_error_active = False
 
         self._buffer = Buffer()
         self._listener = TransformListener(self._buffer, self)
@@ -49,8 +55,13 @@ class PlanarBaseFrame(Node):
                 source.transform.rotation.w,
             )
         except (TransformException, ValueError) as error:
-            self.get_logger().warn(f"Cannot publish planar base transform: {error}")
+            self._report_transform_error(error)
             return
+
+        if self._transform_error_active:
+            self.get_logger().info("Planar base transform lookup recovered")
+            self._transform_error_active = False
+            self._last_error_log_at = None
 
         output = TransformStamped()
         # Preserve the TF sample time: using the timer's current time would make
@@ -65,6 +76,16 @@ class PlanarBaseFrame(Node):
             planar.quaternion
         )
         self._broadcaster.sendTransform(output)
+
+    def _report_transform_error(self, error: Exception) -> None:
+        now = time.monotonic()
+        if (
+            self._last_error_log_at is None
+            or now - self._last_error_log_at >= self._ERROR_LOG_INTERVAL_SECONDS
+        ):
+            self.get_logger().warn(f"Cannot publish planar base transform: {error}")
+            self._last_error_log_at = now
+        self._transform_error_active = True
 
     def _frame_parameter(self, name: str, default: str) -> str:
         value = self.declare_parameter(name, default).value
