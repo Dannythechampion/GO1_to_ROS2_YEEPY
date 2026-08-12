@@ -71,7 +71,17 @@ def _fake_ros_environment(tmp_path: Path) -> dict[str, str]:
     install_setup.write_text("# fake workspace setup\n", encoding="utf-8")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    _write_executable(bin_dir / "timeout", "#!/usr/bin/env bash\nshift\nexec \"$@\"\n")
+    _write_executable(
+        bin_dir / "timeout",
+        """#!/usr/bin/env bash
+set -euo pipefail
+shift
+if [[ "${FAKE_TIMEOUT_MODE:-}" == "echo" && "$*" == *"/localization_supervisor/status"* ]]; then
+  exit 124
+fi
+exec "$@"
+""",
+    )
     _write_executable(
         bin_dir / "ros2",
         """#!/usr/bin/env bash
@@ -92,9 +102,13 @@ TOPICS
   "topic hz") printf 'average rate: 10.0\\n' ;;
   "topic echo")
     for arg in "$@"; do
+      [[ "$arg" != "-n" ]] || exit 65
+    done
+    [[ " $* " == *" --once "* ]] || exit 66
+    for arg in "$@"; do
       case "$arg" in
-        /localization_supervisor/ready) printf '%s\\n' "${FAKE_READY:-true}"; exit 0 ;;
-        /localization_supervisor/status) printf '{"state":"%s","error":"%s"}\\n' "${FAKE_STATE:-READY}" "${FAKE_ERROR:-NONE}"; exit 0 ;;
+        /localization_supervisor/ready) printf '\\n%s\\n---\\n\\n' "${FAKE_READY:-true}"; exit 0 ;;
+        /localization_supervisor/status) printf '\\n{"state":"%s","error":"%s"}\\n---\\n\\n' "${FAKE_STATE:-READY}" "${FAKE_ERROR:-NONE}"; exit 0 ;;
       esac
     done
     printf 'message\\n'
@@ -134,6 +148,9 @@ def test_verifier_has_strict_syntax_and_exact_declared_topics():
         "/map_server", "/controller_server", "/smoother_server", "/planner_server",
         "/behavior_server", "/bt_navigator", "/waypoint_follower", "/velocity_smoother",
     )
+    assert "strip_ros_separator()" in text
+    assert "topic echo -n" not in text
+    assert "--once" in text
     subprocess.run([_bash(), "-n", str(SCRIPT)], check=True)
 
 
@@ -152,6 +169,7 @@ def test_verifier_executes_preflight_and_ready_with_fake_ros():
         ({"FAKE_STATE": "DEGRADED", "FAKE_ERROR": "LOW_OVERLAP"}, "상태 토픽"),
         ({"FAKE_NODE_LIST_FAIL": "1"}, "노드 목록"),
         ({"FAKE_NODES": "/robot/amcl"}, "AMCL"),
+        ({"FAKE_TIMEOUT_MODE": "echo"}, "상태 토픽"),
     ],
 )
 def test_ready_verifier_fails_closed_for_bad_runtime_values(overrides, expected):

@@ -86,7 +86,7 @@ require_topic() {
 
 require_message() {
   local topic="$1"
-  if ! timeout 10 ros2 topic echo -n 1 "$topic" >"$tmp_output" 2>&1; then
+  if ! timeout 10 ros2 topic echo "$topic" --once >"$tmp_output" 2>&1; then
     cat "$tmp_output" >&2
     fail "메시지를 받지 못했습니다: $topic"
   fi
@@ -151,11 +151,34 @@ has_amcl_node() {
   return 1
 }
 
+strip_ros_separator() {
+  local value="$1" line index start=0 end
+  local -a lines=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == '---' ]] || lines+=("$line")
+  done <<<"$value"
+  end=$((${#lines[@]} - 1))
+  while (( start <= end )) && [[ "${lines[start]}" =~ ^[[:space:]]*$ ]]; do
+    start=$((start + 1))
+  done
+  while (( end >= start )) && [[ "${lines[end]}" =~ ^[[:space:]]*$ ]]; do
+    end=$((end - 1))
+  done
+  for ((index = start; index <= end; index += 1)); do
+    printf '%s' "${lines[index]}"
+    if (( index < end )); then
+      printf '\n'
+    fi
+  done
+  return 0
+}
+
 require_supervisor_ready() {
   local ready_value
-  if ! ready_value="$(timeout 10 ros2 topic echo -n 1 /localization_supervisor/ready std_msgs/msg/Bool --field data)"; then
+  if ! ready_value="$(timeout 10 ros2 topic echo /localization_supervisor/ready std_msgs/msg/Bool --field data --once)"; then
     fail 'ready 토픽을 읽지 못했습니다: /localization_supervisor/ready'
   fi
+  ready_value="$(strip_ros_separator "$ready_value")"
   if [[ "$ready_value" != "true" ]]; then
     fail "ready 토픽 값이 true가 아닙니다: $ready_value"
   fi
@@ -164,16 +187,20 @@ require_supervisor_ready() {
 
 require_supervisor_status() {
   local status_json
-  if ! status_json="$(timeout 10 ros2 topic echo -n 1 /localization_supervisor/status std_msgs/msg/String --field data)"; then
+  if ! status_json="$(timeout 10 ros2 topic echo /localization_supervisor/status std_msgs/msg/String --field data --once)"; then
     fail '상태 토픽을 읽지 못했습니다: /localization_supervisor/status'
   fi
-  if ! python3 -c '
+  status_json="$(strip_ros_separator "$status_json")"
+  if ! STATUS_JSON="$status_json" python3 -c '
 import json
+import os
 import sys
-status = json.load(sys.stdin)
+status = json.loads(os.environ["STATUS_JSON"])
+if not isinstance(status, dict):
+    raise SystemExit(1)
 if status.get("state") != "READY" or status.get("error") != "NONE":
     raise SystemExit(1)
-' <<<"$status_json"; then
+'; then
     fail "상태 토픽이 READY/NONE이 아닙니다: $status_json"
   fi
   printf '통과: localization_supervisor state=READY error=NONE\n'
