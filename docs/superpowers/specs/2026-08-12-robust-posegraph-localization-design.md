@@ -93,8 +93,11 @@ WAITING_INPUT -> ALIGNING -> VERIFYING -> READY
                                 LOST <- DEGRADED
 ```
 
-초기 자세 한 번을 보관하고 최대 3회, 전체 20초 동안 같은 입력으로 자동 재시도한다.
-새 클릭은 자동 복구가 모두 실패한 뒤에만 필요하다.
+초기 자세 한 번을 보관하고 최신 scan을 정리된 2D 지도에 대입해 입력 주변
+`±3 m`, `±90 deg`의 bounded coarse 후보를 먼저 비교한다. 최상 후보가 충분히
+구별될 때만 그 자세를 SLAM Toolbox 전용 initial pose 토픽으로 전달한다. 최대
+3회, 전체 20초 동안 최신 scan으로 자동 재시도하며 새 클릭은 자동 복구가 모두
+실패한 뒤에만 필요하다.
 
 ### 5.2 `scan_map_quality.py`
 
@@ -152,9 +155,11 @@ Nav2 controller의 출력을 `/cmd_vel_nav`로 받고 다음 조건을 모두 �
 - 선택적 localization 진단 rosbag 기록
 
 `slam_toolbox_localization_hanyang_9f.yaml`은 저장 pose graph를 사용하며 map/odom/base
-frame을 각각 `map`, `camera_init`, `body`로 고정한다. 초기 탐색은 위치 `±3 m`,
-방향 `±90 deg`를 포괄하도록 coarse search 설정을 확장하되 scan 처리율을 제한해
-초기 계산 부하를 통제한다.
+frame을 각각 `map`, `camera_init`, `body_nav`로 고정한다. `body_nav`는 FAST-LIO
+`camera_init -> body`의 위치와 yaw만 반영한 평면 주행 프레임이다. 위치 `±3 m`,
+방향 `±90 deg`의 넓은 초기 탐색은 supervisor의 일회성 bounded coarse search가
+담당한다. SLAM Toolbox 자체 correlation search는 좁은 로컬 범위로 유지해 지속
+추적 시 계산량이 증가하지 않게 한다.
 
 ## 6. 상태와 오류 계약
 
