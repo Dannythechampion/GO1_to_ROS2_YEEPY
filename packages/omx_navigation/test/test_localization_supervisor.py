@@ -484,13 +484,26 @@ def test_ready_heartbeat_keeps_velocity_gate_fresh_for_more_than_one_second(supe
     node = supervisor_module.LocalizationSupervisor()
     node._machine.state = LocalizationState.READY
     node._last_transition = node._machine._transition()
+    node._on_map(map_message())
+    node._slam_epoch = 0.0
+    node._overlap = 0.8
+    node._ambiguity_margin = 0.2
     assert sorted(timer.period for timer in node.timers) == [0.1, 0.5]
     gate = VelocityGate(ready_timeout=0.30, command_timeout=0.30)
 
     for step in range(12):
         now = step * 0.1
         node.clock.seconds = now
-        node._on_ready_timer()
+        node._on_scan(scan_message())
+        node._on_tf(SimpleNamespace(transforms=[SimpleNamespace(header=SimpleNamespace(frame_id="camera_init"), child_frame_id="body_nav")]))
+        node._on_slam_pose(SimpleNamespace(
+            header=header(),
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=0.0, y=0.0),
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+            ),
+        ))
+        node._on_ready_heartbeat()
         heartbeat = publisher(node, "~/ready").messages[-1]
         gate.update_ready(heartbeat.data, now)
         assert gate.filter(VelocityCommand(0.1, 0.0, 0.0), now).reason == "command_passed"
@@ -499,7 +512,7 @@ def test_ready_heartbeat_keeps_velocity_gate_fresh_for_more_than_one_second(supe
     node._machine.state = LocalizationState.LOST
     node._last_transition = node._machine._transition()
     node.clock.seconds = 1.2
-    node._on_ready_timer()
+    node._on_ready_heartbeat()
     decision = gate.update_ready(publisher(node, "~/ready").messages[-1].data, 1.2)
     assert decision.reason == "localization_not_ready"
 
@@ -555,3 +568,48 @@ def test_namespaced_amcl_is_a_conflict_but_similar_name_is_not(supervisor_module
     assert node._has_amcl() is True
     node.node_names = ["/fallback/amcl_helper"]
     assert node._has_amcl() is False
+
+
+def test_ready_heartbeat_evaluates_namespaced_amcl_before_publishing(supervisor_module):
+    from omx_navigation.localization_state import LocalizationState
+
+    node = supervisor_module.LocalizationSupervisor()
+    node._machine.state = LocalizationState.READY
+    node._last_transition = node._machine._transition()
+    node.node_names = ["/fallback/amcl"]
+    node.clock.seconds = 0.1
+
+    node._on_ready_heartbeat()
+
+    assert node._machine.state is LocalizationState.LOST
+    assert publisher(node, "~/ready").messages[-1].data is False
+
+
+def test_ready_heartbeat_evaluates_stale_inputs_before_publishing(supervisor_module):
+    from omx_navigation.localization_state import LocalizationState
+
+    node = supervisor_module.LocalizationSupervisor()
+    node._machine.state = LocalizationState.READY
+    node._last_transition = node._machine._transition()
+    node.clock.seconds = 0.1
+
+    node._on_ready_heartbeat()
+
+    assert node._machine.state is LocalizationState.DEGRADED
+    assert publisher(node, "~/ready").messages[-1].data is False
+
+
+def test_retry_republishes_refined_pose_once_across_both_timers(supervisor_module):
+    from omx_navigation.scan_map_quality import Pose2D
+
+    node = supervisor_module.LocalizationSupervisor()
+    refined = Pose2D(0.0, 0.0, 0.0)
+    node._initial_pose = (refined, tuple(0.0 for _ in range(36)))
+    node._refined_pose = refined
+    node._machine.receive_initial_pose(0.0)
+    node.clock.seconds = 6.7
+
+    node._on_ready_heartbeat()
+    node._on_status_timer()
+
+    assert len(publisher(node, "/slam_localization/initialpose").messages) == 1

@@ -116,7 +116,7 @@ class LocalizationSupervisor(Node):
         self._slam_pose_subscription = self.create_subscription(PoseStamped, "/slam_toolbox/pose", self._on_slam_pose, reliable_qos)
         self._tf_subscription = self.create_subscription(TFMessage, "/tf", self._on_tf, qos_profile_sensor_data)
         self._status_timer = self.create_timer(0.5, self._on_status_timer)
-        self._ready_timer = self.create_timer(0.1, self._on_ready_timer)
+        self._ready_timer = self.create_timer(0.1, self._on_ready_heartbeat)
 
     def _on_map(self, message: OccupancyGrid) -> None:
         try:
@@ -241,7 +241,9 @@ class LocalizationSupervisor(Node):
             return
         initial, covariance = self._initial_pose
         if self._grid.world_to_cell(initial.x, initial.y) is None:
-            self._last_transition = self._machine.observe(self._observation(pose_available=False))
+            self._last_transition = self._machine.observe(
+                self._observation(self._now(), pose_available=False)
+            )
             return
         with self._search_lock:
             if self._required_scan_sequence is None or self._scan_sequence <= self._required_scan_sequence:
@@ -297,19 +299,25 @@ class LocalizationSupervisor(Node):
                 self._submit_search_locked(pending)
 
     def _on_status_timer(self) -> None:
+        self._evaluate_state(self._now())
+        self._publish_status()
+
+    def _on_ready_heartbeat(self) -> None:
+        self._evaluate_state(self._now())
+        self._publish_ready()
+
+    def _evaluate_state(self, now: float) -> None:
         self._apply_search_result()
         self._last_transition = self._machine.observe(
-            self._observation(pose_available=True if self._quality_error_latched else None)
+            self._observation(
+                now,
+                pose_available=True if self._quality_error_latched else None,
+            )
         )
         if self._last_transition.republish_initial_pose and self._refined_pose is not None and self._initial_pose is not None:
             self._publish_refined_pose(self._refined_pose, self._initial_pose[1])
-        self._publish_status()
 
-    def _on_ready_timer(self) -> None:
-        self._publish_ready()
-
-    def _observation(self, pose_available: bool | None = None) -> QualityObservation:
-        now = self._now()
+    def _observation(self, now: float, *, pose_available: bool | None = None) -> QualityObservation:
         if pose_available is None:
             pose_available = self._slam_pose is not None and self._slam_pose_fresh(now)
         return QualityObservation(

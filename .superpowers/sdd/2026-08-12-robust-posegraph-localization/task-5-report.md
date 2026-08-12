@@ -77,3 +77,17 @@
 - heartbeat 통합 mock은 10 Hz supervisor heartbeat와 실제 `VelocityGate` command/watchdog를 1.1초 동안 함께 구동하여 stale 차단이 발생하지 않고, LOST 전환 직후 false heartbeat가 gate를 닫는 것을 확인합니다.
 - 전체 패키지: `py -3 -m pytest test -q -p no:cacheprovider` — 142 passed, 1 skipped.
 - 구문 검증: `py -3 -m compileall -q omx_navigation` — 성공.
+
+## 최종 리뷰 Fix A2
+
+- ready heartbeat와 status timer가 공통 `_evaluate_state(now)`를 호출합니다. 이 경로는 완료된 search를 적용하고, 동일 시각의 fresh observation에 map/scan/TF/SLAM 신선도와 AMCL·odom fault를 포함해 상태 머신을 갱신한 뒤 retry 보정 자세를 처리합니다.
+- 10 Hz heartbeat는 평가 뒤 Bool을 발행하므로 저장된 READY를 0.5초 동안 반복하지 않습니다. namespaced AMCL은 첫 heartbeat에서 즉시 `LOST/false`, stale live 입력은 첫 heartbeat에서 `DEGRADED/false`가 되어 gate를 닫습니다.
+- retry transition의 `republish_initial_pose`는 공통 평가 경로에서 소비됩니다. 상태 머신이 재시도 시작 시각을 갱신하므로 뒤따르는 2 Hz 평가가 같은 자세를 중복 발행하지 않습니다.
+
+### 최종 리뷰 Fix A2 검증
+
+- RED: 기존 heartbeat callback에는 상태 평가가 없어 새 `_on_ready_heartbeat` 안전 회귀 3건이 실패하는 것을 확인했습니다.
+- focused: `py -3 -m pytest test/test_localization_supervisor.py test/test_cmd_vel_gate_core.py test/test_goal_gate.py test/test_rviz_goal_bridge_readiness.py -q -p no:cacheprovider` — 51 passed.
+- AMCL heartbeat 즉시 loss, stale heartbeat 즉시 non-ready, heartbeat/status 연속 평가의 retry 자세 1회 발행을 검증했습니다.
+- 전체 패키지: `py -3 -m pytest test -q -p no:cacheprovider` — 145 passed, 1 skipped.
+- 구문 검증: `py -3 -m compileall -q omx_navigation` — 성공.
