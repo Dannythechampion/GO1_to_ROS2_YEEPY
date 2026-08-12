@@ -43,10 +43,14 @@ def test_validate_inputs_requires_posegraph_data_file():
         launch.validate_inputs(paths, arm=False)
 
 
-def test_normalize_use_composition_uses_humble_spelling():
+def test_parse_launch_boolean_accepts_only_explicit_values():
     launch = load_launch_module()
-    assert launch.normalize_use_composition("false") == "False"
-    assert launch.normalize_use_composition("true") == "True"
+    assert launch.parse_launch_boolean("false", "use_composition") is False
+    assert launch.parse_launch_boolean("true", "use_composition") is True
+    assert launch.parse_launch_boolean("1", "use_composition") is True
+    assert launch.parse_launch_boolean("0", "use_composition") is False
+    with pytest.raises(RuntimeError, match="use_composition"):
+        launch.parse_launch_boolean("maybe", "use_composition")
     composition_argument = next(
         call for call in _calls("DeclareLaunchArgument")
         if ast.literal_eval(call.args[0]) == "use_composition"
@@ -62,6 +66,10 @@ def test_yaml_and_pgm_pure_validation_rejects_malformed_content():
         launch.parse_yaml_mapping("[", "SLAM Toolbox parameters")
     with pytest.raises(RuntimeError, match="PGM"):
         launch.validate_pgm_bytes(b"P3\n1 1\n255\n0")
+    with pytest.raises(RuntimeError, match="pixel"):
+        launch.validate_pgm_bytes(b"P5\n2 2\n255\n\x00")
+    with pytest.raises(RuntimeError, match="pixel"):
+        launch.validate_pgm_bytes(b"P2\n1 1\n255\n256")
 
 
 def test_relative_map_image_cannot_escape_map_directory():
@@ -90,7 +98,18 @@ def _expression_value(value):
         return ast.unparse(value)
 
 
-def test_launch_registers_composition_container_and_humble_velocity_contract():
+def _assignment_value(name):
+    tree = ast.parse(LAUNCH.read_text(encoding="utf-8"))
+    assignment = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        )
+    )
+    return ast.literal_eval(assignment.value)
+
+
+def test_launch_registers_explicit_nav2_actions_and_velocity_contract():
     containers = _calls("ComposableNodeContainer")
     assert len(containers) == 1
     container = containers[0]
@@ -98,16 +117,43 @@ def test_launch_registers_composition_container_and_humble_velocity_contract():
     assert _keyword_value(container, "executable") == "component_container_isolated"
     assert _keyword_value(container, "name") == "nav2_container"
 
-    remaps = {
-        (_expression_value(next(item.value for item in call.keywords if item.arg == "src")),
-         _expression_value(next(item.value for item in call.keywords if item.arg == "dst")))
-        for call in _calls("SetRemap")
-    }
-    assert ("/initialpose", "/slam_localization/initialpose") in remaps
-    assert ("/map", "/slam_localization/map") in remaps
-    assert ("cmd_vel_nav", "/nav2_controller_cmd_vel") in remaps
-    assert ("cmd_vel", "/cmd_vel_nav") in remaps
-    assert ("cmd_vel_nav", "/cmd_vel") not in remaps
+    node_specs = _assignment_value("nav2_node_specs")
+    nodes = {(package, executable) for _name, package, executable, _plugin in node_specs}
+    for node in (
+        ("nav2_controller", "controller_server"),
+        ("nav2_smoother", "smoother_server"),
+        ("nav2_planner", "planner_server"),
+        ("nav2_behaviors", "behavior_server"),
+        ("nav2_bt_navigator", "bt_navigator"),
+        ("nav2_waypoint_follower", "waypoint_follower"),
+        ("nav2_velocity_smoother", "velocity_smoother"),
+    ):
+        assert node in nodes
+    assert any(
+        _keyword_value(call, "package") == "nav2_lifecycle_manager"
+        and _keyword_value(call, "executable") == "lifecycle_manager"
+        for call in _calls("Node")
+    )
+    assert not _calls("PythonExpression")
+    gate = next(call for call in _calls("Node") if _keyword_value(call, "executable") == "cmd_vel_safety_gate")
+    remaps = _assignment_value("nav2_remaps")
+    assert ("cmd_vel", "/nav2_controller_cmd_vel") in remaps["controller_server"]
+    assert ("cmd_vel", "/nav2_controller_cmd_vel") in remaps["velocity_smoother"]
+    assert ("cmd_vel_smoothed", "/cmd_vel_nav") in remaps["velocity_smoother"]
+    assert ("cmd_vel_nav", "/cmd_vel") not in remaps["velocity_smoother"]
+    assert ("'input_topic'", "'/cmd_vel_nav'") in _dict_pairs(gate)
+    assert ("'output_topic'", "'/cmd_vel'") in _dict_pairs(gate)
+
+
+def _remap_pairs(call):
+    remappings = next(item.value for item in call.keywords if item.arg == "remappings")
+    return {tuple(ast.unparse(part) for part in item.elts) for item in remappings.elts}
+
+
+def _dict_pairs(call):
+    parameters = next(item.value for item in call.keywords if item.arg == "parameters")
+    mapping = next(item for item in parameters.elts if isinstance(item, ast.Dict))
+    return {(ast.unparse(key), ast.unparse(value)) for key, value in zip(mapping.keys, mapping.values)}
 
 
 def test_supervisor_receives_configured_scan_and_odometry_topics():

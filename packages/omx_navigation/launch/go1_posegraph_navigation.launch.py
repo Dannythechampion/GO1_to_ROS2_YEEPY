@@ -13,18 +13,24 @@ try:  # Keeping input validation importable makes dry-run checks ROS-independent
     from ament_index_python.packages import get_package_share_directory
     from launch import LaunchDescription
     from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable
-    from launch.conditions import IfCondition
+    from launch.conditions import IfCondition, UnlessCondition
     from launch.launch_description_sources import PythonLaunchDescriptionSource
-    from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
-    from launch_ros.actions import ComposableNodeContainer, Node, SetRemap
+    from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+    from launch_ros.actions import ComposableNodeContainer, LoadComposableNodes, Node, SetRemap
+    from launch_ros.descriptions import ComposableNode
     from nav2_common.launch import RewrittenYaml
 except ImportError:  # pragma: no cover - exercised on ROS 2 targets.
     get_package_share_directory = None
 
 
-def normalize_use_composition(value: str) -> str:
-    """Return the capitalized boolean spelling Humble launch code expects."""
-    return "True" if str(value).strip().lower() in {"1", "true", "yes", "on"} else "False"
+def parse_launch_boolean(value: str, name: str) -> bool:
+    """Accept only explicit launch boolean spellings before actions start."""
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be one of true/false/1/0/yes/no/on/off")
 
 
 def parse_yaml_mapping(text: str, label: str) -> dict:
@@ -68,10 +74,61 @@ def resolve_map_image(map_yaml: Path, image: str) -> Path:
     return candidate
 
 
+def _pgm_token(data: bytes, index: int) -> tuple[bytes, int]:
+    while index < len(data):
+        if data[index:index + 1] in b" \t\r\n":
+            index += 1
+        elif data[index:index + 1] == b"#":
+            newline = data.find(b"\n", index)
+            index = len(data) if newline < 0 else newline + 1
+        else:
+            break
+    start = index
+    while index < len(data) and data[index:index + 1] not in b" \t\r\n#":
+        index += 1
+    if start == index:
+        raise RuntimeError("PGM header is truncated")
+    return data[start:index], index
+
+
 def validate_pgm_bytes(data: bytes) -> None:
-    """Accept only nonempty Netpbm gray-map P2/P5 files."""
-    if len(data) < 3 or data[:2] not in {b"P2", b"P5"} or data[2:3] not in b" \t\r\n":
-        raise RuntimeError("Map image must be a nonempty PGM file with P2 or P5 magic")
+    """Validate P2/P5 PGM headers and exact pixel sample payloads."""
+    try:
+        magic, cursor = _pgm_token(data, 0)
+        width_token, cursor = _pgm_token(data, cursor)
+        height_token, cursor = _pgm_token(data, cursor)
+        maxval_token, cursor = _pgm_token(data, cursor)
+        width, height, maxval = (int(width_token), int(height_token), int(maxval_token))
+    except (ValueError, RuntimeError) as error:
+        raise RuntimeError(f"PGM header is invalid: {error}") from error
+    if magic not in {b"P2", b"P5"}:
+        raise RuntimeError("PGM magic must be P2 or P5")
+    if width <= 0 or height <= 0 or not 1 <= maxval <= 65535:
+        raise RuntimeError("PGM dimensions and maxval must be positive and valid")
+    samples = width * height
+    if magic == b"P5":
+        if cursor >= len(data) or data[cursor:cursor + 1] not in b" \t\r\n":
+            raise RuntimeError("PGM binary header must end with whitespace")
+        cursor += 1
+        bytes_per_sample = 1 if maxval < 256 else 2
+        if len(data) - cursor != samples * bytes_per_sample:
+            raise RuntimeError("PGM binary pixel payload is truncated or has extra bytes")
+        return
+    tokens = []
+    while True:
+        try:
+            token, cursor = _pgm_token(data, cursor)
+        except RuntimeError:
+            break
+        try:
+            value = int(token)
+        except ValueError as error:
+            raise RuntimeError("PGM ASCII pixel sample is invalid") from error
+        if not 0 <= value <= maxval:
+            raise RuntimeError("PGM ASCII pixel sample is outside maxval")
+        tokens.append(value)
+    if len(tokens) != samples:
+        raise RuntimeError("PGM ASCII pixel payload is truncated or has extra samples")
 
 
 def validate_inputs(paths, arm: bool) -> None:
@@ -104,6 +161,13 @@ def validate_inputs(paths, arm: bool) -> None:
         missing = [root for root in roots if root not in config]
         if missing:
             raise RuntimeError(f"Required {required[key]} YAML is missing roots: {', '.join(missing)}")
+        invalid = [
+            root for root in roots
+            if not isinstance(config[root], dict)
+            or not isinstance(config[root].get("ros__parameters"), dict)
+        ]
+        if invalid:
+            raise RuntimeError(f"Required {required[key]} roots need ros__parameters mappings: {', '.join(invalid)}")
     _regular_nonempty(resolved["rviz_config"], required["rviz_config"])
 
     posegraph = paths.get("posegraph", "")
@@ -121,7 +185,8 @@ def _validate_launch_inputs(context, *_args, **_kwargs):
         "scan_params": LaunchConfiguration("scan_params_file").perform(context),
         "rviz_config": LaunchConfiguration("rviz_config").perform(context),
     }
-    arm = LaunchConfiguration("arm").perform(context).strip().lower() in {"1", "true", "yes"}
+    arm = parse_launch_boolean(LaunchConfiguration("arm").perform(context), "arm")
+    parse_launch_boolean(LaunchConfiguration("use_composition").perform(context), "use_composition")
     validate_inputs(paths, arm)
     return []
 
@@ -130,7 +195,6 @@ def generate_launch_description() -> "LaunchDescription":
     if get_package_share_directory is None:
         raise RuntimeError("ROS 2 launch dependencies are unavailable")
     package_share = get_package_share_directory("omx_navigation")
-    nav2_share = get_package_share_directory("nav2_bringup")
     slam_share = get_package_share_directory("slam_toolbox")
     go1_share = get_package_share_directory("go1_driver")
 
@@ -144,12 +208,7 @@ def generate_launch_description() -> "LaunchDescription":
     nav2_params = LaunchConfiguration("nav2_params_file")
     slam_params = LaunchConfiguration("slam_params_file")
     scan_params = LaunchConfiguration("scan_params_file")
-    normalized_composition = PythonExpression(
-        [
-            "'True' if '", LaunchConfiguration("use_composition"),
-            "'.lower() in ['1', 'true', 'yes', 'on'] else 'False'",
-        ]
-    )
+    use_composition = LaunchConfiguration("use_composition")
 
     configured_nav2 = RewrittenYaml(
         source_file=nav2_params,
@@ -202,28 +261,57 @@ def generate_launch_description() -> "LaunchDescription":
         name="nav2_container",
         namespace="",
         output="screen",
-        condition=IfCondition(normalized_composition),
+        condition=IfCondition(use_composition),
     )
-    navigation = GroupAction(actions=[
-        SetRemap(src="scan", dst=scan_topic),
-        SetRemap(src="/scan", dst=scan_topic),
-        SetRemap(src="odom", dst=odom_topic),
-        SetRemap(src="/odom", dst=odom_topic),
-        # Humble navigation_launch uses cmd_vel_nav between controller and
-        # smoother, then cmd_vel from smoother to the outside world.
-        SetRemap(src="cmd_vel_nav", dst="/nav2_controller_cmd_vel"),
-        SetRemap(src="cmd_vel", dst="/cmd_vel_nav"),
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(os.path.join(nav2_share, "launch", "navigation_launch.py")),
-            launch_arguments={
-                "use_sim_time": "false",
-                "params_file": configured_nav2,
-                "autostart": "true",
-                "use_composition": normalized_composition,
-                "container_name": "nav2_container",
-            }.items(),
-        ),
-    ])
+    nav2_node_specs = (
+        ("controller_server", "nav2_controller", "controller_server", "nav2_controller::ControllerServer"),
+        ("smoother_server", "nav2_smoother", "smoother_server", "nav2_smoother::SmootherServer"),
+        ("planner_server", "nav2_planner", "planner_server", "nav2_planner::PlannerServer"),
+        ("behavior_server", "nav2_behaviors", "behavior_server", "nav2_behaviors::BehaviorServer"),
+        ("bt_navigator", "nav2_bt_navigator", "bt_navigator", "nav2_bt_navigator::BtNavigator"),
+        ("waypoint_follower", "nav2_waypoint_follower", "waypoint_follower", "nav2_waypoint_follower::WaypointFollower"),
+        ("velocity_smoother", "nav2_velocity_smoother", "velocity_smoother", "nav2_velocity_smoother::VelocitySmoother"),
+    )
+    nav2_remaps = {
+        "controller_server": [("tf", "/tf"), ("tf_static", "/tf_static"), ("cmd_vel", "/nav2_controller_cmd_vel")],
+        "smoother_server": [("tf", "/tf"), ("tf_static", "/tf_static")],
+        "planner_server": [("tf", "/tf"), ("tf_static", "/tf_static")],
+        "behavior_server": [("tf", "/tf"), ("tf_static", "/tf_static")],
+        "bt_navigator": [("tf", "/tf"), ("tf_static", "/tf_static")],
+        "waypoint_follower": [("tf", "/tf"), ("tf_static", "/tf_static")],
+        "velocity_smoother": [
+            ("tf", "/tf"), ("tf_static", "/tf_static"),
+            ("cmd_vel", "/nav2_controller_cmd_vel"),
+            ("cmd_vel_smoothed", "/cmd_vel_nav"),
+        ],
+    }
+    # We intentionally do not include nav2_bringup/navigation_launch.py: launch_ros
+    # appends group/global remaps before a Node's local remaps, so an outer remap
+    # cannot safely override Humble's smoother/controller endpoints.
+    nav2_nodes = [
+        Node(
+            package=package, executable=executable, name=name, output="screen",
+            parameters=[configured_nav2], remappings=nav2_remaps[name],
+            condition=UnlessCondition(use_composition),
+        )
+        for name, package, executable, _plugin in nav2_node_specs
+    ]
+    nav2_components = [
+        ComposableNode(
+            package=package, plugin=plugin, name=name,
+            parameters=[configured_nav2], remappings=nav2_remaps[name],
+        )
+        for name, package, _executable, plugin in nav2_node_specs
+    ]
+    nav2_component_loader = LoadComposableNodes(
+        target_container="nav2_container",
+        composable_node_descriptions=nav2_components,
+        condition=IfCondition(use_composition),
+    )
+    nav2_lifecycle = Node(
+        package="nav2_lifecycle_manager", executable="lifecycle_manager", name="navigation_lifecycle_manager", output="screen",
+        parameters=[{"autostart": True, "node_names": [item[0] for item in nav2_node_specs]}],
+    )
     supervisor = Node(
         package="omx_navigation", executable="localization_supervisor", name="localization_supervisor", output="screen",
         parameters=[{"camera_init_frame": odom_frame, "source_base_frame": source_base_frame, "base_frame": base_frame,
@@ -268,8 +356,10 @@ def generate_launch_description() -> "LaunchDescription":
         DeclareLaunchArgument("ros_domain_id", default_value="100"),
         SetEnvironmentVariable("ROS_DOMAIN_ID", LaunchConfiguration("ros_domain_id")),
         OpaqueFunction(function=_validate_launch_inputs),
-        # Register the component container before the Nav2 include. This is
-        # launch ordering rather than a readiness barrier; Humble waits for
-        # the target service when loading composable nodes.
-        planar_frame, scan_projection, map_server, map_lifecycle, slam_localization, supervisor, nav2_container, navigation, gate, rviz, go1_driver,
+        # Register the component container before LoadComposableNodes. This is
+        # launch ordering rather than a readiness barrier; the loader waits for
+        # the target container service.
+        planar_frame, scan_projection, map_server, map_lifecycle, slam_localization, supervisor,
+        nav2_container, *nav2_nodes, nav2_component_loader, nav2_lifecycle,
+        gate, rviz, go1_driver,
     ])
