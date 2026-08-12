@@ -1220,7 +1220,7 @@ ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
   diagnostics_root:=/mnt/t500/localization_logs
 ```
 
-기록을 켜면 `/mnt/t500/localization_logs/posegraph_*/localization_status.csv`와
+기본 진단 루트는 `/mnt/t500/localization_logs`이며, 기록을 켜면 `/mnt/t500/localization_logs/posegraph_*/localization_status.csv`와
 동일 세션의 `rosbag/`가 생성됩니다. 상태 토픽 `error`가 `INPUT_MISSING`,
 `LOW_OVERLAP`, `AMBIGUOUS`, `ODOM_RESET`, `TF_CONFLICT`, 또는
 `EXTRINSIC_UNCALIBRATED`이면 이동하지 말고 해당 입력·정합·TF·보정을 먼저

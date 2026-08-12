@@ -210,7 +210,7 @@ ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
   diagnostics_root:=/mnt/t500/localization_logs
 ```
 
-`record_localization:=true`이면 UTC 시각 기반 세션 디렉터리
+기본 진단 루트는 `/mnt/t500/localization_logs`입니다. `record_localization:=true`이면 UTC 시각 기반 세션 디렉터리
 `/mnt/t500/localization_logs/posegraph_*/`가 생성됩니다. 그 안의
 `localization_status.csv`와 `rosbag/`가 같은 세션의 진단 결과입니다.
 `record_localization:=false`이면 진단 디렉터리와 rosbag 프로세스를 만들지 않습니다.

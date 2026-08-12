@@ -4,6 +4,8 @@ The map server owns the display/costmap ``/map`` topic.  SLAM Toolbox keeps a
 private map topic and is the sole publisher of ``map -> camera_init``.
 """
 
+from __future__ import annotations
+
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -208,6 +210,23 @@ def _supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, od
     )
 
 
+def prepare_recording_session(record_localization: bool, record_cloud: bool, diagnostics_root: str,
+                              now: datetime | None = None, process_id: int | None = None):
+    """Create one recording directory only when recording is explicitly enabled."""
+    if not record_localization:
+        return None
+    timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    session_dir = Path(diagnostics_root).expanduser() / f"posegraph_{timestamp}_{process_id or os.getpid()}"
+    session_dir.mkdir(parents=True, exist_ok=False)
+    topics = (
+        "/scan", "/Odometry", "/tf", "/tf_static", "/initialpose", "/slam_toolbox/pose",
+        "/localization_supervisor/status", "/localization_supervisor/ready", "/cmd_vel_nav", "/cmd_vel",
+    )
+    if record_cloud:
+        topics += ("/cloud_registered_body",)
+    return session_dir, topics
+
+
 def _setup_diagnostics(context, *_args, **_kwargs):
     """Create one optional recording session without invoking a shell."""
     record_localization = parse_launch_boolean(
@@ -219,19 +238,14 @@ def _setup_diagnostics(context, *_args, **_kwargs):
     base_frame = LaunchConfiguration("base_frame")
     scan_topic = LaunchConfiguration("scan_topic")
     odom_topic = LaunchConfiguration("odom_topic")
-    if not record_localization:
+    recording = prepare_recording_session(
+        record_localization,
+        record_cloud,
+        LaunchConfiguration("diagnostics_root").perform(context),
+    )
+    if recording is None:
         return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, "")]
-
-    root = Path(LaunchConfiguration("diagnostics_root").perform(context)).expanduser()
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    session_dir = root / f"posegraph_{timestamp}_{os.getpid()}"
-    session_dir.mkdir(parents=True, exist_ok=False)
-    topics = [
-        "/scan", "/Odometry", "/tf", "/tf_static", "/initialpose", "/slam_toolbox/pose",
-        "/localization_supervisor/status", "/localization_supervisor/ready", "/cmd_vel_nav", "/cmd_vel",
-    ]
-    if record_cloud:
-        topics.append("/cloud_registered_body")
+    session_dir, topics = recording
     bag = ExecuteProcess(
         cmd=["ros2", "bag", "record", "--output", str(session_dir / "rosbag"), *topics],
         output="screen",
@@ -395,7 +409,7 @@ def generate_launch_description() -> "LaunchDescription":
         DeclareLaunchArgument("slam_params_file", default_value=os.path.join(package_share, "config", "slam_toolbox_localization_hanyang_9f.yaml")),
         DeclareLaunchArgument("scan_params_file", default_value=os.path.join(package_share, "config", "mid360_scan.yaml")),
         DeclareLaunchArgument("rviz_config", default_value=os.path.join(package_share, "rviz", "go1_existing_map_low_load.rviz")),
-        DeclareLaunchArgument("diagnostics_root", default_value=os.path.expanduser("~/go1_localization/diagnostics")),
+        DeclareLaunchArgument("diagnostics_root", default_value="/mnt/t500/localization_logs"),
         DeclareLaunchArgument("record_localization", default_value="false"),
         DeclareLaunchArgument("record_cloud", default_value="false"),
         DeclareLaunchArgument("rviz", default_value="true"),
