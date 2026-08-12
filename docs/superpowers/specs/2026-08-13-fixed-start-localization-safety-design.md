@@ -229,7 +229,7 @@ BOOT
 
 - `/scan` 또는 `/Odometry`가 0.30 s 이상 stale
 - `camera_init -> body` 또는 `map -> camera_init` TF lookup 실패
-- FAST-LIO 재시작으로 `camera_init` 원점이 불연속적으로 변경됨
+- FAST-LIO 재시작 징후: `/Odometry` frame ID 변경, timestamp 역행, 또는 0.50 s 이내 연속 표본 사이 0.50 m/20 deg 초과 불연속
 - AMCL covariance가 1초 이상 허용치를 초과
 - 지도-스캔 정합이 1초 이상 실패
 - AMCL 노드 종료
