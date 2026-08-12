@@ -176,3 +176,37 @@ def test_coarse_search_disqualifies_an_outside_endpoint_omitted_by_downsampling(
     assert result.best.overlap == 0.0
     assert math.isinf(result.best.mean_distance)
     assert result.best.score == pytest.approx(-0.20)
+
+
+def test_coarse_search_checks_outside_endpoints_in_a_rotated_map_frame():
+    grid = GridMap(3, 3, 1.0, 10.0, 20.0, math.pi / 2, (100,) * 9)
+    result = coarse_search(
+        grid,
+        (ScanPoint(0.0, 0.0), ScanPoint(2.0, 0.0)),
+        Pose2D(8.5, 21.5, math.pi / 2),
+        SearchWindow(0.1, 0.1, math.radians(1), math.radians(1)),
+    )
+    assert result.best.score == pytest.approx(-0.20)
+
+
+class CountingPoints:
+    def __init__(self, points):
+        self.points = tuple(points)
+        self.iterations = 0
+
+    def __len__(self):
+        return len(self.points)
+
+    def __getitem__(self, index):
+        return self.points[index]
+
+    def __iter__(self):
+        self.iterations += 1
+        return iter(self.points)
+
+
+def test_original_scan_boundary_check_scales_with_yaw_count_not_candidate_count():
+    points = CountingPoints(ScanPoint(0.0, 0.0) for _ in range(181))
+    grid = GridMap(100, 100, 1.0, 0.0, 0.0, 0.0, (100,) * 10000)
+    coarse_search(grid, points, Pose2D(50.0, 50.0, 0.0), SearchWindow())
+    assert points.iterations <= 13

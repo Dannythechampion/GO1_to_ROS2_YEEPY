@@ -159,10 +159,15 @@ def score_pose(
 def coarse_search(grid: GridMap, points: Sequence[ScanPoint], initial: Pose2D, window: SearchWindow) -> SearchResult:
     field = build_distance_field(grid)
     sampled_points = _evenly_sample(points, window.max_scan_points)
+    poses = _candidate_poses(initial, window)
+    bounds_by_yaw = {
+        yaw: _rotated_point_bounds(points, yaw - grid.origin_yaw)
+        for yaw in dict.fromkeys(pose.yaw for pose in poses)
+    }
     candidates = []
-    for pose in _candidate_poses(initial, window):
+    for pose in poses:
         score = score_pose(grid, field, sampled_points, pose, window.hit_distance)
-        if _has_outside_endpoint(grid, points, pose):
+        if _aabb_is_outside_grid(grid, pose, bounds_by_yaw[pose.yaw]):
             score = PoseScore(score.pose, 0.0, math.inf, _score_value(0.0, math.inf), score.points_used)
         candidates.append(score)
     candidates.sort(key=lambda item: (-item.score, -item.overlap, item.mean_distance, item.pose.x, item.pose.y, item.pose.yaw))
@@ -198,14 +203,36 @@ def _evenly_sample(points: Sequence[ScanPoint], maximum: int) -> tuple[ScanPoint
     return tuple(points[round(index * (len(points) - 1) / (maximum - 1))] for index in range(maximum))
 
 
-def _has_outside_endpoint(grid: GridMap, points: Sequence[ScanPoint], pose: Pose2D) -> bool:
-    c, s = math.cos(pose.yaw), math.sin(pose.yaw)
+def _rotated_point_bounds(points: Sequence[ScanPoint], yaw: float) -> tuple[float, float, float, float] | None:
+    c, s = math.cos(yaw), math.sin(yaw)
+    min_x = min_y = math.inf
+    max_x = max_y = -math.inf
     for point in points:
         if not math.isfinite(point.x) or not math.isfinite(point.y):
             continue
-        if grid.world_to_cell(pose.x + c * point.x - s * point.y, pose.y + s * point.x + c * point.y) is None:
-            return True
-    return False
+        x = c * point.x - s * point.y
+        y = s * point.x + c * point.y
+        min_x, max_x = min(min_x, x), max(max_x, x)
+        min_y, max_y = min(min_y, y), max(max_y, y)
+    return None if math.isinf(min_x) else (min_x, max_x, min_y, max_y)
+
+
+def _aabb_is_outside_grid(
+    grid: GridMap, pose: Pose2D, bounds: tuple[float, float, float, float] | None
+) -> bool:
+    if bounds is None:
+        return False
+    dx, dy = pose.x - grid.origin_x, pose.y - grid.origin_y
+    c, s = math.cos(grid.origin_yaw), math.sin(grid.origin_yaw)
+    translation_x = c * dx + s * dy
+    translation_y = -s * dx + c * dy
+    min_x, max_x, min_y, max_y = bounds
+    return (
+        translation_x + min_x < 0.0
+        or translation_x + max_x >= grid.width * grid.resolution
+        or translation_y + min_y < 0.0
+        or translation_y + max_y >= grid.height * grid.resolution
+    )
 
 
 def _score_value(overlap: float, mean_distance: float) -> float:
