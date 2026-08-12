@@ -540,7 +540,8 @@ class LocalizationSupervisor(Node):
         )
         if not all(math.isfinite(value) for value in values):
             raise ValueError("transform must be finite")
-        if math.hypot(*values[3:]) <= 1e-12:
+        quaternion_norm = math.hypot(*values[3:])
+        if not math.isfinite(quaternion_norm) or quaternion_norm <= 1e-12:
             raise ValueError("transform quaternion must not be near zero")
         return Pose2D(values[0], values[1], quaternion_to_yaw(*values[3:]))
 

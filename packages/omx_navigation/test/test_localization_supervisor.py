@@ -656,6 +656,51 @@ def test_nonfinite_tf_translation_z_is_rejected_fail_closed(supervisor_module, v
     assert node._current_base_pose is None
 
 
+def test_nonfinite_map_tf_translation_z_closes_existing_ready_gate(supervisor_module, monkeypatch):
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    advance_to_ready(node)
+    assert publisher(node, "~/ready").messages[-1].data is True
+
+    invalid = tf_edge("map", "camera_init")
+    invalid.transform.translation.z = float("nan")
+    node.clock.seconds = 3.5
+    node._on_odom(odom_message())
+    node._on_tf(SimpleNamespace(transforms=[invalid, tf_edge("camera_init", "body_nav")]))
+    node._on_scan(scan_message())
+    node._on_ready_heartbeat()
+
+    assert publisher(node, "~/ready").messages[-1].data is False
+
+
+def test_invalid_camera_base_tf_clears_edge_freshness(supervisor_module):
+    node = supervisor_module.LocalizationSupervisor()
+    node._slam_epoch = 0.0
+    node.clock.seconds = 0.1
+    node._on_tf(relevant_tf())
+    assert node._tf_fresh(0.1) is True
+
+    invalid = tf_edge("camera_init", "body_nav")
+    invalid.transform.rotation.w = 0.0
+    node.clock.seconds = 0.2
+    node._on_tf(SimpleNamespace(transforms=[invalid]))
+
+    assert node._camera_base_pose is None
+    assert node._camera_base_received_at is None
+    assert node._current_base_pose is None
+    assert node._tf_fresh(0.2) is False
+
+
+def test_planar_tf_rejects_quaternion_with_nonfinite_norm(supervisor_module):
+    oversized = tf_edge("map", "camera_init")
+    oversized.transform.rotation.x = 1e308
+    oversized.transform.rotation.y = 1e308
+    oversized.transform.rotation.z = 1e308
+    oversized.transform.rotation.w = 1e308
+
+    with pytest.raises(ValueError, match="quaternion"):
+        supervisor_module.LocalizationSupervisor._planar_tf(oversized)
+
+
 def test_source_stamp_rejects_out_of_range_nanoseconds(supervisor_module):
     message = SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=2, nanosec=1_000_000_000)))
     assert supervisor_module.LocalizationSupervisor._source_stamp(message, 7.0) == 7.0
