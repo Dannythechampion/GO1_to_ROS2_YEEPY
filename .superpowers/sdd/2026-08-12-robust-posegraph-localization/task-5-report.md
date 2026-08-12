@@ -35,3 +35,18 @@
 - focused: `py -3 -m pytest test/test_localization_supervisor.py test/test_rviz_goal_bridge_readiness.py -q -p no:cacheprovider` — 12 passed.
 - 전체 패키지: `py -3 -m pytest test -q -p no:cacheprovider` — 120 passed, 1 skipped.
 - 구문 검증: `py -3 -m compileall -q omx_navigation` — 성공.
+
+## Fix 2 경합 조건 보완
+
+- scan gate는 localization generation 수와 무관한 단조 증가 `_scan_sequence`를 사용합니다. `/initialpose`가 당시 sequence를 baseline으로 저장하고 그보다 큰 유효 scan에서만 search를 시작하므로, 클릭 전 scan 뒤의 map callback이 search를 재개할 수 없습니다.
+- search worker는 실행 중 future 하나와 최신 pending snapshot 하나만 유지합니다. 새 클릭은 queued future를 우선 `cancel()`하고, 실행 중이면 pending snapshot을 최신 값으로 교체합니다. 실행 작업이 끝난 timer 처리에서 최신 pending 하나만 제출합니다.
+- 보정 자세를 재발행할 때마다 SLAM epoch, baseline pose/receive time, jump metric을 모두 초기화합니다. 따라서 재시도 뒤 첫 SLAM pose는 항상 새 baseline입니다.
+- cancel service 응답은 acceptance/failure 기록만 하며 action handle과 `GoalGate` active 상태를 지우지 않습니다. matching `get_result_async()` 완료만 이를 해제하고, 그 전 새 goal은 거부합니다.
+- odom source stamp는 `sec >= 0`, `0 <= nanosec < 1e9`, 유한성 및 all-zero convention을 검증합니다. 위반하면 receive time을 사용합니다.
+
+### Fix 2 검증
+
+- RED: pre-click scan의 map-callback 재사용, cancel-ack handle 조기 해제, publish 후 SLAM baseline 잔존, out-of-range nanosecond, rapid-click worker 누적을 기존 구현에서 각각 확인했습니다.
+- focused: `py -3 -m pytest test/test_localization_supervisor.py test/test_rviz_goal_bridge_readiness.py test/test_goal_gate.py -q -p no:cacheprovider` — 19 passed.
+- 전체 패키지: `py -3 -m pytest test -q -p no:cacheprovider` — 125 passed, 1 skipped.
+- 구문 검증: `py -3 -m compileall -q omx_navigation` — 성공.

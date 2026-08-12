@@ -124,14 +124,20 @@ class RvizGoalBridge(Node):
         handle = goal_handle or self._active_goal_handle
         if handle is None:
             return
-        self._goal_gate.set_goal_active(False)
         try:
             future = handle.cancel_goal_async()
             active_token = self._active_token if token is None else token
-            future.add_done_callback(lambda _future: self._clear_active_goal(handle, active_token))
+            future.add_done_callback(lambda response: self._on_cancel_response(response, handle, active_token))
         except Exception as exc:
             self.get_logger().error(f"Failed to cancel navigation goal: {exc}")
-            self._clear_active_goal(handle, token)
+
+    def _on_cancel_response(self, future, goal_handle, token) -> None:
+        if self._active_goal_handle is not goal_handle or self._active_token != token:
+            return
+        try:
+            future.result()
+        except Exception as exc:
+            self.get_logger().error(f"Navigation cancel request failed: {exc}")
 
     def _clear_active_goal(self, goal_handle=None, token=None) -> None:
         if (goal_handle is None or self._active_goal_handle is goal_handle) and (token is None or self._active_token == token):

@@ -18,8 +18,6 @@ class GoalGate:
             raise ValueError("ready must be boolean")
         cancel = self._ready and not ready and self._goal_active
         self._ready = ready
-        if cancel:
-            self._goal_active = False
         return cancel
 
     def set_goal_active(self, active: bool) -> None:

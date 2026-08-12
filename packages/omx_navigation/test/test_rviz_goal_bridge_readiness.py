@@ -124,6 +124,8 @@ def test_goal_bridge_rejects_until_ready_and_cancels_response_race(bridge_module
     handle = response.value
     assert handle.cancelled is True
     handle.cancel_future.complete()
+    assert node._active_goal_handle is handle
+    handle.result_future.complete()
     assert node._active_goal_handle is None
 
 
@@ -159,3 +161,20 @@ def test_goal_bridge_rejected_or_stale_response_never_claims_active_goal(bridge_
     next_response.value = GoalHandle()
     next_response.complete()
     assert node._active_goal_handle is next_response.value
+
+
+def test_goal_cancel_acknowledgement_keeps_handle_active_until_result(bridge_module):
+    node = bridge_module.RvizGoalBridge()
+    node._on_ready(SimpleNamespace(data=True))
+    node._on_goal_pose(pose())
+    response = node._action_client.responses[0]
+    response.value = GoalHandle()
+    response.complete()
+    handle = response.value
+    node._on_ready(SimpleNamespace(data=False))
+    handle.cancel_future.complete()
+    assert node._active_goal_handle is handle
+    node._on_goal_pose(pose())
+    assert len(node._action_client.sent) == 1
+    handle.result_future.complete()
+    assert node._active_goal_handle is None

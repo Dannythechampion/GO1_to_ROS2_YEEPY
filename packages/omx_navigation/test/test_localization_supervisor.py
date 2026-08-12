@@ -361,3 +361,76 @@ def test_supervisor_rejects_large_consecutive_slam_pose_jump(supervisor_module, 
     node._on_scan(scan_message())
     node._on_status_timer()
     assert json.loads(publisher(node, "~/status").messages[-1].data)["error"] == "POSE_OUTSIDE_MAP"
+
+
+def test_initial_pose_captures_scan_sequence_so_later_map_does_not_reuse_pre_click_scan(supervisor_module, monkeypatch):
+    from omx_navigation.scan_map_quality import Pose2D, PoseScore, SearchResult
+
+    calls = []
+    result = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.8, 0.0, 0.8, 1), None, False)
+    monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: calls.append(1) or result)
+    node = supervisor_module.LocalizationSupervisor()
+    node._on_map(map_message())
+    node._on_scan(scan_message())
+    node._on_initial_pose(pose_message())
+    node._on_map(map_message())
+    node._on_status_timer()
+    assert calls == []
+    node._on_scan(scan_message())
+    node._on_status_timer()
+    assert calls == [1]
+
+
+def test_republish_resets_slam_epoch_baseline_and_jump_metrics(supervisor_module):
+    from omx_navigation.scan_map_quality import Pose2D
+
+    node = supervisor_module.LocalizationSupervisor()
+    node._last_slam_pose = Pose2D(1.0, 1.0, 1.0)
+    node._slam_received_at = 2.0
+    node._slam_position_jump = 3.0
+    node._slam_yaw_jump = 2.0
+    node._publish_refined_pose(Pose2D(0.0, 0.0, 0.0), [0.0] * 36)
+    assert node._last_slam_pose is None
+    assert node._slam_received_at is None
+    assert node._slam_position_jump == 0.0
+    assert node._slam_yaw_jump == 0.0
+
+
+def test_source_stamp_rejects_out_of_range_nanoseconds(supervisor_module):
+    message = SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=2, nanosec=1_000_000_000)))
+    assert supervisor_module.LocalizationSupervisor._source_stamp(message, 7.0) == 7.0
+
+
+def test_rapid_clicks_keep_only_latest_search_queued(supervisor_module):
+    class BlockingFuture:
+        def __init__(self):
+            self.cancel_called = False
+
+        def done(self):
+            return False
+
+        def cancel(self):
+            self.cancel_called = True
+            return False
+
+    class BlockingExecutor:
+        def __init__(self):
+            self.futures = []
+
+        def submit(self, *_args):
+            future = BlockingFuture()
+            self.futures.append(future)
+            return future
+
+    node = supervisor_module.LocalizationSupervisor()
+    node._search_executor = BlockingExecutor()
+    node._on_map(map_message())
+    node._on_scan(scan_message())
+    node._on_initial_pose(pose_message())
+    node._on_scan(scan_message())
+    node._on_initial_pose(pose_message())
+    node._on_scan(scan_message())
+    node._on_initial_pose(pose_message())
+    node._on_scan(scan_message())
+    assert len(node._search_executor.futures) == 1
+    assert node._search_executor.futures[0].cancel_called is True

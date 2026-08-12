@@ -74,9 +74,12 @@ class LocalizationSupervisor(Node):
         self._scan_received_at = None
         self._initial_pose = None
         self._generation = 0
-        self._scan_generation = 0
-        self._search_generation = None
+        self._scan_sequence = 0
+        self._required_scan_sequence = None
+        self._active_search_generation = None
+        self._completed_search_generation = None
         self._search_future = None
+        self._pending_search = None
         self._search_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="localization_search")
         self._refined_pose = None
         self._search_pose_available = False
@@ -134,10 +137,10 @@ class LocalizationSupervisor(Node):
                 message.range_min, message.range_max, self._window.max_scan_points,
             )
             self._scan_received_at = self._now()
+            self._scan_sequence += 1
         except (TypeError, ValueError):
             self._points = None
             self._scan_received_at = None
-        self._scan_generation += 1
         self._try_start_search()
 
     def _on_initial_pose(self, message: PoseWithCovarianceStamped) -> None:
@@ -156,6 +159,7 @@ class LocalizationSupervisor(Node):
             return
         self._initial_pose = (initial, tuple(message.pose.covariance))
         self._generation += 1
+        self._required_scan_sequence = self._scan_sequence
         self._slam_pose = None
         self._slam_received_at = None
         self._slam_epoch = None
@@ -217,40 +221,56 @@ class LocalizationSupervisor(Node):
     def _try_start_search(self) -> None:
         if self._initial_pose is None or self._grid is None or self._points is None:
             return
-        if self._scan_generation < self._generation or self._search_generation == self._generation:
+        if self._required_scan_sequence is None or self._scan_sequence <= self._required_scan_sequence:
+            return
+        if self._completed_search_generation == self._generation or self._active_search_generation == self._generation:
             return
         initial, covariance = self._initial_pose
         if self._grid.world_to_cell(initial.x, initial.y) is None:
             self._last_transition = self._machine.observe(self._observation(pose_available=False))
             return
-        self._search_generation = self._generation
-        self._search_future = self._search_executor.submit(coarse_search, self._grid, self._points, initial, self._window)
+        snapshot = (self._generation, self._grid, self._points, initial, covariance)
+        if self._search_future is not None:
+            if self._search_future.cancel():
+                self._search_future = None
+                self._active_search_generation = None
+            else:
+                self._pending_search = snapshot
+                return
+        self._submit_search(snapshot)
+
+    def _submit_search(self, snapshot) -> None:
+        generation, grid, points, initial, _covariance = snapshot
+        self._active_search_generation = generation
+        self._search_future = self._search_executor.submit(coarse_search, grid, points, initial, self._window)
 
     def _apply_search_result(self) -> None:
         if self._search_future is None or not self._search_future.done():
             return
         future, self._search_future = self._search_future, None
-        generation = self._search_generation
+        generation, self._active_search_generation = self._active_search_generation, None
         try:
             result = future.result()
         except Exception:
-            return
-        if generation != self._generation or self._initial_pose is None or self._grid is None or self._points is None:
-            return
-        _initial, covariance = self._initial_pose
-        self._overlap = result.best.overlap
-        self._search_pose_available = True
-        self._ambiguous = result.ambiguous
-        self._ambiguity_margin = (
-            result.best.score - result.runner_up.score if result.runner_up is not None else 1.0
-        )
-        if result.best.overlap < self._machine.policy.min_overlap or result.ambiguous:
-            # Search completed against a valid user pose, so preserve its
-            # specific quality error instead of classifying it as missing SLAM.
-            self._quality_error_latched = True
-            return
-        self._refined_pose = result.best.pose
-        self._publish_refined_pose(result.best.pose, covariance)
+            result = None
+        if result is not None and generation == self._generation and self._initial_pose is not None and self._grid is not None and self._points is not None:
+            self._completed_search_generation = generation
+            _initial, covariance = self._initial_pose
+            self._overlap = result.best.overlap
+            self._search_pose_available = True
+            self._ambiguous = result.ambiguous
+            self._ambiguity_margin = (
+                result.best.score - result.runner_up.score if result.runner_up is not None else 1.0
+            )
+            if result.best.overlap < self._machine.policy.min_overlap or result.ambiguous:
+                self._quality_error_latched = True
+            else:
+                self._refined_pose = result.best.pose
+                self._publish_refined_pose(result.best.pose, covariance)
+        if self._pending_search is not None:
+            pending, self._pending_search = self._pending_search, None
+            if pending[0] != self._completed_search_generation:
+                self._submit_search(pending)
 
     def _on_status_timer(self) -> None:
         self._apply_search_result()
@@ -291,6 +311,11 @@ class LocalizationSupervisor(Node):
             message.pose.covariance.extend([0.0] * (36 - len(message.pose.covariance)))
         self._initialpose_publisher.publish(message)
         self._slam_epoch = self._now()
+        self._slam_pose = None
+        self._slam_received_at = None
+        self._last_slam_pose = None
+        self._slam_position_jump = 0.0
+        self._slam_yaw_jump = 0.0
 
     def _publish_status(self) -> None:
         transition = self._last_transition
@@ -332,9 +357,13 @@ class LocalizationSupervisor(Node):
         seconds = getattr(stamp, "sec", 0) if stamp is not None else 0
         nanoseconds = getattr(stamp, "nanosec", 0) if stamp is not None else 0
         try:
-            value = float(seconds) + float(nanoseconds) / 1_000_000_000.0
+            seconds = float(seconds)
+            nanoseconds = float(nanoseconds)
         except (TypeError, ValueError):
             return fallback
+        if not all(math.isfinite(value) for value in (seconds, nanoseconds)) or seconds < 0.0 or not 0.0 <= nanoseconds < 1_000_000_000.0:
+            return fallback
+        value = seconds + nanoseconds / 1_000_000_000.0
         return value if math.isfinite(value) and value > 0.0 else fallback
 
     def _has_amcl(self) -> bool:
