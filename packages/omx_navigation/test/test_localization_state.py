@@ -43,7 +43,7 @@ def test_one_input_reaches_ready_after_stable_verification():
 
 def test_alignment_timeout_retries_three_times_then_loses():
     machine = LocalizationStateMachine(
-        LocalizationPolicy(alignment_timeout=2.0, max_attempts=3)
+        LocalizationPolicy(alignment_timeout=6.0, max_attempts=3)
     )
     machine.receive_initial_pose(0.0)
     first = machine.observe(QualityObservation.missing(now=2.1))
@@ -112,3 +112,53 @@ def test_retry_restarts_a_lost_machine_and_republishes_initial_pose():
     assert transition.state is LocalizationState.ALIGNING
     assert transition.error is ErrorCode.NONE
     assert transition.republish_initial_pose is True
+
+
+def test_default_alignment_timeout_limits_all_three_attempts_to_twenty_seconds():
+    machine = LocalizationStateMachine()
+    machine.receive_initial_pose(0.0)
+    assert machine.observe(QualityObservation.missing(now=6.7)).republish_initial_pose
+    assert machine.observe(QualityObservation.missing(now=13.4)).republish_initial_pose
+    transition = machine.observe(QualityObservation.missing(now=20.1))
+    assert transition.state is LocalizationState.LOST
+    assert transition.error is ErrorCode.ALIGNMENT_TIMEOUT
+
+
+def test_retry_does_not_extend_the_first_initial_pose_deadline():
+    machine = LocalizationStateMachine()
+    machine.receive_initial_pose(0.0)
+    machine.retry(now=10.0)
+    transition = machine.observe(QualityObservation.missing(now=20.1))
+    assert transition.state is LocalizationState.LOST
+    assert transition.error is ErrorCode.ALIGNMENT_TIMEOUT
+
+
+@pytest.mark.parametrize(
+    ("field", "error"),
+    (("odom_reset", ErrorCode.ODOM_RESET), ("tf_conflict", ErrorCode.TF_CONFLICT)),
+)
+def test_waiting_input_still_loses_immediately_on_safety_fault(field, error):
+    machine = LocalizationStateMachine()
+    transition = machine.observe(replace(good(0.0), **{field: True}))
+    assert transition.state is LocalizationState.LOST
+    assert transition.error is error
+
+
+@pytest.mark.parametrize("field", ("position_jump", "yaw_jump"))
+def test_negative_observation_distance_is_rejected(field):
+    with pytest.raises(ValueError, match=field):
+        replace(good(0.0), **{field: -0.01})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("alignment_timeout", True),
+        ("verify_duration", "3.0"),
+        ("min_overlap", False),
+        ("max_position_jump", object()),
+    ),
+)
+def test_policy_rejects_boolean_and_non_numeric_float_values(field, value):
+    with pytest.raises(ValueError, match=field):
+        LocalizationPolicy(**{field: value})

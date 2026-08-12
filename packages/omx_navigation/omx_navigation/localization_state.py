@@ -49,13 +49,13 @@ class LocalizationPolicy:
         )
         for name in finite_positive:
             value = getattr(self, name)
-            if not math.isfinite(value) or value <= 0.0:
+            if not _is_finite_number(value) or value <= 0.0:
                 raise ValueError(f"{name} must be finite and positive")
         if not isinstance(self.max_attempts, int) or isinstance(self.max_attempts, bool) or self.max_attempts < 1:
             raise ValueError("max_attempts must be a positive integer")
         for name in ("min_overlap", "min_ambiguity_margin"):
             value = getattr(self, name)
-            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            if not _is_finite_number(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be within [0.0, 1.0]")
         if self.max_yaw_jump > math.pi:
             raise ValueError("max_yaw_jump must not exceed pi radians")
@@ -72,6 +72,18 @@ class QualityObservation:
     yaw_jump: float
     odom_reset: bool
     tf_conflict: bool
+
+    def __post_init__(self) -> None:
+        if not _is_finite_number(self.now):
+            raise ValueError("now must be finite")
+        for name in ("overlap", "ambiguity_margin"):
+            value = getattr(self, name)
+            if not _is_finite_number(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be within [0.0, 1.0]")
+        for name in ("position_jump", "yaw_jump"):
+            value = getattr(self, name)
+            if not _is_finite_number(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative")
 
     @classmethod
     def missing(cls, now: float) -> "QualityObservation":
@@ -94,6 +106,7 @@ class LocalizationStateMachine:
         self.state = LocalizationState.WAITING_INPUT
         self.error = ErrorCode.NONE
         self._attempts = 0
+        self._alignment_deadline: float | None = None
         self._alignment_started_at: float | None = None
         self._verification_started_at: float | None = None
         self._degraded_started_at: float | None = None
@@ -101,23 +114,37 @@ class LocalizationStateMachine:
     def receive_initial_pose(self, now: float) -> Transition:
         self._validate_now(now)
         self._attempts = 1
+        self._alignment_deadline = now + self.policy.alignment_timeout
         self._start_alignment(now)
         return self._transition()
 
     def retry(self, now: float) -> Transition:
         self._validate_now(now)
-        self._attempts = 1
+        if self.state in (LocalizationState.WAITING_INPUT, LocalizationState.LOST):
+            self._attempts = 1
+            self._alignment_deadline = now + self.policy.alignment_timeout
+        elif self._deadline_reached(now):
+            self._lose(ErrorCode.ALIGNMENT_TIMEOUT)
+            return self._transition()
+        elif self._attempts < self.policy.max_attempts:
+            self._attempts += 1
+        else:
+            self._lose(ErrorCode.ALIGNMENT_TIMEOUT)
+            return self._transition()
         self._start_alignment(now)
         return self._transition(republish_initial_pose=True)
 
     def observe(self, observation: QualityObservation) -> Transition:
         self._validate_now(observation.now)
-        if self.state is LocalizationState.WAITING_INPUT:
-            self.error = ErrorCode.INPUT_MISSING
-            return self._transition()
         immediate_error = self._immediate_error(observation)
         if immediate_error is not None:
             self._lose(immediate_error)
+            return self._transition()
+        if self.state is LocalizationState.WAITING_INPUT:
+            self.error = ErrorCode.INPUT_MISSING
+            return self._transition()
+        if self.state in (LocalizationState.ALIGNING, LocalizationState.VERIFYING) and self._deadline_reached(observation.now):
+            self._lose(ErrorCode.ALIGNMENT_TIMEOUT)
             return self._transition()
         quality_error = self._quality_error(observation)
 
@@ -127,7 +154,11 @@ class LocalizationStateMachine:
                 self.error = ErrorCode.NONE
                 self._verification_started_at = observation.now
                 return self._transition()
-            if self._timed_out(observation.now, self._alignment_started_at, self.policy.alignment_timeout):
+            if self._timed_out(
+                observation.now,
+                self._alignment_started_at,
+                self.policy.alignment_timeout / self.policy.max_attempts,
+            ):
                 return self._retry_or_lose(ErrorCode.ALIGNMENT_TIMEOUT, observation.now)
             self.error = quality_error
             return self._transition()
@@ -182,6 +213,9 @@ class LocalizationStateMachine:
         self._verification_started_at = None
         self._degraded_started_at = None
 
+    def _deadline_reached(self, now: float) -> bool:
+        return self._alignment_deadline is not None and now >= self._alignment_deadline
+
     def _transition(self, republish_initial_pose: bool = False) -> Transition:
         return Transition(
             state=self.state,
@@ -208,7 +242,7 @@ class LocalizationStateMachine:
             return ErrorCode.INPUT_MISSING
         if not observation.pose_available:
             return ErrorCode.POSE_OUTSIDE_MAP
-        if not all(math.isfinite(value) for value in numbers):
+        if not all(_is_finite_number(value) for value in numbers):
             return ErrorCode.INPUT_MISSING
         if observation.overlap < self.policy.min_overlap:
             return ErrorCode.LOW_OVERLAP
@@ -226,5 +260,9 @@ class LocalizationStateMachine:
 
     @staticmethod
     def _validate_now(now: float) -> None:
-        if not math.isfinite(now):
+        if not _is_finite_number(now):
             raise ValueError("now must be finite")
+
+
+def _is_finite_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
