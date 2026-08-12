@@ -26,6 +26,7 @@ setup(
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
+            "cmd_vel_safety_gate = omx_navigation.cmd_vel_safety_gate:main",
             "rviz_goal_bridge = omx_navigation.rviz_goal_bridge:main",
         ],
     },
