@@ -64,16 +64,26 @@ class CmdVelSafetyGate(Node):
 
 
 def main(args=None) -> None:
+    node = None
     rclpy.init(args=args)
-    node = CmdVelSafetyGate()
     try:
+        node = CmdVelSafetyGate()
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
-        node.publish_stop()
-        node.destroy_node()
-        rclpy.shutdown()
+        try:
+            if node is not None:
+                try:
+                    node.publish_stop()
+                except Exception:
+                    pass
+                try:
+                    node.destroy_node()
+                except Exception:
+                    pass
+        finally:
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
