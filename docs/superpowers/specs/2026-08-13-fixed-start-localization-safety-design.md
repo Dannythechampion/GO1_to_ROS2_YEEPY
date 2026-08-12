@@ -81,7 +81,7 @@ Nav2 controller 출력은 `/cmd_vel_nav`로 remap한다. `go1_driver`는 `/cmd_v
 방어를 두 겹으로 구성한다.
 
 1. `motion_gate`가 준비되지 않은 상태에서 0 속도만 발행한다.
-2. `go1_driver`가 localization heartbeat와 입력 명령의 timeout을 각각 검사하고, 하나라도 만료되면 `STAND`를 전송한다.
+2. `go1_driver`는 gate의 내부 상태를 해석하지 않고 `/cmd_vel_safe` timeout만 독립적으로 검사한다. gate가 종료되거나 출력이 끊기면 0.35 s 이내 `STAND`를 전송한다.
 
 ## 6. 구성 요소
 
@@ -151,6 +151,8 @@ AMCL covariance만으로 잘못된 지도 위치 수렴을 판정할 수 없으�
 
 ### 6.4 `motion_gate`
 
+`motion_gate`는 `go1_driver` 내부 기능이 아니라 `omx_navigation` 패키지의 독립 ROS 2 노드로 구현한다. Nav2와 하드웨어 driver 사이의 토픽 경계를 강제하며, driver에는 localization 판정이나 Nav2 의존성을 추가하지 않는다. 노드가 종료되면 `/cmd_vel_safe` 발행이 끊기고 기존 driver watchdog이 `STAND`로 전환한다.
+
 입력:
 
 - `/cmd_vel_nav`
@@ -175,8 +177,8 @@ AMCL covariance만으로 잘못된 지도 위치 수렴을 판정할 수 없으�
 
 - 기본 입력 토픽을 `/cmd_vel_safe`로 변경한다.
 - `arm`은 UDP 사용 여부만 결정하고 안전 준비 상태를 의미하지 않도록 문서화한다.
-- localization heartbeat를 별도로 구독해 0.30 s timeout을 적용한다.
-- heartbeat false/timeout, cmd timeout, 비정상 수치, E-stop 시 `MotionCommand.stand()`를 생성한다.
+- localization과 E-stop 판정은 별도 `motion_gate`에만 둔다.
+- `/cmd_vel_safe` timeout과 비정상 수치 발생 시 `MotionCommand.stand()`를 생성한다.
 - 정지 원인을 `/go1/control_state`에 구조적으로 기록한다.
 - shutdown 시 기존 repeated stand 동작을 유지한다.
 
@@ -248,7 +250,8 @@ FAULT 전환 시 진행 중 goal을 취소하고 motion gate와 driver는 `STAND
 - 정합 실패: `FAULT`, 프리셋 및 배치 확인 요구
 - FAST-LIO 재시작: `FAULT`, goal 취소, 재배치 확인 후 수동 reseed
 - AMCL 재시작: `FAULT`, 자동 goal 재개 금지
-- supervisor/motion gate 종료: driver heartbeat timeout으로 0.30 s 이내 STAND
+- supervisor 종료: motion gate가 heartbeat timeout을 감지해 0.30 s 이내 STAND
+- motion gate 종료: driver의 `/cmd_vel_safe` watchdog으로 0.35 s 이내 STAND
 - driver 입력 timeout: 기존 0.35 s보다 짧거나 같은 값으로 STAND
 - E-stop 요청: 다른 상태와 무관하게 즉시 STAND, 명시적 reset 전까지 latch
 
