@@ -31,6 +31,7 @@ from omx_navigation.localization_state import (
     LocalizationStateMachine,
     QualityObservation,
 )
+from omx_navigation.pose_tracking import compose_pose
 from omx_navigation.ros_conversions import (
     grid_map_from_values,
     laser_ranges_to_points,
@@ -106,11 +107,17 @@ class LocalizationSupervisor(Node):
         self._quality_received_at = None
         self._slam_pose = None
         self._slam_received_at = None
+        self._slam_pose_handshake = False
         self._slam_epoch = None
-        self._last_slam_pose = None
-        self._slam_position_jump = 0.0
-        self._slam_yaw_jump = 0.0
-        self._tf_received_at = None
+        self._map_camera_pose = None
+        self._camera_base_pose = None
+        self._current_base_pose = None
+        self._map_camera_received_at = None
+        self._camera_base_received_at = None
+        self._last_map_camera_pose = None
+        self._tf_position_jump = 0.0
+        self._tf_yaw_jump = 0.0
+        self._tf_conflict = False
         self._odom_position = None
         self._odom_source_stamp = None
         self._odom_received_at = None
@@ -189,10 +196,9 @@ class LocalizationSupervisor(Node):
         self._initial_pose = (initial, tuple(message.pose.covariance))
         self._slam_pose = None
         self._slam_received_at = None
+        self._slam_pose_handshake = False
         self._slam_epoch = None
-        self._last_slam_pose = None
-        self._slam_position_jump = 0.0
-        self._slam_yaw_jump = 0.0
+        self._reset_tf_tracking()
         self._search_pose_available = False
         self._refined_pose = None
         self._overlap = 0.0
@@ -227,19 +233,17 @@ class LocalizationSupervisor(Node):
             if self._grid is not None and self._grid.world_to_cell(current.x, current.y) is None:
                 self._slam_pose = None
                 self._slam_received_at = None
-                self._last_slam_pose = None
+                self._slam_pose_handshake = False
                 self._last_transition = self._machine.reject_initial_pose(now)
                 return
-            if self._last_slam_pose is not None:
-                self._slam_position_jump = math.hypot(current.x - self._last_slam_pose.x, current.y - self._last_slam_pose.y)
-                self._slam_yaw_jump = abs((current.yaw - self._last_slam_pose.yaw + math.pi) % (2.0 * math.pi) - math.pi)
             self._slam_pose = current
-            self._last_slam_pose = current
             self._slam_received_at = now
+            self._slam_pose_handshake = True
             self._refresh_continuous_quality(now)
         except (TypeError, ValueError):
             self._slam_pose = None
             self._slam_received_at = None
+            self._slam_pose_handshake = False
             self._quality_received_at = None
 
     def _on_odom(self, message: Odometry) -> None:
@@ -260,12 +264,46 @@ class LocalizationSupervisor(Node):
         self._odom_received_at = now
 
     def _on_tf(self, message: TFMessage) -> None:
+        now = self._now()
         for transform in getattr(message, "transforms", ()):
             parent = getattr(getattr(transform, "header", None), "frame_id", "")
             child = getattr(transform, "child_frame_id", "")
-            if parent == self._camera_init_frame and child in (self._source_base_frame, self._base_frame):
-                self._tf_received_at = self._now()
-                return
+            if parent == "map" and child == self._camera_init_frame:
+                try:
+                    current = self._planar_tf(transform)
+                except (AttributeError, TypeError, ValueError):
+                    self._map_camera_pose = None
+                    self._map_camera_received_at = None
+                    self._current_base_pose = None
+                    continue
+                if self._last_map_camera_pose is not None:
+                    self._tf_position_jump = math.hypot(
+                        current.x - self._last_map_camera_pose.x,
+                        current.y - self._last_map_camera_pose.y,
+                    )
+                    self._tf_yaw_jump = abs(
+                        (current.yaw - self._last_map_camera_pose.yaw + math.pi)
+                        % (2.0 * math.pi) - math.pi
+                    )
+                    if (
+                        self._tf_position_jump > self._machine.policy.max_position_jump
+                        or self._tf_yaw_jump > self._machine.policy.max_yaw_jump
+                    ):
+                        self._tf_conflict = True
+                self._last_map_camera_pose = current
+                self._map_camera_pose = current
+                self._map_camera_received_at = now
+            elif parent == self._camera_init_frame and child == self._base_frame:
+                try:
+                    self._camera_base_pose = self._planar_tf(transform)
+                except (AttributeError, TypeError, ValueError):
+                    self._camera_base_pose = None
+                    self._camera_base_received_at = None
+                    self._current_base_pose = None
+                    continue
+                self._camera_base_received_at = now
+        self._compose_current_base_pose()
+        self._refresh_continuous_quality(now)
 
     def _try_start_search(self) -> None:
         if self._initial_pose is None or self._grid is None or self._points is None:
@@ -367,7 +405,7 @@ class LocalizationSupervisor(Node):
 
     def _observation(self, now: float, *, pose_available: bool | None = None) -> QualityObservation:
         if pose_available is None:
-            pose_available = self._slam_pose is not None and self._slam_pose_fresh(now)
+            pose_available = self._slam_pose_fresh(now)
         inputs_fresh = (
             True
             if self._quality_error_latched
@@ -379,10 +417,10 @@ class LocalizationSupervisor(Node):
             pose_available=pose_available,
             overlap=self._finite_or_zero(self._overlap),
             ambiguity_margin=(0.0 if self._ambiguous else self._finite_or_zero(self._ambiguity_margin)),
-            position_jump=self._slam_position_jump,
-            yaw_jump=self._slam_yaw_jump,
+            position_jump=self._tf_position_jump,
+            yaw_jump=self._tf_yaw_jump,
             odom_reset=self._odom_reset,
-            tf_conflict=self._has_amcl(),
+            tf_conflict=self._has_amcl() or self._tf_conflict,
         )
 
     def _publish_refined_pose(self, pose: Pose2D, covariance) -> None:
@@ -401,9 +439,8 @@ class LocalizationSupervisor(Node):
         self._slam_epoch = self._now()
         self._slam_pose = None
         self._slam_received_at = None
-        self._last_slam_pose = None
-        self._slam_position_jump = 0.0
-        self._slam_yaw_jump = 0.0
+        self._slam_pose_handshake = False
+        self._reset_tf_tracking()
         self._quality_received_at = None
         self._overlap = 0.0
 
@@ -447,17 +484,17 @@ class LocalizationSupervisor(Node):
         )
 
     def _refresh_continuous_quality(self, now: float) -> None:
-        """Score the latest scan at the current SLAM pose after this pose epoch."""
+        """Score the latest scan at the current composed base pose."""
         if (
             self._grid is None
             or self._distance_field is None
             or self._points is None
-            or self._slam_pose is None
+            or self._current_base_pose is None
             or self._slam_epoch is None
             or self._scan_received_at is None
-            or self._slam_received_at is None
             or self._scan_received_at < self._slam_epoch
-            or self._slam_received_at < self._slam_epoch
+            or not self._slam_pose_fresh(now)
+            or not self._tf_fresh(now)
         ):
             self._quality_received_at = None
             return
@@ -466,7 +503,7 @@ class LocalizationSupervisor(Node):
                 self._grid,
                 self._distance_field,
                 self._points,
-                self._slam_pose,
+                self._current_base_pose,
                 self._window.hit_distance,
             )
         except (TypeError, ValueError):
@@ -476,10 +513,56 @@ class LocalizationSupervisor(Node):
         self._quality_received_at = now
 
     def _slam_pose_fresh(self, now: float) -> bool:
-        return self._slam_epoch is not None and self._slam_received_at is not None and self._slam_received_at >= self._slam_epoch and 0.0 <= now - self._slam_received_at <= self._input_max_age
+        return (
+            self._slam_epoch is not None
+            and self._slam_pose_handshake
+            and self._current_base_pose is not None
+        )
 
     def _tf_fresh(self, now: float) -> bool:
-        return self._tf_received_at is not None and 0.0 <= now - self._tf_received_at <= self._input_max_age
+        return (
+            self._slam_epoch is not None
+            and self._map_camera_received_at is not None
+            and self._camera_base_received_at is not None
+            and self._map_camera_received_at >= self._slam_epoch
+            and self._camera_base_received_at >= self._slam_epoch
+            and 0.0 <= now - self._map_camera_received_at <= self._input_max_age
+            and 0.0 <= now - self._camera_base_received_at <= self._input_max_age
+        )
+
+    @staticmethod
+    def _planar_tf(transform) -> Pose2D:
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        values = (
+            float(translation.x), float(translation.y), float(translation.z),
+            float(rotation.x), float(rotation.y), float(rotation.z), float(rotation.w),
+        )
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("transform must be finite")
+        if math.hypot(*values[3:]) <= 1e-12:
+            raise ValueError("transform quaternion must not be near zero")
+        return Pose2D(values[0], values[1], quaternion_to_yaw(*values[3:]))
+
+    def _compose_current_base_pose(self) -> None:
+        if self._map_camera_pose is None or self._camera_base_pose is None:
+            self._current_base_pose = None
+            return
+        try:
+            self._current_base_pose = compose_pose(self._map_camera_pose, self._camera_base_pose)
+        except ValueError:
+            self._current_base_pose = None
+
+    def _reset_tf_tracking(self) -> None:
+        self._map_camera_pose = None
+        self._camera_base_pose = None
+        self._current_base_pose = None
+        self._map_camera_received_at = None
+        self._camera_base_received_at = None
+        self._last_map_camera_pose = None
+        self._tf_position_jump = 0.0
+        self._tf_yaw_jump = 0.0
+        self._tf_conflict = False
 
     @staticmethod
     def _source_stamp(message, fallback: float) -> float:
