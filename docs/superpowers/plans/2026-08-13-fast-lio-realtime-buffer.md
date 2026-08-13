@@ -218,8 +218,10 @@ void discard_stale_inflight_locked(double newest_lidar_time) {
 }
 ```
 
-Call `discard_stale_inflight_locked(last_timestamp_lidar)` and then
-`enqueue_latest_lidar_locked(ptr, last_timestamp_lidar)` in both LiDAR callbacks.
+Call `enqueue_latest_lidar_locked(ptr, last_timestamp_lidar)` and then
+`discard_stale_inflight_locked(last_timestamp_lidar)` in both LiDAR callbacks. Enqueuing first is
+required because the just-arrived scan is the newer waiting scan that makes stale-front replacement
+safe; testing for a waiting scan before enqueueing would delay replacement by one LiDAR period.
 Keep preprocessing outside the mutex only if copied message ownership remains valid; otherwise
 retain existing locking to avoid broad callback redesign.
 
