@@ -17,7 +17,7 @@ def test_end_to_end_doc_contains_every_operating_gate():
         "verify_existing_map_navigation.sh preflight",
         "verify_existing_map_navigation.sh localized",
         "arm:=false",
-        "arm:=true",
+        "jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY",
         "2D Pose Estimate",
     ):
         assert expected in text

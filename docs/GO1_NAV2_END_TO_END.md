@@ -295,39 +295,20 @@ ros2 param get /go1_driver arm
 
 ## 7. 실제 Go1 저속 Nav2 주행
 
-다음을 모두 통과하기 전에는 `arm:=true`를 사용하지 않는다.
-
-- LiDAR가 영구 고정되어 있고 TF/extrinsic이 실제 장착값과 일치한다.
-- `/scan`과 지도 벽이 정지 및 이동 중 모두 일치한다.
-- AMCL pose jump 및 `map -> camera_init` TF 단절이 없다.
-- footprint와 inflation radius가 실제 Go1 외곽보다 작지 않다.
-- dry-run goal, cancel, watchdog zero를 확인했다.
-- e-stop 담당자와 비상 정지 공간을 확보했다.
-
-먼저 `arm:=false` launch를 `Ctrl-C`로 완전히 종료하고 driver가 하나뿐인지 확인한다.
+이 문서의 과거 AMCL armed 명령은 posegraph readiness와 Jetson preflight를 우회하므로
+폐기했습니다. LiDAR 고정·TF/extrinsic·scan-map 정합·footprint·dry-run goal/cancel/
+watchdog와 물리 e-stop을 확인한 뒤에도 다음 canonical runner만 사용합니다.
 
 ```bash
-ros2 node list | grep go1_driver || true
-```
-
-그 다음 제한된 시험 구역에서 실행한다.
-
-```bash
-export GO1_ROS2_WS="${GO1_ROS2_WS:-/mnt/t500/go1_ros2_ws}"
-export GO1_MAP_ROOT="${GO1_MAP_ROOT:-/mnt/t500/maps}"
-export ROS_DOMAIN_ID=100
-source /opt/ros/humble/setup.bash
-source /mnt/t500/go1_sdk/setup_unitree_sdk.bash
-source "$GO1_ROS2_WS/install/setup.bash"
-
-ros2 launch omx_navigation go1_existing_map.launch.py \
-  map:="$GO1_MAP_ROOT/floor9_v001/go1_map.yaml" \
-  arm:=true
+cd /mnt/t500/GO1_to_ROS2_YEEPY
+./migration/jetson_field_deploy.sh dry-run /mnt/t500/go1_ros2_ws
+# READY/NONE과 정상 Ctrl-C 종료를 확인한 뒤:
+./migration/jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY /mnt/t500/go1_ros2_ws
 ```
 
 시험 순서:
 
-1. 전방 `0.3 m`
+1. 현재 위치에서 `0.3 m` 이내 goal
 2. 작은 제자리 회전
 3. 전방 `0.5-1.0 m`
 4. 정적 장애물 접근과 정지
@@ -345,11 +326,11 @@ watchdog `0.35 s`이다. 목표 취소나 timeout 후에도 stepping이 계속�
 
 1. MID-360
 2. FAST-LIO (`fast_lio_mid360_navigation.yaml`, `rviz:=false`)
-3. `go1_existing_map.launch.py arm:=false`
+3. `jetson_field_deploy.sh dry-run`
 4. RViz 2D Pose Estimate
-5. `verify_existing_map_navigation.sh localized`
+5. supervisor `READY/NONE` 및 `ready=true`
 6. 가까운 goal dry-run
-7. 안전 승인 후에만 `arm:=true`로 재시작
+7. 안전 승인 후 canonical `jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY`
 
 동일 노드를 두 번 실행하지 않는다. 특히 Livox UDP bind 실패와 Go1 driver 중복은
 기존 프로세스를 먼저 종료한 뒤 해결한다.

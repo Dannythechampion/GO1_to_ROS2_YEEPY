@@ -24,6 +24,8 @@ STAGE = ROOT / "migration" / "stage_local_ros2_packages.sh"
 FIELD = ROOT / "migration" / "jetson_field_deploy.sh"
 ROOT_README = ROOT / "README.md"
 PACKAGE_README = ROOT / "packages" / "omx_navigation" / "README.md"
+MIGRATION_README = ROOT / "migration" / "README.md"
+END_TO_END_README = ROOT / "docs" / "GO1_NAV2_END_TO_END.md"
 BASE_TOPICS = (
     "/scan", "/Odometry", "/map", "/slam_localization/pose",
     "/localization_supervisor/status", "/localization_supervisor/ready",
@@ -267,6 +269,17 @@ def test_field_runner_has_fail_closed_jetson_contract():
     subprocess.run([_bash(), "-n", str(FIELD)], check=True)
 
 
+def test_field_runner_is_executable_in_a_fresh_linux_clone():
+    mode = subprocess.run(
+        ["git", "ls-files", "--stage", str(FIELD.relative_to(ROOT))],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.split()[0]
+    assert mode == "100755"
+
+
 def test_field_runner_rejects_bad_armed_token_before_preflight():
     bash = _bash()
     with TemporaryDirectory() as temp_dir:
@@ -281,6 +294,37 @@ def test_field_runner_rejects_bad_armed_token_before_preflight():
         assert "not implemented" not in result.stderr
 
 
+def test_field_live_check_accepts_tf2_echo_timeout_after_valid_transform():
+    bash = _bash()
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        _write_executable(
+            bin_dir / "timeout",
+            """#!/usr/bin/env bash
+shift
+if [[ "$*" == *"tf2_echo"* ]]; then
+  printf 'At time 1.0\nTranslation: [0.0, 0.0, 0.0]\n'
+  exit 124
+fi
+exec "$@"
+""",
+        )
+        _write_executable(bin_dir / "ros2", "#!/usr/bin/env bash\nexit 0\n")
+        environment = os.environ.copy()
+        environment["PATH"] = str(bin_dir) + os.pathsep + environment["PATH"]
+        result = subprocess.run(
+            [bash, "-c", 'source "$1"; verify_live_inputs', "field-test", str(FIELD)],
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "body TF inputs" in result.stdout
+
+
 def test_korean_field_runbooks_cover_the_safe_operating_sequence():
     for document in (ROOT_README, PACKAGE_README):
         text = document.read_text(encoding="utf-8")
@@ -293,3 +337,21 @@ def test_korean_field_runbooks_cover_the_safe_operating_sequence():
             "e-stop", "0.3 m", "READY", "Ctrl-C", "arm:=false",
         ):
             assert value in text
+
+
+def test_old_runbooks_cannot_bypass_the_canonical_armed_runner():
+    canonical = (
+        "jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY"
+    )
+    for document in (MIGRATION_README, END_TO_END_README):
+        text = document.read_text(encoding="utf-8")
+        assert canonical in text
+        assert "ros2 launch go1_driver go1_driver.launch.py arm:=true" not in text
+        assert not re.search(
+            r"ros2 launch omx_navigation go1_existing_map\.launch\.py"
+            r"[\s\S]{0,240}?arm:=true",
+            text,
+        )
+    root_text = ROOT_README.read_text(encoding="utf-8")
+    assert "실제 동작으로 전환할 수 있는 launch는 이 문서에 없습니다" not in root_text
+    assert "현재 pose-graph launch의 `arm` 값은 반드시 `false`" not in root_text

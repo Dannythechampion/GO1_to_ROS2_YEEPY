@@ -186,12 +186,26 @@ preflight() {
 }
 
 verify_live_inputs() {
-  local topic
+  local topic tf_output status
   for topic in /livox/lidar /livox/imu /cloud_registered_body /Odometry; do
     timeout 12 ros2 topic echo "$topic" --once >/dev/null || fail "no live message on $topic"
   done
-  timeout 12 ros2 run tf2_ros tf2_echo camera_init body >/dev/null || \
+  tf_output="$(mktemp)"
+  set +e
+  timeout 12 ros2 run tf2_ros tf2_echo camera_init body >"$tf_output" 2>&1
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 && "$status" -ne 124 ]]; then
+    cat "$tf_output" >&2
+    rm -f -- "$tf_output"
+    fail "camera_init -> body TF command failed"
+  fi
+  if ! grep -Eq 'Translation:|At time' "$tf_output"; then
+    cat "$tf_output" >&2
+    rm -f -- "$tf_output"
     fail "camera_init -> body TF is unavailable"
+  fi
+  rm -f -- "$tf_output"
   printf 'PASS: live MID-360, FAST-LIO, odometry, and body TF inputs\n'
 }
 
@@ -212,31 +226,37 @@ launch_navigation() {
     ros_domain_id:="$ROS_DOMAIN_ID"
 }
 
-mode="${1:-}"
-[[ -n "$mode" ]] || { usage; exit 2; }
-shift
-case "$mode" in
-  stage)
-    stage_sources "$@"
-    ;;
-  build)
-    build_workspace "$@"
-    ;;
-  preflight)
-    [[ $# -le 1 ]] || { usage; exit 2; }
-    preflight "${1:-$default_workspace}"
-    ;;
-  dry-run)
-    [[ $# -le 1 ]] || { usage; exit 2; }
-    launch_navigation false "${1:-$default_workspace}"
-    ;;
-  armed)
-    [[ $# -ge 1 && $# -le 2 ]] || { usage; exit 2; }
-    [[ "$1" == "$armed_token" ]] || fail "armed mode requires exact token: $armed_token"
-    launch_navigation true "${2:-$default_workspace}"
-    ;;
-  *)
-    usage
-    exit 2
-    ;;
-esac
+main() {
+  local mode="${1:-}"
+  [[ -n "$mode" ]] || { usage; exit 2; }
+  shift
+  case "$mode" in
+    stage)
+      stage_sources "$@"
+      ;;
+    build)
+      build_workspace "$@"
+      ;;
+    preflight)
+      [[ $# -le 1 ]] || { usage; exit 2; }
+      preflight "${1:-$default_workspace}"
+      ;;
+    dry-run)
+      [[ $# -le 1 ]] || { usage; exit 2; }
+      launch_navigation false "${1:-$default_workspace}"
+      ;;
+    armed)
+      [[ $# -ge 1 && $# -le 2 ]] || { usage; exit 2; }
+      [[ "$1" == "$armed_token" ]] || fail "armed mode requires exact token: $armed_token"
+      launch_navigation true "${2:-$default_workspace}"
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

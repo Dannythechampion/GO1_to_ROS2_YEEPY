@@ -826,7 +826,8 @@ ros2 node list |
 ## 19. 레거시 AMCL armed 전환 예시 폐기
 
 과거 문서에는 `go1_existing_map.launch.py`를 armed 상태로 재실행하는 명령이 있었으나
-안전하지 않으므로 실행 예시를 제거했습니다. 현재 허용되는 명령은 dry-run뿐입니다.
+안전하지 않으므로 실행 예시를 제거했습니다. 이 레거시 AMCL 경로에서는 dry-run만
+허용되며, 실제 저속 시험은 문서 마지막의 `jetson_field_deploy.sh`만 사용합니다.
 
 ```bash
 export GO1_ROS2_WS="$HOME/ros2_ws"
@@ -1095,8 +1096,8 @@ ros2 topic echo /go1/control_state
 DRY-RUN
 ```
 
-현재 `DRY-RUN`은 정상이며 실제 동작으로 전환할 수 있는 launch는 이 문서에 없습니다.
-향후에는 다음 조건을 포함한 별도 armed launch의 설계와 Jetson 리뷰가 필요합니다.
+현재 `DRY-RUN`은 정상입니다. 직접 launch 인자를 바꿔 armed로 전환하지 말고, 문서
+마지막의 fail-closed Jetson runner와 현장 체크리스트만 사용합니다.
 
 ```text
 MID-360 장착 및 extrinsic 보정 완료
@@ -1104,7 +1105,7 @@ Unitree SDK 환경 source
 Go1 네트워크 연결 정상
 ```
 
-현재 pose-graph launch의 `arm` 값은 반드시 `false`로 유지하십시오.
+이 레거시 진단 단계의 pose-graph launch는 `arm:=false`로 유지하십시오.
 
 ---
 
