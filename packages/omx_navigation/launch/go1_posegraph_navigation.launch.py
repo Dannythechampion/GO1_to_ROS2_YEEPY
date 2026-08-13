@@ -431,7 +431,11 @@ def generate_launch_description() -> "LaunchDescription":
     go1_driver = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(go1_share, "launch", "go1_driver.launch.py")),
         condition=IfCondition(LaunchConfiguration("start_go1_driver")),
-        launch_arguments={"arm": LaunchConfiguration("arm"), "cmd_vel_topic": "/cmd_vel"}.items(),
+        launch_arguments={
+            "arm": LaunchConfiguration("arm"),
+            "armed_confirmation": LaunchConfiguration("armed_confirmation"),
+            "cmd_vel_topic": "/cmd_vel",
+        }.items(),
     )
 
     installed_maps = os.path.join(package_share, "maps", "hanyang_9f", "20260728_204825", "slam_toolbox")

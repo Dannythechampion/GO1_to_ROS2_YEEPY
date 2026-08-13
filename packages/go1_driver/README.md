@@ -37,12 +37,13 @@ zero after `cmd_timeout`.
 
 ## Armed mode
 
-Do not arm until the wrapper has been rebuilt for the new Jetson Python ABI,
-the dry-run checks pass, and the robot is supported with an emergency stop
-ready.
+Direct `go1_driver arm:=true` is intentionally rejected because it bypasses
+the localization gate, recording, ARM64 wrapper checks, and live sensor checks.
+After the full dry-run and emergency-stop checklist, use only the canonical
+field runner from the repository root:
 
 ```bash
-ros2 launch go1_driver go1_driver.launch.py arm:=true
+./migration/jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY /mnt/t500/go1_ros2_ws
 ```
 
 The configured `sdk_path` is under `/mnt/t500/go1_sdk`. It must contain the

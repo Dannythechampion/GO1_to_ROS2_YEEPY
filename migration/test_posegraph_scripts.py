@@ -24,6 +24,7 @@ STAGE = ROOT / "migration" / "stage_local_ros2_packages.sh"
 FIELD = ROOT / "migration" / "jetson_field_deploy.sh"
 ROOT_README = ROOT / "README.md"
 PACKAGE_README = ROOT / "packages" / "omx_navigation" / "README.md"
+DRIVER_README = ROOT / "packages" / "go1_driver" / "README.md"
 MIGRATION_README = ROOT / "migration" / "README.md"
 END_TO_END_README = ROOT / "docs" / "GO1_NAV2_END_TO_END.md"
 BASE_TOPICS = (
@@ -343,7 +344,7 @@ def test_old_runbooks_cannot_bypass_the_canonical_armed_runner():
     canonical = (
         "jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY"
     )
-    for document in (MIGRATION_README, END_TO_END_README):
+    for document in (MIGRATION_README, END_TO_END_README, DRIVER_README):
         text = document.read_text(encoding="utf-8")
         assert canonical in text
         assert "ros2 launch go1_driver go1_driver.launch.py arm:=true" not in text

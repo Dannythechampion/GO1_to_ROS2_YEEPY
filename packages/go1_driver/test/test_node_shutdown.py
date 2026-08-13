@@ -5,6 +5,15 @@ from types import ModuleType
 import pytest
 
 
+def test_driver_arming_requires_exact_field_confirmation(driver_module):
+    driver_module.validate_arming(False, "")
+    with pytest.raises(RuntimeError, match="armed_confirmation"):
+        driver_module.validate_arming(True, "")
+    with pytest.raises(RuntimeError, match="armed_confirmation"):
+        driver_module.validate_arming(True, "ALMOST")
+    driver_module.validate_arming(True, driver_module.ARMED_CONFIRMATION_TOKEN)
+
+
 @pytest.fixture
 def driver_module(monkeypatch):
     geometry = ModuleType("geometry_msgs.msg")

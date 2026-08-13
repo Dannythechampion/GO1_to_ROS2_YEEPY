@@ -22,6 +22,14 @@ except ImportError:  # Supports the pure-Python safety tests without ROS install
 
 
 NORMAL_SHUTDOWN_EXCEPTIONS = (KeyboardInterrupt, ExternalShutdownException)
+ARMED_CONFIRMATION_TOKEN = "GO1_ARMED_AND_ESTOP_READY"
+
+
+def validate_arming(arm: bool, armed_confirmation: str) -> None:
+    if arm and armed_confirmation != ARMED_CONFIRMATION_TOKEN:
+        raise RuntimeError(
+            "arm=true requires armed_confirmation=" + ARMED_CONFIRMATION_TOKEN
+        )
 
 
 class Go1Driver(Node):
@@ -31,6 +39,7 @@ class Go1Driver(Node):
         super().__init__("go1_driver")
 
         self.declare_parameter("arm", False)
+        self.declare_parameter("armed_confirmation", "")
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
         self.declare_parameter("applied_topic", "/go1/cmd_vel_applied")
         self.declare_parameter("state_topic", "/go1/control_state")
@@ -52,6 +61,9 @@ class Go1Driver(Node):
         self.declare_parameter("shutdown_stand_repeats", 30)
 
         self._arm = bool(self.get_parameter("arm").value)
+        validate_arming(
+            self._arm, str(self.get_parameter("armed_confirmation").value)
+        )
         publish_rate = float(self.get_parameter("publish_rate").value)
         self._cmd_timeout = float(self.get_parameter("cmd_timeout").value)
         self._shutdown_stand_repeats = int(
