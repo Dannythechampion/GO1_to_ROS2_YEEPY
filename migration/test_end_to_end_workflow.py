@@ -66,3 +66,11 @@ def test_fast_lio_build_selects_a_validated_low_latency_mode():
     assert "diagnostic|bounded" in text
     assert '--mode "$fast_lio_low_latency_mode"' in text
     assert "FAST_LIO_LOW_LATENCY_MODE must be diagnostic or bounded" in text
+
+
+def test_fast_lio_build_enables_nounset_only_after_ros_setup():
+    text = BUILD_FAST_LIO.read_text(encoding="utf-8")
+
+    assert text.startswith("#!/usr/bin/env bash\nset -eo pipefail\n")
+    assert text.index("source /opt/ros/humble/setup.bash") < text.index("set -u")
+    assert text.index('source "$workspace/install/setup.bash"') < text.index("set -u")

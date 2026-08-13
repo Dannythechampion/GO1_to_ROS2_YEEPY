@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 workspace="${GO1_ROS2_WS:-/mnt/t500/go1_ros2_ws}"
 livox_dir="$workspace/src/livox_ros_driver2"
@@ -67,6 +67,7 @@ colcon build \
 
 # shellcheck disable=SC1090
 source "$workspace/install/setup.bash"
+set -u
 ros2 pkg prefix livox_ros_driver2
 ros2 pkg prefix fast_lio
 
