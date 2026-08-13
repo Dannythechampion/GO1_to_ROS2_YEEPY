@@ -356,3 +356,24 @@ def test_old_runbooks_cannot_bypass_the_canonical_armed_runner():
     root_text = ROOT_README.read_text(encoding="utf-8")
     assert "실제 동작으로 전환할 수 있는 launch는 이 문서에 없습니다" not in root_text
     assert "현재 pose-graph launch의 `arm` 값은 반드시 `false`" not in root_text
+
+
+def test_verified_branch_readme_explains_main_delta_and_field_path():
+    text = ROOT_README.read_text(encoding="utf-8")
+    top = "\n".join(text.splitlines()[:300])
+    required = (
+        "codex/verified-posegraph-navigation",
+        "origin/main",
+        "localization_supervisor",
+        "cmd_vel_safety_gate",
+        "242 passed, 13 skipped",
+        "229 passed, 0 errors, 0 failures, 0 skipped",
+        "jetson_field_deploy.sh dry-run",
+        "jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY",
+        "Jetson AGX Orin",
+        "고정 출발점",
+        "dual goal mission",
+    )
+    for value in required:
+        assert value in top
+    assert "| 구분 | `origin/main` | 이 브랜치 |" in top

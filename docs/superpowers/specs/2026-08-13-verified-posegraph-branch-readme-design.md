@@ -27,8 +27,9 @@
 
 - WSL x86_64 검증을 Jetson ARM64·실센서·모터 성공으로 표현하지 않는다.
 - armed 실행은 canonical `jetson_field_deploy.sh` 명령만 안내한다.
-- `main`에 없는 기능을 추측하지 않고 `origin/main...HEAD`의 실제 변경만 기술한다.
-- 이미 통과한 최종 증거인 Windows `241 passed, 13 skipped`와 fresh staged Humble
+- `main`에 없는 기능을 추측하지 않고 최신 `origin/main`과 브랜치 HEAD를 직접
+  대조해 기술한다.
+- 이미 통과한 최종 증거인 Windows `242 passed, 13 skipped`와 fresh staged Humble
   `229 passed, 0 errors/failures/skipped`를 날짜와 함께 기록한다.
 
 ## 완료 기준

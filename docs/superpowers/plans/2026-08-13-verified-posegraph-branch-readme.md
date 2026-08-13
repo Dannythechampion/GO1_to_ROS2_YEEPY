@@ -26,7 +26,7 @@ required = (
     "origin/main",
     "localization_supervisor",
     "cmd_vel_safety_gate",
-    "241 passed, 13 skipped",
+    "242 passed, 13 skipped",
     "229 passed, 0 errors, 0 failures, 0 skipped",
     "jetson_field_deploy.sh dry-run",
     "jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY",
