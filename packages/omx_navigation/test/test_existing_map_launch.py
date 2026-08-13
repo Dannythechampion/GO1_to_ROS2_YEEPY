@@ -29,5 +29,6 @@ def test_scan_projection_is_low_load_and_body_framed():
         "angle_increment: 0.0174533",
         "scan_time: 0.10",
         "range_max: 10.0",
+        "queue_size: 1",
     ):
         assert expected in text

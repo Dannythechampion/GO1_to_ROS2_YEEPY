@@ -148,7 +148,7 @@ if rclpy is not None:
                 Odometry,
                 str(self.get_parameter("odom_topic").value),
                 self._odom_callback,
-                10,
+                qos_profile_sensor_data,
             )
             self.create_subscription(
                 PoseWithCovarianceStamped,

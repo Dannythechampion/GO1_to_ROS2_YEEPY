@@ -9,6 +9,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import LaserScan
+from nav_msgs.msg import Odometry
 
 from omx_navigation.localization_supervisor import LocalizationSupervisor
 
@@ -39,6 +40,32 @@ def test_localization_supervisor_receives_best_effort_laser_scan():
             executor.spin_once(timeout_sec=0.05)
 
         assert supervisor._scan is not None
+    finally:
+        executor.remove_node(publisher_node)
+        executor.remove_node(supervisor)
+        publisher_node.destroy_node()
+        supervisor.destroy_node()
+        rclpy.shutdown()
+
+
+def test_localization_supervisor_receives_best_effort_odometry():
+    rclpy.init()
+    supervisor = LocalizationSupervisor()
+    publisher_node = Node("best_effort_odom_test_publisher")
+    executor = SingleThreadedExecutor()
+    executor.add_node(supervisor)
+    executor.add_node(publisher_node)
+    publisher = publisher_node.create_publisher(
+        Odometry, "/Odometry", rclpy.qos.qos_profile_sensor_data
+    )
+    try:
+        deadline = time.monotonic() + 2.0
+        while supervisor._odom is None and time.monotonic() < deadline:
+            message = Odometry()
+            message.header.stamp = publisher_node.get_clock().now().to_msg()
+            publisher.publish(message)
+            executor.spin_once(timeout_sec=0.05)
+        assert supervisor._odom is not None
     finally:
         executor.remove_node(publisher_node)
         executor.remove_node(supervisor)
