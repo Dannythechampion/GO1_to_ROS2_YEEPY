@@ -10,6 +10,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+.worktrees/
 
 # ROS data and runtime output
 *.bag
