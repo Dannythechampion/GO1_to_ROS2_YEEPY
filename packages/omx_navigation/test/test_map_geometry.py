@@ -46,6 +46,14 @@ def test_goal_clearance_treats_outside_map_as_unknown():
     assert validate_goal_pose(grid, 0.25, 0.25, 0.0, 1.0, 0.20).accepted
 
 
+def test_goal_clearance_uses_continuous_distance_to_obstacle_cell_edge():
+    data = [0] * 9
+    data[0] = 100
+    grid = make_map(width=3, height=3, resolution=1.0, data=data)
+    assert not validate_goal_pose(grid, 1.01, 0.5, 0.0, 1.0, 0.35).accepted
+    assert validate_goal_pose(grid, 1.36, 0.5, 0.0, 1.0, 0.35).accepted
+
+
 @pytest.mark.parametrize(
     "quaternion",
     [

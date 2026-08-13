@@ -63,6 +63,32 @@ class OccupancyMap:
             self.height * self.resolution - local_y,
         )
 
+    def has_hazard_within(self, x: float, y: float, clearance: float) -> bool:
+        """Check exact point-to-cell-area distance in the local clearance window."""
+        local_x, local_y = self.world_to_local(x, y)
+        radius = max(0.0, float(clearance))
+        first_column = max(0, math.floor((local_x - radius) / self.resolution))
+        last_column = min(
+            self.width - 1, math.floor((local_x + radius) / self.resolution)
+        )
+        first_row = max(0, math.floor((local_y - radius) / self.resolution))
+        last_row = min(
+            self.height - 1, math.floor((local_y + radius) / self.resolution)
+        )
+        for row in range(first_row, last_row + 1):
+            bottom = row * self.resolution
+            top = bottom + self.resolution
+            for column in range(first_column, last_column + 1):
+                if self.occupancy(column, row) >= 0 and self.occupancy(column, row) < 50:
+                    continue
+                left = column * self.resolution
+                right = left + self.resolution
+                dx = max(left - local_x, 0.0, local_x - right)
+                dy = max(bottom - local_y, 0.0, local_y - top)
+                if math.hypot(dx, dy) < radius:
+                    return True
+        return False
+
     def _build_distance_field(self, *, include_unknown: bool) -> Tuple[float, ...]:
         count = self.width * self.height
         distances = [math.inf] * count
@@ -143,7 +169,10 @@ def validate_goal_pose(
         return GoalValidation(False, "goal is in unknown space")
     if occupancy >= 50:
         return GoalValidation(False, "goal cell is occupied")
-    if min(grid.obstacle_distance(*cell), grid.boundary_distance(x, y)) < minimum_clearance:
+    if (
+        grid.boundary_distance(x, y) < minimum_clearance
+        or grid.has_hazard_within(x, y, minimum_clearance)
+    ):
         return GoalValidation(False, "goal clearance is below minimum")
     return GoalValidation(True, "accepted", yaw)
 

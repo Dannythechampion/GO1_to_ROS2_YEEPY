@@ -6,6 +6,7 @@ from omx_navigation.localization_state import LocalizationState, LocalizationSta
 from omx_navigation.localization_supervisor import (
     initial_pose_values,
     odometry_is_stationary,
+    permitted_command_is_fresh,
     status_line,
 )
 from omx_navigation.pose_config import PlanarPose
@@ -34,3 +35,10 @@ def test_startup_stationarity_contract_is_strict():
     assert odometry_is_stationary(0.01, 0.0, 0.01)
     assert not odometry_is_stationary(0.011, 0.0, 0.0)
     assert not odometry_is_stationary(0.0, 0.0, 0.011)
+
+
+def test_restart_suppression_requires_a_fresh_permitted_command():
+    assert permitted_command_is_fresh(True, received_at=1.0, now=1.2)
+    assert not permitted_command_is_fresh(True, received_at=1.0, now=1.31)
+    assert not permitted_command_is_fresh(False, received_at=1.0, now=1.1)
+    assert not permitted_command_is_fresh(True, received_at=2.0, now=1.9)

@@ -49,10 +49,23 @@ def odometry_is_stationary(linear_x: float, linear_y: float, angular_z: float) -
     ) <= 0.01
 
 
+def permitted_command_is_fresh(
+    nonzero: bool,
+    *,
+    received_at: Optional[float],
+    now: float,
+    timeout: float = 0.30,
+) -> bool:
+    if not nonzero or received_at is None:
+        return False
+    age = float(now) - float(received_at)
+    return 0.0 <= age <= timeout
+
+
 try:
     import rclpy
     from builtin_interfaces.msg import Time as TimeMessage
-    from geometry_msgs.msg import PoseWithCovarianceStamped
+    from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
     from nav_msgs.msg import OccupancyGrid, Odometry
     from rclpy.duration import Duration
     from rclpy.node import Node
@@ -97,6 +110,8 @@ if rclpy is not None:
             self._scan_score: Optional[ScanScore] = None
             self._consecutive_scans = 0
             self._last_tf_stamp = 0.0
+            self._safe_command_nonzero = False
+            self._safe_command_received_at: Optional[float] = None
 
             status_qos = QoSProfile(depth=1)
             status_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -136,6 +151,7 @@ if rclpy is not None:
                 self._amcl_callback,
                 10,
             )
+            self.create_subscription(Twist, "/cmd_vel_safe", self._safe_cmd_callback, 10)
             self.create_service(Trigger, "/localization/reset", self._reset_callback)
             self._tf_buffer = Buffer()
             self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -205,9 +221,10 @@ if rclpy is not None:
             self._odom = message
             pose = message.pose.pose
             twist = message.twist.twist
-            commanded = (
-                math.hypot(twist.linear.x, twist.linear.y) > 0.01
-                or abs(twist.angular.z) > 0.01
+            commanded = permitted_command_is_fresh(
+                self._safe_command_nonzero,
+                received_at=self._safe_command_received_at,
+                now=time.monotonic(),
             )
             restarted = self._core.observe_odometry(
                 self._seconds(message.header.stamp),
@@ -224,6 +241,13 @@ if rclpy is not None:
             )
             if restarted:
                 self._publish_status()
+
+        def _safe_cmd_callback(self, message: Twist) -> None:
+            self._safe_command_nonzero = (
+                math.hypot(message.linear.x, message.linear.y) > 0.01
+                or abs(message.angular.z) > 0.01
+            )
+            self._safe_command_received_at = time.monotonic()
 
         def _amcl_callback(self, message: PoseWithCovarianceStamped) -> None:
             self._amcl = message
@@ -296,7 +320,7 @@ if rclpy is not None:
             seed_tf_ok = (
                 self._scan is not None and self._seed_tf(self._scan.header.stamp)
             )
-            inputs_available = (
+            seed_inputs_available = (
                 self._map is not None
                 and self._scan is not None
                 and self._odom is not None
@@ -307,7 +331,11 @@ if rclpy is not None:
                 and 0.0 <= now - scan_stamp <= 0.30
                 and 0.0 <= now - odom_stamp <= 0.30
             )
-            self._core.set_inputs_available(inputs_available)
+            if self._core.state in {
+                LocalizationState.WAITING_FOR_INPUTS,
+                LocalizationState.RELOCALIZING,
+            }:
+                self._core.set_inputs_available(seed_inputs_available)
             seed = self._core.consume_seed_request(now)
             if seed is not None:
                 self._publish_seed(seed)
@@ -339,16 +367,25 @@ if rclpy is not None:
                         covariance_x=covariance[0],
                         covariance_y=covariance[7],
                         covariance_yaw=covariance[35],
-                        pose_age=max(0.0, now - amcl_stamp),
-                        scan_age=max(0.0, now - scan_stamp),
-                        odom_age=max(0.0, now - odom_stamp),
-                        tf_age=max(0.0, now - self._last_tf_stamp),
+                        pose_age=now - amcl_stamp,
+                        scan_age=now - scan_stamp,
+                        odom_age=now - odom_stamp,
+                        tf_age=now - self._last_tf_stamp,
                         tf_ok=tf_ok,
                         valid_beams=self._scan_score.valid_beams,
                         consecutive_scans=self._consecutive_scans,
                         median_residual=self._scan_score.median_residual,
                         p80_residual=self._scan_score.p80_residual,
+                        amcl_frame=self._amcl.header.frame_id,
                     )
+                )
+            elif self._core.state in {
+                LocalizationState.VERIFYING,
+                LocalizationState.READY,
+                LocalizationState.DEGRADED,
+            }:
+                self._core.mark_runtime_unavailable(
+                    "required localization observation is unavailable"
                 )
             self._publish_status()
 

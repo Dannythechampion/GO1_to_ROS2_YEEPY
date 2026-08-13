@@ -178,7 +178,29 @@ def test_scan_timestamp_rollback_enters_relocalizing_without_reseed():
     assert not core.observe_scan_stamp(2.0)
     assert core.observe_scan_stamp(1.9)
     assert core.state is LocalizationState.RELOCALIZING
+    core.set_inputs_available(False)
+    assert core.state is LocalizationState.RELOCALIZING
     assert core.consume_seed_request(2.1) is None
+
+
+def test_wrong_amcl_frame_and_future_observation_fail_closed():
+    core = seeded_core()
+    wrong_frame = good_observation(now=1.0)
+    wrong_frame = LocalizationObservation(**{**wrong_frame.__dict__, "amcl_frame": "odom"})
+    assert "frame" in core.observe(wrong_frame).reason
+    future = good_observation(now=1.1)
+    future = LocalizationObservation(**{**future.__dict__, "scan_age": -0.01})
+    assert "future" in core.observe(future).reason
+
+
+def test_missing_runtime_observation_clears_ready_without_reseeding():
+    core = seeded_core()
+    core.observe(good_observation(now=1.0))
+    assert core.observe(good_observation(now=3.1)).ready
+    status = core.mark_runtime_unavailable("scan transform unavailable")
+    assert not status.ready
+    assert status.state is LocalizationState.DEGRADED
+    assert core.consume_seed_request(3.2) is None
 
 
 def test_explicit_reset_clears_ready_and_requests_reseed():

@@ -41,6 +41,7 @@ class LocalizationObservation:
     consecutive_scans: int
     median_residual: float
     p80_residual: float
+    amcl_frame: str = "map"
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,10 @@ class LocalizationSupervisorCore:
     def set_inputs_available(self, available: bool) -> LocalizationStatus:
         if self.start_pose is None:
             return self.status()
+        if self.state is LocalizationState.RELOCALIZING and not self._reseed_authorized:
+            self._ready = False
+            self.reason = "reposition at start and request localization reset"
+            return self.status()
         if not available:
             self._ready = False
             self.state = LocalizationState.WAITING_FOR_INPUTS
@@ -101,9 +106,6 @@ class LocalizationSupervisorCore:
         if not self.initial_pose_arm:
             self.state = LocalizationState.WAITING_FOR_INPUTS
             self.reason = "automatic initial pose seeding is disarmed"
-            return self.status()
-        if self.state is LocalizationState.RELOCALIZING and not self._reseed_authorized:
-            self.reason = "reposition at start and request localization reset"
             return self.status()
         if self.state in {
             LocalizationState.WAITING_FOR_INPUTS,
@@ -164,17 +166,39 @@ class LocalizationSupervisorCore:
             self.reason = "readiness hold time not yet satisfied"
         return self.status()
 
+    def mark_runtime_unavailable(self, reason: str) -> LocalizationStatus:
+        if self.state not in {
+            LocalizationState.VERIFYING,
+            LocalizationState.READY,
+            LocalizationState.DEGRADED,
+        }:
+            return self.status()
+        self._ready = False
+        self._good_since = None
+        self.state = (
+            LocalizationState.DEGRADED
+            if self._initial_ready_completed
+            else LocalizationState.VERIFYING
+        )
+        self.reason = str(reason)
+        return self.status()
+
     def _failure_reason(self, observation: LocalizationObservation) -> Optional[str]:
         if self._seed_time is None or observation.amcl_stamp <= self._seed_time:
             return "amcl pose predates current seed"
+        if observation.amcl_frame != "map":
+            return "AMCL pose frame is not map"
         if not observation.tf_ok:
             return "required TF chain is unavailable"
-        if max(
+        ages = (
             observation.pose_age,
             observation.scan_age,
             observation.odom_age,
             observation.tf_age,
-        ) > 0.30:
+        )
+        if min(ages) < 0.0:
+            return "localization data timestamp is in the future"
+        if max(ages) > 0.30:
             return "required localization data is stale"
         if (
             observation.covariance_x > 0.04
