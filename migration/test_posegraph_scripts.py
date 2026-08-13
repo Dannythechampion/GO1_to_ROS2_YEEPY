@@ -248,3 +248,32 @@ def test_stage_copies_posegraph_runtime_files_and_maps():
     assert "verify_posegraph_navigation.sh" in text
     assert "jetson_field_deploy.sh" in text
     assert FIELD.is_file()
+
+
+def test_field_runner_has_fail_closed_jetson_contract():
+    text = FIELD.read_text(encoding="utf-8")
+    assert "set -euo pipefail" in text
+    for value in (
+        "aarch64", 'VERSION_ID="22.04"', "ROS_DISTRO", "humble",
+        "robot_interface", "ldd", "livox_ros_driver2", "fast_lio",
+        "pointcloud_to_laserscan", ".posegraph", ".data",
+        "GO1_ARMED_AND_ESTOP_READY", "arm:=false", "arm:=true",
+        "start_go1_driver:=true", "record_localization:=true",
+    ):
+        assert value in text
+    assert "verify_nonzero_test_results" in text
+    subprocess.run([_bash(), "-n", str(FIELD)], check=True)
+
+
+def test_field_runner_rejects_bad_armed_token_before_preflight():
+    bash = _bash()
+    with TemporaryDirectory() as temp_dir:
+        result = subprocess.run(
+            [bash, str(FIELD), "armed", "WRONG_TOKEN", str(Path(temp_dir) / "ws")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode != 0
+        assert "GO1_ARMED_AND_ESTOP_READY" in result.stderr
+        assert "not implemented" not in result.stderr
