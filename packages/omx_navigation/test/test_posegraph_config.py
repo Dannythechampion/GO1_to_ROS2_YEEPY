@@ -45,3 +45,9 @@ def test_posegraph_nav2_has_no_amcl_and_uses_safe_footprint():
         assert params["footprint"] == "[[0.37, 0.19], [0.37, -0.19], [-0.37, -0.19], [-0.37, 0.19]]"
         assert params["transform_tolerance"] == 0.5
     assert config["controller_server"]["ros__parameters"]["FollowPath"]["BaseObstacle.scale"] == 0.02
+
+
+def test_velocity_smoother_preserves_default_backup_recovery():
+    smoother = load_nav2()["velocity_smoother"]["ros__parameters"]
+    assert smoother["min_velocity"][0] <= -0.05
+    assert smoother["max_velocity"][0] >= 0.05

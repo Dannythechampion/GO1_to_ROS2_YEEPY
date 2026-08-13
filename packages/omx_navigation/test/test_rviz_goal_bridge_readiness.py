@@ -26,12 +26,18 @@ class GoalHandle:
 
     def __init__(self):
         self.cancelled = False
-        self.cancel_future = Future()
+        self.cancel_futures = []
         self.result_future = Future(SimpleNamespace(status=0))
 
     def cancel_goal_async(self):
         self.cancelled = True
-        return self.cancel_future
+        future = Future(SimpleNamespace(goals_canceling=[1]))
+        self.cancel_futures.append(future)
+        return future
+
+    @property
+    def cancel_future(self):
+        return self.cancel_futures[-1]
 
     def get_result_async(self):
         return self.result_future
@@ -57,6 +63,8 @@ class ActionClient:
 class Node:
     def __init__(self, *_args):
         self.subscriptions = []
+        self.timers = []
+        self.clock = SimpleNamespace(seconds=0.0)
         self.logger = SimpleNamespace(info=lambda *_: None, error=lambda *_: None, warning=lambda *_: None)
 
     def declare_parameter(self, _name, default):
@@ -67,11 +75,18 @@ class Node:
         self.subscriptions.append(result)
         return result
 
+    def create_timer(self, period, callback):
+        result = SimpleNamespace(period=period, callback=callback)
+        self.timers.append(result)
+        return result
+
     def get_logger(self):
         return self.logger
 
     def get_clock(self):
-        return SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=0))
+        return SimpleNamespace(
+            now=lambda: SimpleNamespace(nanoseconds=round(self.clock.seconds * 1_000_000_000))
+        )
 
 
 @pytest.fixture
@@ -178,3 +193,52 @@ def test_goal_cancel_acknowledgement_keeps_handle_active_until_result(bridge_mod
     assert len(node._action_client.sent) == 1
     handle.result_future.complete()
     assert node._active_goal_handle is None
+
+
+def test_pending_goal_is_cancelled_after_readiness_epoch_changes(bridge_module):
+    node = bridge_module.RvizGoalBridge()
+    node._on_ready(SimpleNamespace(data=True))
+    node._on_goal_pose(pose())
+
+    node._on_ready(SimpleNamespace(data=False))
+    node._on_ready(SimpleNamespace(data=True))
+    response = node._action_client.responses[0]
+    response.value = GoalHandle()
+    response.complete()
+
+    assert response.value.cancelled is True
+    assert node._active_goal_handle is response.value
+
+
+def test_cancel_rejection_is_retried_until_nav2_finishes_goal(bridge_module):
+    node = bridge_module.RvizGoalBridge()
+    node._on_ready(SimpleNamespace(data=True))
+    node._on_goal_pose(pose())
+    response = node._action_client.responses[0]
+    response.value = GoalHandle()
+    response.complete()
+    handle = response.value
+
+    node._on_ready(SimpleNamespace(data=False))
+    assert len(handle.cancel_futures) == 1
+    handle.cancel_future.value = SimpleNamespace(goals_canceling=[])
+    handle.cancel_future.complete()
+    node.timers[0].callback()
+
+    assert len(handle.cancel_futures) == 2
+    assert node._active_goal_handle is handle
+
+
+def test_ready_heartbeat_timeout_revokes_and_cancels_active_goal(bridge_module):
+    node = bridge_module.RvizGoalBridge()
+    node._on_ready(SimpleNamespace(data=True))
+    node._on_goal_pose(pose())
+    response = node._action_client.responses[0]
+    response.value = GoalHandle()
+    response.complete()
+
+    node.clock.seconds = 0.31
+    node.timers[0].callback()
+
+    assert node._goal_gate.ready is False
+    assert response.value.cancelled is True

@@ -71,6 +71,8 @@ class LocalizationSupervisor(Node):
     def __init__(self) -> None:
         super().__init__("localization_supervisor")
         self._input_max_age = float(self.declare_parameter("input_max_age", 0.50).value)
+        self._source_clock_skew = float(self.declare_parameter("source_clock_skew", 0.05).value)
+        self._slam_tf_future_offset = float(self.declare_parameter("slam_tf_future_offset", 0.50).value)
         self._diagnostics_csv = str(self.declare_parameter("diagnostics_csv", "").value)
         self._window = SearchWindow(
             translation_radius=float(self.declare_parameter("coarse_search_translation_radius", 3.0).value),
@@ -86,7 +88,9 @@ class LocalizationSupervisor(Node):
         self._points = None
         self._map_received_at = None
         self._scan_received_at = None
+        self._scan_source_stamp = None
         self._initial_pose = None
+        self._initial_pose_epoch = None
         self._generation = 0
         self._scan_sequence = 0
         self._required_scan_sequence = None
@@ -105,8 +109,10 @@ class LocalizationSupervisor(Node):
         self._quality_error_latched = False
         self._distance_field = None
         self._quality_received_at = None
+        self._quality_source_stamp = None
         self._slam_pose = None
         self._slam_received_at = None
+        self._slam_source_stamp = None
         self._slam_pose_handshake = False
         self._slam_epoch = None
         self._map_camera_pose = None
@@ -114,6 +120,8 @@ class LocalizationSupervisor(Node):
         self._current_base_pose = None
         self._map_camera_received_at = None
         self._camera_base_received_at = None
+        self._map_camera_source_stamp = None
+        self._camera_base_source_stamp = None
         self._last_map_camera_pose = None
         self._tf_position_jump = 0.0
         self._tf_yaw_jump = 0.0
@@ -164,18 +172,25 @@ class LocalizationSupervisor(Node):
             self._quality_received_at = None
 
     def _on_scan(self, message: LaserScan) -> None:
+        now = self._now()
+        source_stamp = self._source_stamp(message, None)
         try:
+            if source_stamp is None or not self._source_event_is_current(source_stamp, now):
+                raise ValueError("scan source stamp is invalid or stale")
             self._points = laser_ranges_to_points(
                 message.ranges, message.angle_min, message.angle_increment,
                 message.range_min, message.range_max, self._window.max_scan_points,
             )
-            self._scan_received_at = self._now()
+            self._scan_received_at = now
+            self._scan_source_stamp = source_stamp
             self._scan_sequence += 1
-            self._refresh_continuous_quality(self._scan_received_at)
+            self._refresh_continuous_quality(now)
         except (TypeError, ValueError):
             self._points = None
             self._scan_received_at = None
+            self._scan_source_stamp = None
             self._quality_received_at = None
+            self._quality_source_stamp = None
         self._try_start_search()
 
     def _on_initial_pose(self, message: PoseWithCovarianceStamped) -> None:
@@ -216,6 +231,7 @@ class LocalizationSupervisor(Node):
             self._last_transition = self._machine.reject_initial_pose(now)
             return
         self._initial_pose = (initial, covariance)
+        self._initial_pose_epoch = now
         self._last_transition = self._machine.receive_initial_pose(now)
 
     def _begin_initial_pose_generation(self) -> None:
@@ -225,10 +241,12 @@ class LocalizationSupervisor(Node):
             self._required_scan_sequence = self._scan_sequence
             self._pending_search = None
             self._initial_pose = None
+            self._initial_pose_epoch = None
             if self._search_future is not None:
                 self._search_future.cancel()
         self._slam_pose = None
         self._slam_received_at = None
+        self._slam_source_stamp = None
         self._slam_pose_handshake = False
         self._slam_epoch = None
         self._reset_tf_tracking()
@@ -239,43 +257,60 @@ class LocalizationSupervisor(Node):
         self._ambiguous = False
         self._quality_error_latched = False
         self._quality_received_at = None
+        self._quality_source_stamp = None
         self._odom_reset = False
 
     def _on_slam_pose(self, message: PoseWithCovarianceStamped) -> None:
         if message.header.frame_id != "map":
             return
         try:
+            now = self._now()
+            source_stamp = self._source_stamp(message, None)
+            if (
+                source_stamp is None
+                or self._slam_epoch is None
+                or not self._source_event_is_current(source_stamp, now, self._slam_epoch)
+            ):
+                raise ValueError("SLAM pose source stamp is invalid or stale")
             pose = message.pose.pose
             current = Pose2D(pose.position.x, pose.position.y, quaternion_to_yaw(
                 pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w
             ))
-            now = self._now()
-            if self._slam_epoch is None or now < self._slam_epoch:
-                return
             if self._grid is not None and self._grid.world_to_cell(current.x, current.y) is None:
                 self._slam_pose = None
                 self._slam_received_at = None
+                self._slam_source_stamp = None
                 self._slam_pose_handshake = False
                 self._last_transition = self._machine.reject_initial_pose(now)
                 return
             self._slam_pose = current
             self._slam_received_at = now
+            self._slam_source_stamp = source_stamp
             self._slam_pose_handshake = True
             self._refresh_continuous_quality(now)
         except (TypeError, ValueError):
             self._slam_pose = None
             self._slam_received_at = None
+            self._slam_source_stamp = None
             self._slam_pose_handshake = False
             self._quality_received_at = None
 
     def _on_odom(self, message: Odometry) -> None:
         now = self._now()
-        position = message.pose.pose.position
-        current = (float(position.x), float(position.y))
-        if not all(math.isfinite(value) for value in current):
+        source_stamp = self._source_stamp(message, None)
+        try:
+            position = message.pose.pose.position
+            current = (float(position.x), float(position.y))
+            if (
+                not all(math.isfinite(value) for value in current)
+                or source_stamp is None
+                or not self._source_event_is_current(source_stamp, now, self._slam_epoch)
+            ):
+                raise ValueError("odometry source data is invalid or stale")
+        except (AttributeError, TypeError, ValueError):
             self._odom_received_at = None
+            self._odom_source_stamp = None
             return
-        source_stamp = self._source_stamp(message, now)
         if self._odom_position is not None and self._odom_source_stamp is not None:
             elapsed = source_stamp - self._odom_source_stamp
             speed = math.hypot(current[0] - self._odom_position[0], current[1] - self._odom_position[1]) / elapsed if elapsed > 0.0 else math.inf
@@ -292,10 +327,17 @@ class LocalizationSupervisor(Node):
             child = getattr(transform, "child_frame_id", "")
             if parent == "map" and child == self._camera_init_frame:
                 try:
+                    raw_source_stamp = self._source_stamp(transform, None)
+                    if raw_source_stamp is None:
+                        raise ValueError("map transform source stamp is invalid")
+                    source_stamp = raw_source_stamp - self._slam_tf_future_offset
+                    if not self._source_event_is_current(source_stamp, now, self._slam_epoch):
+                        raise ValueError("map transform source stamp is stale")
                     current = self._planar_tf(transform)
                 except (AttributeError, TypeError, ValueError):
                     self._map_camera_pose = None
                     self._map_camera_received_at = None
+                    self._map_camera_source_stamp = None
                     self._current_base_pose = None
                     continue
                 if self._last_map_camera_pose is not None:
@@ -315,15 +357,21 @@ class LocalizationSupervisor(Node):
                 self._last_map_camera_pose = current
                 self._map_camera_pose = current
                 self._map_camera_received_at = now
+                self._map_camera_source_stamp = source_stamp
             elif parent == self._camera_init_frame and child == self._base_frame:
                 try:
+                    source_stamp = self._source_stamp(transform, None)
+                    if source_stamp is None or not self._source_event_is_current(source_stamp, now, self._slam_epoch):
+                        raise ValueError("base transform source stamp is invalid or stale")
                     self._camera_base_pose = self._planar_tf(transform)
                 except (AttributeError, TypeError, ValueError):
                     self._camera_base_pose = None
                     self._camera_base_received_at = None
+                    self._camera_base_source_stamp = None
                     self._current_base_pose = None
                     continue
                 self._camera_base_received_at = now
+                self._camera_base_source_stamp = source_stamp
         self._compose_current_base_pose()
         self._refresh_continuous_quality(now)
 
@@ -424,6 +472,22 @@ class LocalizationSupervisor(Node):
         )
         if self._last_transition.republish_initial_pose and self._refined_pose is not None and self._initial_pose is not None:
             self._publish_refined_pose(self._refined_pose, self._initial_pose[1])
+        elif self._last_transition.republish_initial_pose and self._initial_pose is not None:
+            self._prepare_coarse_search_retry()
+
+    def _prepare_coarse_search_retry(self) -> None:
+        """Require a newer scan before retrying a failed coarse alignment."""
+        with self._search_lock:
+            self._completed_search_generation = None
+            self._required_scan_sequence = self._scan_sequence
+            self._pending_search = None
+        self._search_pose_available = False
+        self._quality_error_latched = False
+        self._overlap = 0.0
+        self._ambiguity_margin = 0.0
+        self._ambiguous = False
+        self._quality_received_at = None
+        self._quality_source_stamp = None
 
     def _observation(self, now: float, *, pose_available: bool | None = None) -> QualityObservation:
         if pose_available is None:
@@ -461,9 +525,11 @@ class LocalizationSupervisor(Node):
         self._slam_epoch = self._now()
         self._slam_pose = None
         self._slam_received_at = None
+        self._slam_source_stamp = None
         self._slam_pose_handshake = False
         self._reset_tf_tracking()
         self._quality_received_at = None
+        self._quality_source_stamp = None
         self._overlap = 0.0
 
     def _publish_status(self) -> None:
@@ -498,11 +564,17 @@ class LocalizationSupervisor(Node):
         return (
             self._grid is not None
             and self._scan_received_at is not None
+            and self._scan_source_stamp is not None
             and self._odom_received_at is not None
+            and self._odom_source_stamp is not None
             and self._quality_received_at is not None
+            and self._quality_source_stamp is not None
             and 0.0 <= now - self._scan_received_at <= self._input_max_age
             and 0.0 <= now - self._odom_received_at <= self._input_max_age
             and 0.0 <= now - self._quality_received_at <= self._input_max_age
+            and self._source_is_fresh(self._scan_source_stamp, now)
+            and self._source_is_fresh(self._odom_source_stamp, now)
+            and self._source_is_fresh(self._quality_source_stamp, now)
         )
 
     def _refresh_continuous_quality(self, now: float) -> None:
@@ -514,11 +586,13 @@ class LocalizationSupervisor(Node):
             or self._current_base_pose is None
             or self._slam_epoch is None
             or self._scan_received_at is None
-            or self._scan_received_at < self._slam_epoch
+            or self._scan_source_stamp is None
+            or self._scan_source_stamp < self._slam_epoch
             or not self._slam_pose_fresh(now)
             or not self._tf_fresh(now)
         ):
             self._quality_received_at = None
+            self._quality_source_stamp = None
             return
         try:
             quality = score_pose(
@@ -530,9 +604,15 @@ class LocalizationSupervisor(Node):
             )
         except (TypeError, ValueError):
             self._quality_received_at = None
+            self._quality_source_stamp = None
             return
         self._overlap = quality.overlap
         self._quality_received_at = now
+        self._quality_source_stamp = min(
+            self._scan_source_stamp,
+            self._map_camera_source_stamp,
+            self._camera_base_source_stamp,
+        )
 
     def _slam_pose_fresh(self, now: float) -> bool:
         return (
@@ -546,10 +626,16 @@ class LocalizationSupervisor(Node):
             self._slam_epoch is not None
             and self._map_camera_received_at is not None
             and self._camera_base_received_at is not None
+            and self._map_camera_source_stamp is not None
+            and self._camera_base_source_stamp is not None
             and self._map_camera_received_at >= self._slam_epoch
             and self._camera_base_received_at >= self._slam_epoch
+            and self._map_camera_source_stamp >= self._slam_epoch
+            and self._camera_base_source_stamp >= self._slam_epoch
             and 0.0 <= now - self._map_camera_received_at <= self._input_max_age
             and 0.0 <= now - self._camera_base_received_at <= self._input_max_age
+            and self._source_is_fresh(self._map_camera_source_stamp, now)
+            and self._source_is_fresh(self._camera_base_source_stamp, now)
         )
 
     @staticmethod
@@ -582,13 +668,15 @@ class LocalizationSupervisor(Node):
         self._current_base_pose = None
         self._map_camera_received_at = None
         self._camera_base_received_at = None
+        self._map_camera_source_stamp = None
+        self._camera_base_source_stamp = None
         self._last_map_camera_pose = None
         self._tf_position_jump = 0.0
         self._tf_yaw_jump = 0.0
         self._tf_conflict = False
 
     @staticmethod
-    def _source_stamp(message, fallback: float) -> float:
+    def _source_stamp(message, fallback: float | None) -> float | None:
         stamp = getattr(getattr(message, "header", None), "stamp", None)
         seconds = getattr(stamp, "sec", 0) if stamp is not None else 0
         nanoseconds = getattr(stamp, "nanosec", 0) if stamp is not None else 0
@@ -601,6 +689,24 @@ class LocalizationSupervisor(Node):
             return fallback
         value = seconds + nanoseconds / 1_000_000_000.0
         return value if math.isfinite(value) and value > 0.0 else fallback
+
+    def _source_event_is_current(
+        self,
+        source_stamp: float,
+        now: float,
+        epoch: float | None = None,
+    ) -> bool:
+        required_epoch = epoch
+        if required_epoch is None:
+            required_epoch = self._slam_epoch if self._slam_epoch is not None else self._initial_pose_epoch
+        return (
+            self._source_is_fresh(source_stamp, now)
+            and (required_epoch is None or source_stamp >= required_epoch)
+        )
+
+    def _source_is_fresh(self, source_stamp: float, now: float) -> bool:
+        age = now - source_stamp
+        return -self._source_clock_skew <= age <= self._input_max_age
 
     def _has_amcl(self) -> bool:
         return any(str(name).strip("/").split("/")[-1] == "amcl" for name in self.get_node_names())

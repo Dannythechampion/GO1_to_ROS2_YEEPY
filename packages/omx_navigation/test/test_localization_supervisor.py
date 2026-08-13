@@ -120,8 +120,13 @@ def supervisor_module(monkeypatch):
     sys.modules.pop("omx_navigation.localization_supervisor", None)
 
 
-def header(frame_id="map"):
-    return SimpleNamespace(frame_id=frame_id, stamp=SimpleNamespace(sec=0, nanosec=0))
+def ros_stamp(seconds):
+    whole = math.floor(seconds)
+    return SimpleNamespace(sec=whole, nanosec=round((seconds - whole) * 1_000_000_000))
+
+
+def header(frame_id="map", stamp=0.000001):
+    return SimpleNamespace(frame_id=frame_id, stamp=ros_stamp(stamp))
 
 
 def pose_message(x=0.0, y=0.0, frame_id="map", covariance=None):
@@ -156,23 +161,23 @@ def map_message(*, occupied_world=()):
     )
 
 
-def scan_message(*, ranges=(1.0,)):
+def scan_message(*, ranges=(1.0,), stamp=0.000001):
     return SimpleNamespace(
-        header=header("laser"), ranges=list(ranges), angle_min=0.0, angle_increment=0.0,
+        header=header("laser", stamp), ranges=list(ranges), angle_min=0.0, angle_increment=0.0,
         range_min=0.1, range_max=10.0,
     )
 
 
-def odom_message(x=0.0, y=0.0, *, sec=0, nanosec=0):
+def odom_message(x=0.0, y=0.0, *, stamp=0.000001):
     return SimpleNamespace(
-        header=SimpleNamespace(stamp=SimpleNamespace(sec=sec, nanosec=nanosec)),
+        header=SimpleNamespace(stamp=ros_stamp(stamp)),
         pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(x=x, y=y))),
     )
 
 
-def slam_message(x=0.0, y=0.0, yaw=0.0):
+def slam_message(x=0.0, y=0.0, yaw=0.0, *, stamp=0.000001):
     return SimpleNamespace(
-        header=header(),
+        header=header(stamp=stamp),
         pose=SimpleNamespace(
             pose=SimpleNamespace(
                 position=SimpleNamespace(x=x, y=y),
@@ -184,9 +189,9 @@ def slam_message(x=0.0, y=0.0, yaw=0.0):
     )
 
 
-def tf_edge(parent, child, x=0.0, y=0.0, yaw=0.0):
+def tf_edge(parent, child, x=0.0, y=0.0, yaw=0.0, *, stamp=0.000001):
     return SimpleNamespace(
-        header=SimpleNamespace(frame_id=parent),
+        header=SimpleNamespace(frame_id=parent, stamp=ros_stamp(stamp)),
         child_frame_id=child,
         transform=SimpleNamespace(
             translation=SimpleNamespace(x=x, y=y, z=0.0),
@@ -197,10 +202,10 @@ def tf_edge(parent, child, x=0.0, y=0.0, yaw=0.0):
     )
 
 
-def relevant_tf(map_x=0.0, map_y=0.0, map_yaw=0.0):
+def relevant_tf(map_x=0.0, map_y=0.0, map_yaw=0.0, *, source_stamp=0.000001):
     return SimpleNamespace(transforms=[
-        tf_edge("map", "camera_init", map_x, map_y, map_yaw),
-        tf_edge("camera_init", "body_nav"),
+        tf_edge("map", "camera_init", map_x, map_y, map_yaw, stamp=source_stamp + 0.5),
+        tf_edge("camera_init", "body_nav", stamp=source_stamp),
     ])
 
 
@@ -243,7 +248,7 @@ def initialize_high_quality_search(supervisor_module, monkeypatch):
     node.clock.seconds = 0.05
     node._on_initial_pose(pose_message())
     node.clock.seconds = 0.10
-    node._on_scan(scan_message())
+    node._on_scan(scan_message(stamp=0.10))
     node.clock.seconds = 0.20
     node._on_status_timer()
     return node
@@ -251,10 +256,10 @@ def initialize_high_quality_search(supervisor_module, monkeypatch):
 
 def feed_matching_live_inputs(node, now):
     node.clock.seconds = now
-    node._on_odom(odom_message())
-    node._on_tf(relevant_tf())
-    node._on_scan(scan_message())
-    node._on_slam_pose(slam_message())
+    node._on_odom(odom_message(stamp=now))
+    node._on_tf(relevant_tf(source_stamp=now))
+    node._on_scan(scan_message(stamp=now))
+    node._on_slam_pose(slam_message(stamp=now))
 
 
 def advance_to_ready(node):
@@ -339,17 +344,17 @@ def test_stationary_tf_updates_keep_verification_alive_after_one_slam_handshake(
 
     node = initialize_high_quality_search(supervisor_module, monkeypatch)
     node.clock.seconds = 0.30
-    node._on_odom(odom_message())
-    node._on_tf(relevant_tf())
-    node._on_scan(scan_message())
-    node._on_slam_pose(slam_message())
+    node._on_odom(odom_message(stamp=0.30))
+    node._on_tf(relevant_tf(source_stamp=0.30))
+    node._on_scan(scan_message(stamp=0.30))
+    node._on_slam_pose(slam_message(stamp=0.30))
     node._on_ready_heartbeat()
 
     for now in (0.70, 1.10, 1.50, 1.90, 2.30, 2.70, 3.10, 3.50):
         node.clock.seconds = now
-        node._on_odom(odom_message())
-        node._on_tf(relevant_tf())
-        node._on_scan(scan_message())
+        node._on_odom(odom_message(stamp=now))
+        node._on_tf(relevant_tf(source_stamp=now))
+        node._on_scan(scan_message(stamp=now))
         node._on_ready_heartbeat()
 
     assert node._machine.state is LocalizationState.READY
@@ -361,19 +366,19 @@ def test_map_tf_discontinuity_fails_closed_as_tf_conflict(supervisor_module, mon
 
     node = initialize_high_quality_search(supervisor_module, monkeypatch)
     node.clock.seconds = 0.30
-    node._on_odom(odom_message())
-    node._on_tf(relevant_tf())
-    node._on_scan(scan_message())
-    node._on_slam_pose(slam_message())
+    node._on_odom(odom_message(stamp=0.30))
+    node._on_tf(relevant_tf(source_stamp=0.30))
+    node._on_scan(scan_message(stamp=0.30))
+    node._on_slam_pose(slam_message(stamp=0.30))
     node._on_ready_heartbeat()
 
     node.clock.seconds = 0.40
-    node._on_odom(odom_message())
+    node._on_odom(odom_message(stamp=0.40))
     node._on_tf(SimpleNamespace(transforms=[
-        tf_edge("map", "camera_init", x=0.31),
-        tf_edge("camera_init", "body_nav"),
+        tf_edge("map", "camera_init", x=0.31, stamp=0.90),
+        tf_edge("camera_init", "body_nav", stamp=0.40),
     ]))
-    node._on_scan(scan_message())
+    node._on_scan(scan_message(stamp=0.40))
     node._on_ready_heartbeat()
 
     assert node._machine.state is LocalizationState.LOST
@@ -410,16 +415,16 @@ def test_supervisor_wires_topics_refines_map_pose_and_emits_finite_json(supervis
     assert refined.pose.pose.orientation.z == pytest.approx(math.sin(0.25))
 
     node.clock.seconds = 0.1
-    node._on_odom(odom_message())
-    node._on_tf(relevant_tf(1.0, 2.0))
-    node._on_slam_pose(slam_message(1.0, 2.0))
+    node._on_odom(odom_message(stamp=0.1))
+    node._on_tf(relevant_tf(1.0, 2.0, source_stamp=0.1))
+    node._on_slam_pose(slam_message(1.0, 2.0, stamp=0.1))
     node._on_status_timer()
     node.clock.seconds = 3.1
     node._on_map(map_message(occupied_world=((2.0, 2.0),)))
-    node._on_odom(odom_message())
-    node._on_scan(scan_message())
-    node._on_tf(relevant_tf(1.0, 2.0))
-    node._on_slam_pose(slam_message(1.0, 2.0))
+    node._on_odom(odom_message(stamp=3.1))
+    node._on_scan(scan_message(stamp=3.1))
+    node._on_tf(relevant_tf(1.0, 2.0, source_stamp=3.1))
+    node._on_slam_pose(slam_message(1.0, 2.0, stamp=3.1))
     node._on_status_timer()
     status = json.loads(publisher(node, "~/status").messages[-1].data)
     assert status["state"] == "READY"
@@ -446,9 +451,10 @@ def test_supervisor_rejects_stale_inputs_odom_time_rollback_and_amcl(supervisor_
     node._on_status_timer()
     assert json.loads(publisher(node, "~/status").messages[-1].data)["error"] == "INPUT_MISSING"
 
-    node._on_odom(SimpleNamespace(pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0)))) )
-    node.clock.seconds = 0.5
-    node._on_odom(SimpleNamespace(pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=0.0)))) )
+    node.clock.seconds = 1.1
+    node._on_odom(odom_message(0.0, stamp=1.1))
+    node.clock.seconds = 1.2
+    node._on_odom(odom_message(1.0, stamp=1.05))
     node._on_status_timer()
     assert json.loads(publisher(node, "~/status").messages[-1].data)["error"] == "ODOM_RESET"
 
@@ -480,6 +486,43 @@ def test_supervisor_reports_search_quality_failures(supervisor_module, monkeypat
     node._on_scan(scan_message())
     node._on_status_timer()
     assert json.loads(publisher(node, "~/status").messages[-1].data)["error"] == error
+
+
+def test_low_overlap_retry_runs_coarse_search_again_on_a_new_scan(supervisor_module, monkeypatch):
+    from omx_navigation.scan_map_quality import Pose2D, PoseScore, SearchResult
+
+    outcomes = iter((
+        SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.1, 0.0, 0.1, 1), None, False),
+        SearchResult(PoseScore(Pose2D(0.5, 0.0, 0.0), 0.9, 0.0, 0.9, 1), None, False),
+    ))
+    calls = []
+    monkeypatch.setattr(
+        supervisor_module,
+        "coarse_search",
+        lambda *_args, **_kwargs: calls.append(1) or next(outcomes),
+    )
+    node = supervisor_module.LocalizationSupervisor()
+    use_immediate_search(node)
+    node._on_map(map_message(occupied_world=((1.0, 0.0),)))
+    node._on_scan(scan_message())
+    node._on_initial_pose(pose_message())
+    node._on_scan(scan_message())
+    node._on_status_timer()
+    assert calls == [1]
+    assert publisher(node, "/slam_localization/initialpose").messages == []
+
+    node.clock.seconds = 6.7
+    node._on_ready_heartbeat()
+    assert node._machine.attempts == 2
+    node._on_status_timer()
+    assert calls == [1]
+
+    node.clock.seconds = 6.8
+    node._on_scan(scan_message(stamp=6.8))
+    node._on_status_timer()
+
+    assert calls == [1, 1]
+    assert publisher(node, "/slam_localization/initialpose").messages[-1].pose.pose.position.x == pytest.approx(0.5)
 
 
 def test_supervisor_rejects_non_map_initialpose_and_flushes_csv(supervisor_module, monkeypatch):
@@ -525,19 +568,19 @@ def test_supervisor_waits_for_post_click_scan_and_fresh_slam_tf_before_ready(sup
     node._on_status_timer()
     assert search_calls == [1]
     node.clock.seconds = 3.1
-    node._on_scan(scan_message())
-    node._on_odom(odom_message())
+    node._on_scan(scan_message(stamp=3.1))
+    node._on_odom(odom_message(stamp=3.1))
     node._on_status_timer()
     assert json.loads(publisher(node, "~/status").messages[-1].data)["state"] != "READY"
 
-    node._on_tf(relevant_tf(1.0, 2.0))
-    node._on_slam_pose(slam_message(1.0, 2.0))
+    node._on_tf(relevant_tf(1.0, 2.0, source_stamp=3.1))
+    node._on_slam_pose(slam_message(1.0, 2.0, stamp=3.1))
     node._on_status_timer()
     node.clock.seconds = 6.2
-    node._on_odom(odom_message())
-    node._on_scan(scan_message())
-    node._on_tf(relevant_tf(1.0, 2.0))
-    node._on_slam_pose(slam_message(1.1, 2.0))
+    node._on_odom(odom_message(stamp=6.2))
+    node._on_scan(scan_message(stamp=6.2))
+    node._on_tf(relevant_tf(1.0, 2.0, source_stamp=6.2))
+    node._on_slam_pose(slam_message(1.1, 2.0, stamp=6.2))
     node._on_status_timer()
     assert json.loads(publisher(node, "~/status").messages[-1].data)["state"] == "READY"
 
@@ -565,12 +608,10 @@ def test_supervisor_clears_invalid_data_and_uses_required_qos(supervisor_module)
 
 def test_supervisor_uses_odom_source_time_and_resets_fault_on_new_initial_pose(supervisor_module):
     node = supervisor_module.LocalizationSupervisor()
-    odom = lambda x, sec: SimpleNamespace(
-        header=SimpleNamespace(stamp=SimpleNamespace(sec=sec, nanosec=0)),
-        pose=SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(x=x, y=0.0))),
-    )
-    node._on_odom(odom(0.0, 10))
-    node._on_odom(odom(0.1, 9))
+    node.clock.seconds = 10.0
+    node._on_odom(odom_message(0.0, stamp=10.0))
+    node.clock.seconds = 10.1
+    node._on_odom(odom_message(0.1, stamp=9.9))
     assert node._odom_reset is True
     node._on_initial_pose(pose_message())
     assert node._odom_reset is False
@@ -588,17 +629,17 @@ def test_supervisor_keeps_slam_pose_as_one_shot_handshake(supervisor_module, mon
     node._on_scan(scan_message())
     node._on_status_timer()
     node.clock.seconds = 0.1
-    node._on_odom(odom_message())
-    node._on_tf(relevant_tf())
-    slam = lambda x: slam_message(x=x)
-    node._on_slam_pose(slam(0.0))
-    node._on_scan(scan_message())
+    node._on_odom(odom_message(stamp=0.1))
+    node._on_tf(relevant_tf(source_stamp=0.1))
+    slam = lambda x, stamp: slam_message(x=x, stamp=stamp)
+    node._on_slam_pose(slam(0.0, 0.1))
+    node._on_scan(scan_message(stamp=0.1))
     node._on_status_timer()
     node.clock.seconds = 0.2
-    node._on_odom(odom_message())
-    node._on_tf(relevant_tf())
-    node._on_slam_pose(slam(1.0))
-    node._on_scan(scan_message())
+    node._on_odom(odom_message(stamp=0.2))
+    node._on_tf(relevant_tf(source_stamp=0.2))
+    node._on_slam_pose(slam(1.0, 0.2))
+    node._on_scan(scan_message(stamp=0.2))
     node._on_status_timer()
     assert json.loads(publisher(node, "~/status").messages[-1].data)["error"] == "NONE"
 
@@ -654,15 +695,15 @@ def test_tf_freshness_requires_each_edge_after_epoch_and_within_age(supervisor_m
     node = supervisor_module.LocalizationSupervisor()
     node._slam_epoch = 1.0
     node.clock.seconds = 1.0
-    node._on_tf(relevant_tf())
+    node._on_tf(relevant_tf(source_stamp=1.0))
     assert node._tf_fresh(1.0) is True
 
     node.clock.seconds = 1.1
-    node._on_tf(relevant_tf())
+    node._on_tf(relevant_tf(source_stamp=1.1))
     assert node._tf_fresh(1.1) is True
 
     node.clock.seconds = 1.7
-    node._on_tf(SimpleNamespace(transforms=[tf_edge("camera_init", "body_nav")]))
+    node._on_tf(SimpleNamespace(transforms=[tf_edge("camera_init", "body_nav", stamp=1.7)]))
     assert node._tf_fresh(1.7) is False
 
 
@@ -672,8 +713,8 @@ def test_same_clock_post_publish_tf_and_slam_callbacks_are_accepted(supervisor_m
     node = supervisor_module.LocalizationSupervisor()
     node.clock.seconds = 1.0
     node._publish_refined_pose(Pose2D(0.0, 0.0, 0.0), [0.0] * 36)
-    node._on_tf(relevant_tf())
-    node._on_slam_pose(slam_message())
+    node._on_tf(relevant_tf(source_stamp=1.0))
+    node._on_slam_pose(slam_message(stamp=1.0))
 
     assert node._tf_fresh(1.0) is True
     assert node._slam_pose_handshake is True
@@ -770,6 +811,58 @@ def test_planar_tf_rejects_quaternion_with_nonfinite_norm(supervisor_module):
 def test_source_stamp_rejects_out_of_range_nanoseconds(supervisor_module):
     message = SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=2, nanosec=1_000_000_000)))
     assert supervisor_module.LocalizationSupervisor._source_stamp(message, 7.0) == 7.0
+
+
+@pytest.mark.parametrize("source_stamp", (9.0, 9.99))
+def test_pre_epoch_slam_pose_delivered_late_does_not_complete_handshake(supervisor_module, source_stamp):
+    node = supervisor_module.LocalizationSupervisor()
+    node._slam_epoch = 10.0
+    node.clock.seconds = 10.1
+
+    node._on_slam_pose(slam_message(stamp=source_stamp))
+
+    assert node._slam_pose_handshake is False
+    assert node._slam_received_at is None
+
+
+def test_pre_epoch_scan_delivered_late_cannot_drive_current_quality(supervisor_module):
+    node = supervisor_module.LocalizationSupervisor()
+    node._slam_epoch = 10.0
+    node.clock.seconds = 10.1
+
+    node._on_scan(scan_message(stamp=9.0))
+
+    assert node._scan_received_at is None
+    assert node._points is None
+
+
+def test_pre_epoch_tf_delivered_late_is_not_fresh(supervisor_module):
+    node = supervisor_module.LocalizationSupervisor()
+    node._slam_epoch = 10.0
+    node.clock.seconds = 10.1
+
+    node._on_tf(relevant_tf(source_stamp=9.0))
+
+    assert node._tf_fresh(10.1) is False
+    assert node._current_base_pose is None
+
+
+@pytest.mark.parametrize("message_factory", (
+    lambda: scan_message(stamp=0.0),
+    lambda: slam_message(stamp=0.0),
+))
+def test_zero_source_stamp_fails_closed(supervisor_module, message_factory):
+    node = supervisor_module.LocalizationSupervisor()
+    node._slam_epoch = 1.0
+    node.clock.seconds = 1.1
+    message = message_factory()
+
+    if hasattr(message, "ranges"):
+        node._on_scan(message)
+        assert node._scan_received_at is None
+    else:
+        node._on_slam_pose(message)
+        assert node._slam_pose_handshake is False
 
 
 def test_rapid_clicks_keep_only_latest_search_queued(supervisor_module):
@@ -922,10 +1015,11 @@ def test_ready_heartbeat_keeps_velocity_gate_fresh_for_more_than_one_second(supe
     for step in range(12):
         now = step * 0.1
         node.clock.seconds = now
-        node._on_odom(odom_message())
-        node._on_scan(scan_message())
-        node._on_tf(relevant_tf())
-        node._on_slam_pose(slam_message())
+        event_stamp = max(now, 0.000001)
+        node._on_odom(odom_message(stamp=event_stamp))
+        node._on_scan(scan_message(stamp=event_stamp))
+        node._on_tf(relevant_tf(source_stamp=event_stamp))
+        node._on_slam_pose(slam_message(stamp=event_stamp))
         node._on_ready_heartbeat()
         heartbeat = publisher(node, "~/ready").messages[-1]
         gate.update_ready(heartbeat.data, now)
@@ -1052,10 +1146,10 @@ def test_ready_degrades_when_current_scan_no_longer_matches_slam_pose(supervisor
     assert node._machine.state is LocalizationState.READY
 
     node.clock.seconds = 3.50
-    node._on_odom(odom_message())
-    node._on_tf(relevant_tf())
-    node._on_scan(scan_message(ranges=(4.0,)))
-    node._on_slam_pose(slam_message())
+    node._on_odom(odom_message(stamp=3.50))
+    node._on_tf(relevant_tf(source_stamp=3.50))
+    node._on_scan(scan_message(ranges=(4.0,), stamp=3.50))
+    node._on_slam_pose(slam_message(stamp=3.50))
     node._on_ready_heartbeat()
 
     assert node._overlap == 0.0
@@ -1072,9 +1166,9 @@ def test_ready_degrades_when_odometry_stops_while_other_inputs_remain_fresh(supe
     assert node._machine.state is LocalizationState.READY
 
     node.clock.seconds = 3.91
-    node._on_tf(relevant_tf())
-    node._on_scan(scan_message())
-    node._on_slam_pose(slam_message())
+    node._on_tf(relevant_tf(source_stamp=3.91))
+    node._on_scan(scan_message(stamp=3.91))
+    node._on_slam_pose(slam_message(stamp=3.91))
     node._on_ready_heartbeat()
 
     assert node._machine.state is LocalizationState.DEGRADED
@@ -1088,9 +1182,9 @@ def test_ready_degrades_when_odometry_stops_while_other_inputs_remain_fresh(supe
 def test_nonfinite_odometry_clears_freshness(supervisor_module):
     node = supervisor_module.LocalizationSupervisor()
     node.clock.seconds = 1.0
-    node._on_odom(odom_message())
+    node._on_odom(odom_message(stamp=1.0))
     assert node._odom_received_at == 1.0
 
-    invalid = odom_message(x=float("nan"))
+    invalid = odom_message(x=float("nan"), stamp=1.0)
     node._on_odom(invalid)
     assert node._odom_received_at is None

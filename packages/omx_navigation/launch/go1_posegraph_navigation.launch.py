@@ -312,6 +312,7 @@ def generate_launch_description() -> "LaunchDescription":
     slam_localization = GroupAction(actions=[
         SetRemap(src="/initialpose", dst="/slam_localization/initialpose"),
         SetRemap(src="/map", dst="/slam_localization/map"),
+        SetRemap(src="/map_metadata", dst="/slam_localization/map_metadata"),
         SetRemap(src="/pose", dst="/slam_localization/pose"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(slam_share, "launch", "localization_launch.py")),

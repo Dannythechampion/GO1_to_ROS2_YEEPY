@@ -165,7 +165,8 @@ velocity_smoother:
     # FAST-LIO odometry is not a differential-drive closed-loop velocity source.
     feedback: OPEN_LOOP
     max_velocity: [0.20, 0.0, 0.40]
-    min_velocity: [0.0, 0.0, -0.40]
+    # Humble's default NavigateToPose tree uses BackUp at 0.05 m/s.
+    min_velocity: [-0.10, 0.0, -0.40]
     max_accel: [0.50, 0.0, 1.00]
     max_decel: [-0.50, 0.0, -1.00]
     odom_topic: /Odometry

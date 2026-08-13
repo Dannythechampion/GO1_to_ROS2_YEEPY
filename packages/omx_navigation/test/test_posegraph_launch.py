@@ -244,3 +244,16 @@ def test_posegraph_remaps_humble_pose_and_records_the_remapped_topic():
     recorder_topics = _assignment_value("topics")
     assert "/slam_localization/pose" in recorder_topics
     assert "/slam_toolbox/pose" not in recorder_topics
+
+
+def test_posegraph_isolates_slam_map_and_metadata_topics():
+    expected = {
+        "/map": "/slam_localization/map",
+        "/map_metadata": "/slam_localization/map_metadata",
+    }
+    actual = {
+        _keyword_value(call, "src"): _keyword_value(call, "dst")
+        for call in _calls("SetRemap")
+        if _keyword_value(call, "src") in expected
+    }
+    assert actual == expected
