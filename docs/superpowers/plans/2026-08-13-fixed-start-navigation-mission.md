@@ -223,7 +223,7 @@ Implement timestamped setters plus evaluate(now), returning safe twist, enabled,
 
 ### Step 3: Write node-contract tests and implement adapter
 
-Verify /cmd_vel_nav input, /cmd_vel_safe output, 10 Hz /motion_gate/enabled heartbeat, status output, continuous zero while blocked, and fail-closed E-stop/arm defaults. Register motion_gate.
+Verify /cmd_vel_nav input, /cmd_vel_safe output, 10 Hz /motion_gate/enabled heartbeat, status output, continuous zero while blocked, and fail-closed E-stop/arm defaults. Add /motion_gate/arm and /motion_gate/disarm Trigger services. Arm must fail unless localization is fresh and true and E-stop is released; disarm must immediately publish zero. Arm state must clear on restart, E-stop, or localization loss. Register motion_gate.
 
 ### Step 4: Verify and commit
 

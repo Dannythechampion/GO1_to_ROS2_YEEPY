@@ -176,6 +176,13 @@ Outputs:
 - `/motion_gate/enabled`: 10 Hz `std_msgs/msg/Bool` heartbeat
 - `/motion_gate/status`
 
+Control services:
+
+- `/motion_gate/arm`: `std_srvs/srv/Trigger`; requests motion permission after E-stop and localization checks pass.
+- `/motion_gate/disarm`: `std_srvs/srv/Trigger`; immediately clears permission and publishes zero velocity.
+
+The arm request is not latched across node restarts, E-stop activation, or localization loss. A new explicit arm command is required after each of those events.
+
 `/motion_gate/enabled` means that the robot has permission to accept a mission. It is true only when:
 
 - Localization-ready is true and no older than 0.30 seconds.
