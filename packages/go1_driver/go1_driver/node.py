@@ -14,6 +14,15 @@ from std_msgs.msg import String
 from .command_filter import CommandFilter, MotionCommand, apply_watchdog
 from .unitree_adapter import UnitreeHighLevel
 
+try:
+    from rclpy.executors import ExternalShutdownException
+except ImportError:  # Supports the pure-Python safety tests without ROS installed.
+    class ExternalShutdownException(Exception):
+        """Fallback matching rclpy's normal external-shutdown signal."""
+
+
+NORMAL_SHUTDOWN_EXCEPTIONS = (KeyboardInterrupt, ExternalShutdownException)
+
 
 class Go1Driver(Node):
     """Filter cmd_vel and optionally forward it to the physical Go1."""
@@ -154,7 +163,7 @@ def main(args=None) -> None:
     try:
         node = Go1Driver()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except NORMAL_SHUTDOWN_EXCEPTIONS:
         pass
     finally:
         if node is not None:
