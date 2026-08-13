@@ -88,6 +88,9 @@ class Node:
             now=lambda: SimpleNamespace(nanoseconds=round(self.clock.seconds * 1_000_000_000))
         )
 
+    def destroy_node(self):
+        self.destroyed = True
+
 
 @pytest.fixture
 def bridge_module(monkeypatch):
@@ -121,6 +124,25 @@ def bridge_module(monkeypatch):
 
 def pose():
     return SimpleNamespace(header=SimpleNamespace(frame_id="map"), pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=2.0)))
+
+
+def test_main_treats_external_shutdown_as_clean_exit(bridge_module, monkeypatch):
+    events = []
+
+    class RecordingNode:
+        def destroy_node(self):
+            events.append("destroy")
+
+    monkeypatch.setattr(bridge_module, "RvizGoalBridge", RecordingNode)
+    bridge_module.rclpy.init = lambda **_kwargs: events.append("init")
+    bridge_module.rclpy.spin = lambda _node: (_ for _ in ()).throw(
+        bridge_module.NORMAL_SHUTDOWN_EXCEPTIONS[1]()
+    )
+    bridge_module.rclpy.shutdown = lambda: events.append("shutdown")
+
+    bridge_module.main()
+
+    assert events == ["init", "destroy", "shutdown"]
 
 
 def test_goal_bridge_rejects_until_ready_and_cancels_response_race(bridge_module):

@@ -31,6 +31,10 @@ from omx_navigation.localization_state import (
     LocalizationStateMachine,
     QualityObservation,
 )
+from omx_navigation.runtime_shutdown import (
+    NORMAL_SHUTDOWN_EXCEPTIONS,
+    shutdown_context,
+)
 from omx_navigation.pose_tracking import compose_pose
 from omx_navigation.ros_conversions import (
     grid_map_from_values,
@@ -743,9 +747,9 @@ def main(args=None) -> None:
     try:
         node = LocalizationSupervisor()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except NORMAL_SHUTDOWN_EXCEPTIONS:
         pass
     finally:
         if node is not None:
             node.destroy_node()
-        rclpy.shutdown()
+        shutdown_context(rclpy)

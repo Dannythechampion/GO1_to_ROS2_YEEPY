@@ -13,6 +13,10 @@ from rclpy.time import Time
 from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
 
 from omx_navigation.planar_transform import planarize_transform
+from omx_navigation.runtime_shutdown import (
+    NORMAL_SHUTDOWN_EXCEPTIONS,
+    shutdown_context,
+)
 
 
 class PlanarBaseFrame(Node):
@@ -124,12 +128,12 @@ def main(args=None) -> None:
     try:
         node = PlanarBaseFrame()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except NORMAL_SHUTDOWN_EXCEPTIONS:
         pass
     finally:
         if node is not None:
             node.destroy_node()
-        rclpy.shutdown()
+        shutdown_context(rclpy)
 
 
 if __name__ == "__main__":

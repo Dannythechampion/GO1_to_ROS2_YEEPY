@@ -11,6 +11,10 @@ from rclpy.node import Node
 from std_msgs.msg import Bool
 
 from omx_navigation.goal_gate import GoalGate
+from omx_navigation.runtime_shutdown import (
+    NORMAL_SHUTDOWN_EXCEPTIONS,
+    shutdown_context,
+)
 
 
 class RvizGoalBridge(Node):
@@ -219,11 +223,11 @@ def main(args=None) -> None:
     node = RvizGoalBridge()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except NORMAL_SHUTDOWN_EXCEPTIONS:
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        shutdown_context(rclpy)
 
 
 if __name__ == "__main__":

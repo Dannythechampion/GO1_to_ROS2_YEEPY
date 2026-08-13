@@ -6,6 +6,10 @@ from rclpy.node import Node
 from std_msgs.msg import Bool
 
 from omx_navigation.cmd_vel_gate_core import VelocityCommand, VelocityGate
+from omx_navigation.runtime_shutdown import (
+    NORMAL_SHUTDOWN_EXCEPTIONS,
+    shutdown_context,
+)
 
 
 class CmdVelSafetyGate(Node):
@@ -77,7 +81,7 @@ def main(args=None) -> None:
     try:
         node = CmdVelSafetyGate()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except NORMAL_SHUTDOWN_EXCEPTIONS:
         pass
     finally:
         try:
@@ -91,7 +95,7 @@ def main(args=None) -> None:
                 except Exception:
                     pass
         finally:
-            rclpy.shutdown()
+            shutdown_context(rclpy)
 
 
 if __name__ == "__main__":

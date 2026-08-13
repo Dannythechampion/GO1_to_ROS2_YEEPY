@@ -204,3 +204,22 @@ def test_main_destroys_the_node_and_shuts_down_rclpy(planar_module):
 
     assert created[0].destroyed is True
     assert sys.modules["rclpy"].events == ["init", "spin", "shutdown"]
+
+
+def test_main_treats_external_shutdown_as_clean_exit(planar_module):
+    created = []
+
+    class RecordingNode(planar_module.PlanarBaseFrame):
+        def __init__(self):
+            super().__init__()
+            created.append(self)
+
+    planar_module.PlanarBaseFrame = RecordingNode
+    sys.modules["rclpy"].spin = lambda _node: (_ for _ in ()).throw(
+        planar_module.NORMAL_SHUTDOWN_EXCEPTIONS[1]()
+    )
+
+    planar_module.main()
+
+    assert created[0].destroyed is True
+    assert sys.modules["rclpy"].events == ["init", "shutdown"]

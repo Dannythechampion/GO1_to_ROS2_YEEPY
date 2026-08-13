@@ -135,3 +135,28 @@ def test_main_shuts_down_when_stop_and_destroy_fail(monkeypatch):
     wrapper.main()
 
     assert events == ["init", "spin", "stop", "destroy", "shutdown"]
+
+
+def test_main_treats_external_shutdown_as_clean_exit(monkeypatch):
+    events = []
+    rclpy = SimpleNamespace(
+        init=lambda args: events.append("init"),
+        shutdown=lambda: events.append("shutdown"),
+    )
+    wrapper = load_wrapper(monkeypatch, rclpy)
+    rclpy.spin = lambda _node: (_ for _ in ()).throw(
+        wrapper.NORMAL_SHUTDOWN_EXCEPTIONS[1]()
+    )
+
+    class RecordingNode:
+        def publish_stop(self):
+            events.append("stop")
+
+        def destroy_node(self):
+            events.append("destroy")
+
+    monkeypatch.setattr(wrapper, "CmdVelSafetyGate", RecordingNode)
+
+    wrapper.main()
+
+    assert events == ["init", "stop", "destroy", "shutdown"]

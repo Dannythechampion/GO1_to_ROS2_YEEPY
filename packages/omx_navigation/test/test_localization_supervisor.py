@@ -125,6 +125,25 @@ def ros_stamp(seconds):
     return SimpleNamespace(sec=whole, nanosec=round((seconds - whole) * 1_000_000_000))
 
 
+def test_main_treats_external_shutdown_as_clean_exit(supervisor_module, monkeypatch):
+    events = []
+
+    class RecordingNode:
+        def destroy_node(self):
+            events.append("destroy")
+
+    monkeypatch.setattr(supervisor_module, "LocalizationSupervisor", RecordingNode)
+    supervisor_module.rclpy.init = lambda **_kwargs: events.append("init")
+    supervisor_module.rclpy.spin = lambda _node: (_ for _ in ()).throw(
+        supervisor_module.NORMAL_SHUTDOWN_EXCEPTIONS[1]()
+    )
+    supervisor_module.rclpy.shutdown = lambda: events.append("shutdown")
+
+    supervisor_module.main()
+
+    assert events == ["init", "destroy", "shutdown"]
+
+
 def header(frame_id="map", stamp=0.000001):
     return SimpleNamespace(frame_id=frame_id, stamp=ros_stamp(stamp))
 
