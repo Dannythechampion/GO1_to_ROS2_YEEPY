@@ -27,6 +27,7 @@ setup(
     entry_points={
         "console_scripts": [
             "rviz_goal_bridge = omx_navigation.rviz_goal_bridge:main",
+            "commission_start_pose = omx_navigation.commission_start_pose:main",
         ],
     },
 )
