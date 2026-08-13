@@ -184,12 +184,24 @@ class LocalizationSupervisorCore:
         return self.status()
 
     def _failure_reason(self, observation: LocalizationObservation) -> Optional[str]:
-        if self._seed_time is None or observation.amcl_stamp <= self._seed_time:
-            return "amcl pose predates current seed"
-        if observation.amcl_frame != "map":
-            return "AMCL pose frame is not map"
-        if not observation.tf_ok:
-            return "required TF chain is unavailable"
+        numeric_values = (
+            observation.now,
+            observation.amcl_stamp,
+            observation.x,
+            observation.y,
+            observation.yaw,
+            observation.covariance_x,
+            observation.covariance_y,
+            observation.covariance_yaw,
+            observation.pose_age,
+            observation.scan_age,
+            observation.odom_age,
+            observation.tf_age,
+            observation.median_residual,
+            observation.p80_residual,
+        )
+        if not all(math.isfinite(float(value)) for value in numeric_values):
+            return "invalid numeric localization observation"
         ages = (
             observation.pose_age,
             observation.scan_age,
@@ -198,6 +210,22 @@ class LocalizationSupervisorCore:
         )
         if min(ages) < 0.0:
             return "localization data timestamp is in the future"
+        if min(
+            observation.covariance_x,
+            observation.covariance_y,
+            observation.covariance_yaw,
+            observation.median_residual,
+            observation.p80_residual,
+        ) < 0.0:
+            return "invalid numeric localization observation"
+        if observation.valid_beams < 0 or observation.consecutive_scans < 0:
+            return "invalid numeric localization observation"
+        if self._seed_time is None or observation.amcl_stamp <= self._seed_time:
+            return "amcl pose predates current seed"
+        if observation.amcl_frame != "map":
+            return "AMCL pose frame is not map"
+        if not observation.tf_ok:
+            return "required TF chain is unavailable"
         if max(ages) > 0.30:
             return "required localization data is stale"
         if (

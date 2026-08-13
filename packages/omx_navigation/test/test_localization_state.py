@@ -193,6 +193,26 @@ def test_wrong_amcl_frame_and_future_observation_fail_closed():
     assert "future" in core.observe(future).reason
 
 
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"x": float("nan")},
+        {"yaw": float("inf")},
+        {"covariance_x": float("nan")},
+        {"covariance_y": -0.01},
+        {"median_residual": float("nan")},
+        {"p80_residual": float("inf")},
+    ],
+)
+def test_invalid_numeric_localization_observation_never_becomes_ready(changes):
+    core = seeded_core()
+    observation = good_observation(now=1.0)
+    invalid = LocalizationObservation(**{**observation.__dict__, **changes})
+    status = core.observe(invalid)
+    assert not status.ready
+    assert "invalid numeric" in status.reason
+
+
 def test_missing_runtime_observation_clears_ready_without_reseeding():
     core = seeded_core()
     core.observe(good_observation(now=1.0))
