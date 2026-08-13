@@ -7,9 +7,9 @@
 | 기능 | 상태 |
 |---|---|
 | 지도 제작, 기존 지도 Nav2 실행, RViz 수동 초기 위치 및 goal | 현재 브랜치에서 실행 가능 |
-| AMCL 자동 초기화 supervisor, motion gate, mission manager, pose recorder | 설계 및 구현 계획 단계 |
+| AMCL 자동 초기화 supervisor, motion gate, mission manager, pose recorder | 구현 완료, 현장 좌표 commissioning 전 |
 
-현재 코드 명령은 지금 사용할 수 있다. 통합 기능 구현 후 명령은 구현 계획이 코드로 완료된 뒤 사용할 명령 계약이다. 아직 없는 node나 service를 현재 시스템에서 호출하면 실패하는 것이 정상이다.
+ROS 2 노드와 서비스는 구현되어 있다. 실제 자동 초기화와 등록 목적지 mission은 현장에서 start/destination 좌표를 commissioning한 뒤 사용할 수 있다. 좌표 파일이 없으면 시스템은 의도적으로 fail-closed 상태가 된다.
 
 ## 1. 저장소 준비
 
@@ -162,9 +162,9 @@ GO1_ROS2_WS="$GO1_ROS2_WS" \
   ./migration/save_nav2_map.sh /mnt/t500/maps/floor9_v001/go1_map
 ~~~
 
-## 6. 통합 기능 구현 후 runtime 준비
+## 6. 통합 기능 runtime 준비
 
-이 절부터는 통합 설계가 구현된 뒤 사용한다.
+좌표를 기록하기 전 runtime 디렉터리만 준비한다.
 
 ~~~bash
 sudo mkdir -p /mnt/t500/go1_runtime

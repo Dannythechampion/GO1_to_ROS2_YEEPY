@@ -96,6 +96,10 @@ class LocalizationSupervisorCore:
             self.state = LocalizationState.WAITING_FOR_INPUTS
             self.reason = "waiting for required inputs"
             return self.status()
+        if not self.initial_pose_arm:
+            self.state = LocalizationState.WAITING_FOR_INPUTS
+            self.reason = "automatic initial pose seeding is disarmed"
+            return self.status()
         if self.state in {
             LocalizationState.WAITING_FOR_INPUTS,
             LocalizationState.RELOCALIZING,

@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 from typing import Union
 
-from .map_geometry import OccupancyMap, validate_goal_pose
+from .map_geometry import OccupancyMap, quaternion_to_yaw, validate_goal_pose
 from .pose_config import PlanarPose, write_planar_pose_atomic
 
 
@@ -83,12 +83,17 @@ if rclpy is not None:
             if message.header.frame_id != "map":
                 self.get_logger().error("destination frame must be map")
                 return
-            pose = PlanarPose(
-                "map",
-                message.pose.position.x,
-                message.pose.position.y,
-                self._yaw(message.pose.orientation),
-            )
+            q = message.pose.orientation
+            try:
+                pose = PlanarPose(
+                    "map",
+                    message.pose.position.x,
+                    message.pose.position.y,
+                    quaternion_to_yaw(q.x, q.y, q.z, q.w),
+                )
+            except ValueError as exc:
+                self.get_logger().error(str(exc))
+                return
             validation = validate_goal_pose(
                 self._map,
                 pose.x,

@@ -211,7 +211,11 @@ if rclpy is not None:
                 self._publish_status()
                 return
             accepted = bool(self._goal_handle and self._goal_handle.accepted)
-            self._machine.goal_response(accepted)
+            cancel_pending = self._machine.state.value == "CANCELING"
+            if not cancel_pending:
+                self._machine.goal_response(accepted)
+            if accepted and cancel_pending:
+                self._goal_handle.cancel_goal_async()
             if accepted:
                 result = self._goal_handle.get_result_async()
                 result.add_done_callback(

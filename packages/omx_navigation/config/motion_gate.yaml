@@ -1,0 +1,12 @@
+motion_gate:
+  ros__parameters:
+    cmd_vel_input: /cmd_vel_nav
+    cmd_vel_output: /cmd_vel_safe
+    localization_topic: /localization/ready
+    estop_topic: /emergency_stop
+    heartbeat_rate: 10.0
+    localization_timeout: 0.30
+    estop_timeout: 0.30
+    command_timeout: 0.25
+    max_linear_speed: 0.20
+    max_angular_speed: 0.40

@@ -2,8 +2,10 @@
 
 이 패키지는 Livox MID-360과 FAST-LIO2가 이미 실행 중인 Jetson에서 기존
 2D 지도로 AMCL 로컬라이제이션과 Nav2 경로계획을 시험합니다. 기본 실행은
-`arm:=false`이므로 `/cmd_vel`이 생성되어도 실제 Go1에는 동작 명령을
-전송하지 않습니다.
+`arm:=false`이므로 `/cmd_vel_nav`가 생성되어도 실제 Go1에는 동작 명령을
+전송하지 않습니다. Existing-map launch에서는 AMCL supervisor, motion gate와
+fixed/RViz mission manager가 함께 실행됩니다. 실제 start/destination 좌표가
+없으면 관련 기능은 fail-closed 상태로 유지됩니다.
 
 ## 현재 시험 프레임
 
@@ -158,7 +160,8 @@ ros2 topic hz /Odometry
 ros2 run tf2_ros tf2_echo map camera_init
 ros2 run tf2_ros tf2_echo camera_init body
 ros2 param get /go1_driver arm
-ros2 topic echo /cmd_vel
+ros2 topic echo /cmd_vel_nav
+ros2 topic echo /cmd_vel_safe
 ```
 
 자동 무구동 검증은 다음 단계에서 실행합니다.

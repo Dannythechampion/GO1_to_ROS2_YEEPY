@@ -16,7 +16,7 @@ def test_launch_defaults_are_safe():
     assert 'default_value="/Odometry"' in text
     assert 'default_value="camera_init"' in text
     assert 'default_value="body"' in text
-    assert "OpaqueFunction(function=validate_map)" in text
+    assert "OpaqueFunction(function=validate_runtime_configuration)" in text
     assert "Existing map YAML does not exist" in text
 
 

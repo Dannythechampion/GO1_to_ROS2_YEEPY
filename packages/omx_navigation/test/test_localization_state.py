@@ -57,6 +57,14 @@ def test_missing_pose_is_configuration_error_when_armed():
         LocalizationSupervisorCore(None, initial_pose_arm=True)
 
 
+def test_configured_pose_remains_unseeded_when_initial_pose_is_disarmed():
+    core = LocalizationSupervisorCore(START, initial_pose_arm=False)
+    core.set_inputs_available(True)
+    assert core.state is LocalizationState.WAITING_FOR_INPUTS
+    assert core.consume_seed_request(1.0) is None
+    assert "disarmed" in core.reason
+
+
 def test_seed_is_emitted_once_and_requires_post_seed_amcl_pose():
     core = seeded_core()
     assert core.consume_seed_request(0.6) is None
