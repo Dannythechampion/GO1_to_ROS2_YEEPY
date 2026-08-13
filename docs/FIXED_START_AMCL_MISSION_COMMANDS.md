@@ -96,14 +96,14 @@ PYTHONPATH="$GO1_PROJECT/packages/go1_driver:$GO1_PROJECT/packages/omx_navigatio
   python3 -m pytest -q packages/omx_navigation/test packages/go1_driver/test
 ~~~
 
-## 4. 현재 코드로 기존 지도 실행
+## 4. 좌표 commissioning 전 안전 실행
 
 ~~~bash
 export MAP_FILE=/mnt/t500/go1_ros2_project/maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f_cleaned.yaml
 test -s "$MAP_FILE"
 ~~~
 
-안전한 disarm 상태:
+좌표 파일이 없는 상태에서는 다음 명령으로 node와 topic만 점검한다. Supervisor는 `UNCOMMISSIONED`, motion gate는 disabled, driver는 dry-run 상태여야 한다.
 
 ~~~bash
 ros2 launch omx_navigation go1_existing_map.launch.py \
@@ -113,17 +113,7 @@ ros2 launch omx_navigation go1_existing_map.launch.py \
   arm:=false
 ~~~
 
-현재 구현에서 실제 driver 명령을 허용할 때:
-
-~~~bash
-ros2 launch omx_navigation go1_existing_map.launch.py \
-  map:="$MAP_FILE" \
-  start_go1_driver:=true \
-  rviz:=true \
-  arm:=true
-~~~
-
-현재 순서는 RViz 2D Pose Estimate, AMCL overlay 확인, RViz 2D Goal Pose 순이다.
+좌표가 없을 때 `initial_pose_arm:=true` 또는 mission 주행을 시도하지 않는다. 실제 주행 명령은 9절 이후의 commissioning 완료 절차를 사용한다.
 
 점검 명령:
 
@@ -226,7 +216,7 @@ cp -a "$DESTINATION_POSE_FILE" "$DESTINATION_POSE_FILE.$(date +%Y%m%d_%H%M%S).ba
 
 ## 9. 통합 시스템 실행
 
-처음에는 driver와 gate가 정지 상태가 되도록 arm false로 시작한다.
+Dry-run 검증에서는 driver를 `arm:=false`로 시작한다. 이 모드에서는 gate를 arm해도 실제 GO1에 UDP 동작 명령을 보내지 않는다.
 
 ~~~bash
 ros2 launch omx_navigation go1_existing_map.launch.py \
@@ -236,6 +226,19 @@ ros2 launch omx_navigation go1_existing_map.launch.py \
   destination_pose_file:="$DESTINATION_POSE_FILE" \
   start_go1_driver:=true \
   arm:=false \
+  rviz:=true
+~~~
+
+Dry-run이 끝난 뒤 실제 주행에서는 물리 E-stop을 누른 상태에서 driver만 armed로 launch한다. Motion gate는 node restart마다 항상 disarm 상태이므로 `/cmd_vel_safe`는 zero다.
+
+~~~bash
+ros2 launch omx_navigation go1_existing_map.launch.py \
+  map:="$MAP_FILE" \
+  start_pose_file:="$START_POSE_FILE" \
+  initial_pose_arm:=true \
+  destination_pose_file:="$DESTINATION_POSE_FILE" \
+  start_go1_driver:=true \
+  arm:=true \
   rviz:=true
 ~~~
 
@@ -252,12 +255,23 @@ localization ready가 true가 아니면 gate arm이나 mission을 실행하지 �
 
 ## 10. Motion gate
 
-E-stop을 해제하고 주변을 확인한 뒤:
+`/emergency_stop`에는 실제 E-stop bridge가 10 Hz 이상의 Bool heartbeat를 발행해야 한다. `true`는 pressed, `false`는 released다. 실제 bridge가 없거나 heartbeat가 stale이면 arm은 거절된다.
+
+Mission manager는 `/mission/stop_required` heartbeat도 발행한다. Goal 취소가 시작되면 이 값이 `true`가 되어 motion gate를 즉시 disarm하고, Nav2 action이 terminal result를 반환할 때까지 재-arm을 거절한다. 취소 요청이 거부되거나 통신 오류가 나면 manager는 취소를 재시도하며 lockout을 유지한다.
+
+Driver dry-run에서 topic contract만 시험할 때만 다음 임시 publisher를 사용할 수 있다. 실제 로봇 주행에서는 이 명령으로 E-stop을 대체하지 않는다.
+
+~~~bash
+ros2 topic pub -r 10 /emergency_stop std_msgs/msg/Bool "{data: false}"
+~~~
+
+실제 E-stop bridge를 확인하고 주변을 점검한 뒤:
 
 ~~~bash
 ros2 service call /motion_gate/arm std_srvs/srv/Trigger "{}"
 ros2 topic echo --once /motion_gate/status
 ros2 topic echo --once /motion_gate/enabled
+ros2 topic echo --once /mission/stop_required
 ~~~
 
 주행 권한 제거:

@@ -173,6 +173,14 @@ def test_reseed_reapplies_initial_distance_to_start_check():
     assert "start pose delta" in status.reason
 
 
+def test_scan_timestamp_rollback_enters_relocalizing_without_reseed():
+    core = seeded_core()
+    assert not core.observe_scan_stamp(2.0)
+    assert core.observe_scan_stamp(1.9)
+    assert core.state is LocalizationState.RELOCALIZING
+    assert core.consume_seed_request(2.1) is None
+
+
 def test_explicit_reset_clears_ready_and_requests_reseed():
     core = seeded_core()
     core.observe(good_observation(now=1.0))

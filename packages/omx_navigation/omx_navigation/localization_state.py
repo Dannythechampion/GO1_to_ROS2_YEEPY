@@ -81,6 +81,7 @@ class LocalizationSupervisorCore:
         self._good_since: Optional[float] = None
         self._initial_ready_completed = False
         self._last_odom: Optional[Tuple[float, str, float, float, float]] = None
+        self._last_scan_stamp: Optional[float] = None
 
     @property
     def ready(self) -> bool:
@@ -231,6 +232,20 @@ class LocalizationSupervisorCore:
             self._reseed_authorized = False
             self.state = LocalizationState.RELOCALIZING
             self.reason = "localization session restart detected"
+        return restarted
+
+    def observe_scan_stamp(self, stamp: float) -> bool:
+        """Invalidate the localization session when the sensor clock rolls back."""
+        current = float(stamp)
+        restarted = self._last_scan_stamp is not None and current < self._last_scan_stamp
+        self._last_scan_stamp = current
+        if restarted:
+            self._ready = False
+            self._good_since = None
+            self._seed_consumed = False
+            self._reseed_authorized = False
+            self.state = LocalizationState.RELOCALIZING
+            self.reason = "scan timestamp rollback detected"
         return restarted
 
     def request_reset(self) -> bool:

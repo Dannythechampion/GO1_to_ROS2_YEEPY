@@ -4,9 +4,11 @@ motion_gate:
     cmd_vel_output: /cmd_vel_safe
     localization_topic: /localization/ready
     estop_topic: /emergency_stop
+    mission_stop_topic: /mission/stop_required
     heartbeat_rate: 10.0
     localization_timeout: 0.30
     estop_timeout: 0.30
     command_timeout: 0.25
+    mission_stop_timeout: 0.30
     max_linear_speed: 0.20
     max_angular_speed: 0.40

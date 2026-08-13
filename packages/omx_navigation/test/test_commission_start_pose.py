@@ -66,6 +66,15 @@ def test_estimator_rejects_stale_sample_when_receive_time_is_known():
         estimator.add(sample(1), now=1.31)
 
 
+def test_ros_sample_contract_requires_map_frame_and_fresh_odometry():
+    from omx_navigation.commission_start_pose import validate_ros_sample_context
+
+    with pytest.raises(CommissioningError, match="frame"):
+        validate_ros_sample_context("odom", pose_stamp=1.0, odom_stamp=1.0)
+    with pytest.raises(CommissioningError, match="odometry.*stale"):
+        validate_ros_sample_context("map", pose_stamp=1.0, odom_stamp=0.69)
+
+
 def test_estimator_rejects_internally_inconsistent_set():
     estimator = StartPoseEstimator(sample_count=3, max_position_spread=0.10)
     estimator.add(sample(0, x=0.0))

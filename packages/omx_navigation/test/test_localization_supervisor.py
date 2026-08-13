@@ -3,7 +3,11 @@ import math
 import pytest
 
 from omx_navigation.localization_state import LocalizationState, LocalizationStatus
-from omx_navigation.localization_supervisor import initial_pose_values, status_line
+from omx_navigation.localization_supervisor import (
+    initial_pose_values,
+    odometry_is_stationary,
+    status_line,
+)
 from omx_navigation.pose_config import PlanarPose
 
 
@@ -24,3 +28,9 @@ def test_status_line_is_machine_and_human_readable():
         LocalizationStatus(LocalizationState.DEGRADED, False, "scan mismatch")
     )
     assert line == "state=DEGRADED ready=false reason=scan mismatch"
+
+
+def test_startup_stationarity_contract_is_strict():
+    assert odometry_is_stationary(0.01, 0.0, 0.01)
+    assert not odometry_is_stationary(0.011, 0.0, 0.0)
+    assert not odometry_is_stationary(0.0, 0.0, 0.011)

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import Optional
 
 from .map_geometry import OccupancyMap, quaternion_to_yaw, validate_goal_pose
 from .mission_state import (
     GoalSource,
     MissionEffect,
+    MissionState,
     MissionStateMachine,
 )
 from .pose_config import PlanarPose, PoseConfigurationError, load_planar_pose
@@ -33,6 +35,17 @@ def planar_pose_from_values(
     if frame_id != "map":
         raise ValueError("goal frame must be map")
     return PlanarPose("map", x, y, quaternion_to_yaw(qx, qy, qz, qw))
+
+
+def apply_goal_response(machine: MissionStateMachine, accepted: bool) -> bool:
+    """Settle a send response; return whether the accepted goal must be canceled."""
+    if machine.state is MissionState.CANCELING:
+        if not accepted:
+            machine.action_result("CANCELED")
+            machine.reason = "pending goal was rejected before cancellation"
+        return bool(accepted)
+    machine.goal_response(bool(accepted))
+    return False
 
 
 try:
@@ -67,6 +80,8 @@ if rclpy is not None:
             self._map: Optional[OccupancyMap] = None
             self._goal_handle = None
             self._mission_id = 0
+            self._cancel_in_flight = False
+            self._cancel_accepted = False
 
             status_qos = QoSProfile(depth=1)
             status_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -75,6 +90,9 @@ if rclpy is not None:
             map_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
             map_qos.reliability = ReliabilityPolicy.RELIABLE
             self._active_pub = self.create_publisher(Bool, "/mission/active", 10)
+            self._stop_pub = self.create_publisher(
+                Bool, "/mission/stop_required", 10
+            )
             self._status_pub = self.create_publisher(
                 String, "/mission/status", status_qos
             )
@@ -90,7 +108,7 @@ if rclpy is not None:
             self._publish_status()
 
         def _now(self) -> float:
-            return self.get_clock().now().nanoseconds * 1e-9
+            return time.monotonic()
 
         @staticmethod
         def _yaw(q) -> float:
@@ -187,6 +205,7 @@ if rclpy is not None:
                 self._publish_status()
                 return
             self._mission_id += 1
+            self._cancel_accepted = False
             mission_id = self._mission_id
             message = NavigateToPose.Goal()
             message.pose.header.frame_id = "map"
@@ -206,16 +225,20 @@ if rclpy is not None:
             try:
                 self._goal_handle = future.result()
             except Exception as exc:
-                self._machine.goal_response(False)
-                self._machine.reason = f"goal send failed: {exc}"
+                if self._machine.state is MissionState.CANCELING:
+                    self._machine.action_result("CANCELED")
+                    self._machine.reason = "pending goal ended before cancellation"
+                else:
+                    self._machine.goal_response(False)
+                    self._machine.reason = f"goal send failed: {exc}"
                 self._publish_status()
                 return
             accepted = bool(self._goal_handle and self._goal_handle.accepted)
-            cancel_pending = self._machine.state.value == "CANCELING"
-            if not cancel_pending:
-                self._machine.goal_response(accepted)
+            cancel_pending = apply_goal_response(self._machine, accepted)
+            if not accepted:
+                self._goal_handle = None
             if accepted and cancel_pending:
-                self._goal_handle.cancel_goal_async()
+                self._cancel_goal()
             if accepted:
                 result = self._goal_handle.get_result_async()
                 result.add_done_callback(
@@ -226,18 +249,57 @@ if rclpy is not None:
         def _action_result(self, future, mission_id: int) -> None:
             if mission_id != self._mission_id:
                 return
-            status = future.result().status
+            try:
+                status = future.result().status
+            except Exception as exc:
+                if self._machine.state is MissionState.CANCELING:
+                    self._machine.reason = f"goal result unavailable; cancel retrying: {exc}"
+                    self._cancel_in_flight = False
+                    self._cancel_accepted = False
+                    self._publish_status()
+                    return
+                self._machine.action_result("FAILED")
+                self._machine.reason = f"goal result unavailable: {exc}"
+                self._goal_handle = None
+                self._publish_status()
+                return
             outcome = {
                 GoalStatus.STATUS_SUCCEEDED: "SUCCEEDED",
                 GoalStatus.STATUS_CANCELED: "CANCELED",
             }.get(status, "FAILED")
             self._machine.action_result(outcome)
             self._goal_handle = None
+            self._cancel_in_flight = False
+            self._cancel_accepted = False
             self._publish_status()
 
         def _cancel_goal(self) -> None:
-            if self._goal_handle is not None:
-                self._goal_handle.cancel_goal_async()
+            if (
+                self._goal_handle is None
+                or self._cancel_in_flight
+                or self._cancel_accepted
+            ):
+                return
+            self._cancel_in_flight = True
+            future = self._goal_handle.cancel_goal_async()
+            future.add_done_callback(self._cancel_response)
+
+        def _cancel_response(self, future) -> None:
+            self._cancel_in_flight = False
+            if self._machine.state is not MissionState.CANCELING:
+                return
+            try:
+                accepted = bool(future.result().goals_canceling)
+            except Exception as exc:
+                self._machine.reason = f"Nav2 cancel failed; retrying: {exc}"
+            else:
+                self._cancel_accepted = accepted
+                self._machine.reason = (
+                    "Nav2 cancellation accepted; waiting for terminal result"
+                    if accepted
+                    else "Nav2 cancel rejected; retrying"
+                )
+            self._publish_status()
 
         def _timer_cb(self) -> None:
             self._machine.update_action_server(self._action.server_is_ready())
@@ -245,22 +307,33 @@ if rclpy is not None:
             if self._machine.active:
                 if (
                     self._machine._localization_stamp is not None
-                    and now - self._machine._localization_stamp > 0.30
+                    and (
+                        now - self._machine._localization_stamp < 0.0
+                        or now - self._machine._localization_stamp > 0.30
+                    )
                 ):
                     self._apply(
                         self._machine.update_localization(False, now)
                     )
                 if (
                     self._machine._gate_stamp is not None
-                    and now - self._machine._gate_stamp > 0.30
+                    and (
+                        now - self._machine._gate_stamp < 0.0
+                        or now - self._machine._gate_stamp > 0.30
+                    )
                 ):
                     self._apply(self._machine.update_motion_gate(False, now))
+            if self._machine.state is MissionState.CANCELING:
+                self._cancel_goal()
             self._publish_status()
 
         def _publish_status(self) -> None:
             active = Bool()
             active.data = self._machine.active
             self._active_pub.publish(active)
+            stop = Bool()
+            stop.data = self._machine.state is MissionState.CANCELING
+            self._stop_pub.publish(stop)
             status = String()
             status.data = mission_status_line(self._machine)
             self._status_pub.publish(status)

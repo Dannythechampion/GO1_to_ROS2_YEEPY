@@ -14,6 +14,22 @@ class CommissioningError(ValueError):
     pass
 
 
+def validate_ros_sample_context(
+    frame_id: str,
+    *,
+    pose_stamp: float,
+    odom_stamp: Optional[float],
+    max_odom_age: float = 0.30,
+) -> None:
+    if frame_id != "map":
+        raise CommissioningError("AMCL pose frame must be map")
+    if odom_stamp is None:
+        raise CommissioningError("odometry has not been received")
+    age = float(pose_stamp) - float(odom_stamp)
+    if age < 0.0 or age > max_odom_age:
+        raise CommissioningError("odometry sample is stale")
+
+
 @dataclass(frozen=True)
 class PoseSample:
     stamp: float
@@ -115,6 +131,7 @@ if rclpy is not None:
             )
             self._linear_speed = float("inf")
             self._angular_speed = float("inf")
+            self._odom_stamp: Optional[float] = None
             self._complete = False
             self.create_subscription(Odometry, "/Odometry", self._odom_callback, 10)
             self.create_subscription(
@@ -122,6 +139,9 @@ if rclpy is not None:
             )
 
         def _odom_callback(self, message: Odometry) -> None:
+            self._odom_stamp = (
+                message.header.stamp.sec + message.header.stamp.nanosec * 1e-9
+            )
             self._linear_speed = math.hypot(
                 message.twist.twist.linear.x, message.twist.twist.linear.y
             )
@@ -138,6 +158,11 @@ if rclpy is not None:
             covariance = message.pose.covariance
             stamp = message.header.stamp.sec + message.header.stamp.nanosec * 1e-9
             try:
+                validate_ros_sample_context(
+                    message.header.frame_id,
+                    pose_stamp=stamp,
+                    odom_stamp=self._odom_stamp,
+                )
                 result = self._estimator.add(
                     PoseSample(
                         stamp=stamp,

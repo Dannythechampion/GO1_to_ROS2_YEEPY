@@ -45,6 +45,8 @@ def test_safety_parameter_files_match_runtime_contract():
     assert localization["heartbeat_rate"] == 10.0
     assert gate["localization_timeout"] == 0.30
     assert gate["command_timeout"] == 0.25
+    assert gate["mission_stop_timeout"] == 0.30
+    assert gate["mission_stop_topic"] == "/mission/stop_required"
     assert gate["cmd_vel_input"] == "/cmd_vel_nav"
     assert gate["cmd_vel_output"] == "/cmd_vel_safe"
     assert mission["minimum_clearance"] == 0.35

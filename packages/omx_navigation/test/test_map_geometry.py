@@ -40,6 +40,12 @@ def test_goal_rejects_occupied_unknown_and_insufficient_clearance():
     assert validate_goal_pose(grid, 0.5, 0.5, 0.0, 1.0, 0.35).accepted
 
 
+def test_goal_clearance_treats_outside_map_as_unknown():
+    grid = make_map(width=5, height=5, resolution=0.1)
+    assert not validate_goal_pose(grid, 0.05, 0.25, 0.0, 1.0, 0.35).accepted
+    assert validate_goal_pose(grid, 0.25, 0.25, 0.0, 1.0, 0.20).accepted
+
+
 @pytest.mark.parametrize(
     "quaternion",
     [
@@ -95,3 +101,23 @@ def test_scan_score_uses_map_obstacle_distance_and_minimum_beams():
             sensor_yaw=0.0,
             minimum_beams=100,
         )
+
+
+def test_scan_score_does_not_treat_unknown_as_a_perfect_obstacle_match():
+    data = [0] * 100
+    data[55] = -1
+    data[56] = 100
+    grid = make_map(width=10, height=10, resolution=1.0, data=data)
+    score = score_scan_pose(
+        grid,
+        ranges=[5.5] * 100,
+        angle_min=0.0,
+        angle_increment=0.0,
+        range_min=0.1,
+        range_max=10.0,
+        sensor_x=0.0,
+        sensor_y=5.5,
+        sensor_yaw=0.0,
+        minimum_beams=100,
+    )
+    assert score.median_residual == pytest.approx(1.0)

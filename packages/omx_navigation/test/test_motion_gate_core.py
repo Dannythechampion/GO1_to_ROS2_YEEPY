@@ -9,6 +9,7 @@ def ready_gate(now=1.0):
     gate = MotionGateCore(max_linear_speed=0.2, max_angular_speed=0.4)
     gate.update_localization(True, now)
     gate.update_estop(False, now)
+    gate.update_mission_stop(False, now)
     assert gate.arm(now).accepted
     return gate
 
@@ -68,6 +69,8 @@ def test_arm_requires_fresh_localization_and_released_estop():
     gate.update_localization(True, 1.0)
     assert not gate.arm(1.0).accepted
     gate.update_estop(False, 1.0)
+    assert not gate.arm(1.0).accepted
+    gate.update_mission_stop(False, 1.0)
     assert gate.arm(1.0).accepted
 
 
@@ -88,3 +91,22 @@ def test_disarm_immediately_clears_output():
     assert gate.evaluate(1.1).command.vx == 0.1
     gate.disarm()
     assert gate.evaluate(1.1).command == VelocityCommand.zero()
+
+
+def test_backward_clock_age_fails_closed():
+    gate = ready_gate(now=2.0)
+    gate.update_command(VelocityCommand(0.1, 0.0, 0.0), 2.0)
+    result = gate.evaluate(1.9)
+    assert not result.enabled
+    assert result.command == VelocityCommand.zero()
+    assert "stale" in result.reason
+
+
+def test_mission_cancel_lockout_disarms_and_blocks_rearm():
+    gate = ready_gate()
+    gate.update_mission_stop(True, 1.1)
+    assert not gate.evaluate(1.1).enabled
+    assert not gate.arm(1.1).accepted
+    gate.update_mission_stop(False, 1.2)
+    assert not gate.evaluate(1.2).enabled
+    assert gate.arm(1.2).accepted

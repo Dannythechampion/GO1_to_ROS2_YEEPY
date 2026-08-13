@@ -38,12 +38,14 @@ class MotionGateCore:
         localization_timeout: float = 0.30,
         estop_timeout: float = 0.30,
         command_timeout: float = 0.25,
+        mission_stop_timeout: float = 0.30,
         max_linear_speed: float = 0.20,
         max_angular_speed: float = 0.40,
     ) -> None:
         self.localization_timeout = localization_timeout
         self.estop_timeout = estop_timeout
         self.command_timeout = command_timeout
+        self.mission_stop_timeout = mission_stop_timeout
         self.max_linear_speed = max_linear_speed
         self.max_angular_speed = max_angular_speed
         self._localization_ready = False
@@ -53,6 +55,8 @@ class MotionGateCore:
         self._armed = False
         self._command = VelocityCommand.zero()
         self._command_stamp: Optional[float] = None
+        self._mission_stop_required = True
+        self._mission_stop_stamp: Optional[float] = None
 
     def update_localization(self, ready: bool, stamp: float) -> None:
         self._localization_ready = bool(ready)
@@ -69,6 +73,12 @@ class MotionGateCore:
     def update_command(self, command: VelocityCommand, stamp: float) -> None:
         self._command = command
         self._command_stamp = float(stamp)
+
+    def update_mission_stop(self, required: bool, stamp: float) -> None:
+        self._mission_stop_required = bool(required)
+        self._mission_stop_stamp = float(stamp)
+        if required:
+            self._armed = False
 
     def arm(self, now: float) -> ArmResult:
         permission_reason = self._permission_failure(float(now), require_arm=False)
@@ -91,7 +101,8 @@ class MotionGateCore:
             return GateResult(
                 VelocityCommand.zero(), True, "waiting for navigation command"
             )
-        if now - self._command_stamp > self.command_timeout:
+        command_age = now - self._command_stamp
+        if command_age < 0.0 or command_age > self.command_timeout:
             return GateResult(VelocityCommand.zero(), True, "navigation command is stale")
         values = (self._command.vx, self._command.vy, self._command.yaw)
         if not all(math.isfinite(float(value)) for value in values):
@@ -105,17 +116,28 @@ class MotionGateCore:
     def _permission_failure(self, now: float, *, require_arm: bool) -> Optional[str]:
         if self._localization_stamp is None or not self._localization_ready:
             return "localization is not ready"
-        if now - self._localization_stamp > self.localization_timeout:
+        localization_age = now - self._localization_stamp
+        if localization_age < 0.0 or localization_age > self.localization_timeout:
             self._armed = False
             return "localization heartbeat is stale"
         if self._estop_stamp is None:
             return "emergency stop state is unknown"
-        if now - self._estop_stamp > self.estop_timeout:
+        estop_age = now - self._estop_stamp
+        if estop_age < 0.0 or estop_age > self.estop_timeout:
             self._armed = False
             return "emergency stop heartbeat is stale"
         if self._estop_pressed:
             self._armed = False
             return "emergency stop is pressed"
+        if self._mission_stop_stamp is None:
+            return "mission stop state is unknown"
+        mission_age = now - self._mission_stop_stamp
+        if mission_age < 0.0 or mission_age > self.mission_stop_timeout:
+            self._armed = False
+            return "mission stop heartbeat is stale"
+        if self._mission_stop_required:
+            self._armed = False
+            return "mission cancellation lockout is active"
         if require_arm and not self._armed:
             return "motion gate is disarmed"
         return None

@@ -87,6 +87,8 @@ class MissionStateMachine:
         self._action_available = bool(available)
 
     def request_fixed(self, *, now: float, goal_valid: bool) -> MissionDecision:
+        if self.active:
+            return MissionDecision(MissionEffect.REJECT, "a mission is already active")
         if self.destination is None:
             self.state = MissionState.UNCONFIGURED_DESTINATION
             self.reason = "registered destination is not configured"
@@ -120,11 +122,13 @@ class MissionStateMachine:
     def _prerequisite_failure(self, now: float) -> Optional[str]:
         if not self._localization_ready or self._localization_stamp is None:
             return "localization is not ready"
-        if now - self._localization_stamp > 0.30:
+        localization_age = now - self._localization_stamp
+        if localization_age < 0.0 or localization_age > 0.30:
             return "localization heartbeat is stale"
         if not self._gate_enabled or self._gate_stamp is None:
             return "motion gate is not enabled"
-        if now - self._gate_stamp > 0.30:
+        gate_age = now - self._gate_stamp
+        if gate_age < 0.0 or gate_age > 0.30:
             return "motion gate heartbeat is stale"
         if not self._action_available:
             return "NavigateToPose action server is unavailable"

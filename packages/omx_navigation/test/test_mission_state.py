@@ -31,6 +31,17 @@ def test_missing_destination_blocks_fixed_goal_but_not_rviz_goal():
     assert rviz.goal == PlanarPose("map", 1, 2, 0)
 
 
+def test_missing_fixed_destination_cannot_overwrite_active_rviz_mission():
+    machine = safe_machine(destination=None)
+    machine.request_rviz(PlanarPose("map", 1, 2, 0), now=1.1, goal_valid=True)
+    machine.goal_response(True)
+    assert machine.state is MissionState.ACTIVE
+    result = machine.request_fixed(now=1.2, goal_valid=False)
+    assert result.effect is MissionEffect.REJECT
+    assert machine.state is MissionState.ACTIVE
+    assert machine.source is GoalSource.RVIZ
+
+
 @pytest.mark.parametrize(
     "setup, reason",
     [
@@ -49,6 +60,12 @@ def test_common_safety_prerequisite_rejects_goal(setup, reason):
 
 def test_stale_safety_heartbeat_rejects_goal():
     result = safe_machine().request_fixed(now=1.31, goal_valid=True)
+    assert result.effect is MissionEffect.REJECT
+    assert "stale" in result.reason
+
+
+def test_backward_clock_age_rejects_goal():
+    result = safe_machine().request_fixed(now=0.9, goal_valid=True)
     assert result.effect is MissionEffect.REJECT
     assert "stale" in result.reason
 

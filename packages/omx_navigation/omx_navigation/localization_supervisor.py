@@ -43,6 +43,12 @@ def _yaw(qx: float, qy: float, qz: float, qw: float) -> float:
     )
 
 
+def odometry_is_stationary(linear_x: float, linear_y: float, angular_z: float) -> bool:
+    return math.hypot(float(linear_x), float(linear_y)) <= 0.01 and abs(
+        float(angular_z)
+    ) <= 0.01
+
+
 try:
     import rclpy
     from builtin_interfaces.msg import Time as TimeMessage
@@ -162,6 +168,11 @@ if rclpy is not None:
 
         def _scan_callback(self, message: LaserScan) -> None:
             self._scan = message
+            if self._core.observe_scan_stamp(self._seconds(message.header.stamp)):
+                self._scan_score = None
+                self._consecutive_scans = 0
+                self._publish_status()
+                return
             if self._map is None:
                 return
             try:
@@ -217,17 +228,36 @@ if rclpy is not None:
         def _amcl_callback(self, message: PoseWithCovarianceStamped) -> None:
             self._amcl = message
 
-        def _required_tf(self) -> bool:
+        def _seed_tf(self, stamp: TimeMessage) -> bool:
             odom_frame = str(self.get_parameter("odom_frame").value)
             base_frame = str(self.get_parameter("base_frame").value)
             try:
+                self._tf_buffer.lookup_transform(
+                    odom_frame,
+                    base_frame,
+                    Time.from_msg(stamp),
+                    timeout=Duration(seconds=0.02),
+                )
+                return True
+            except TransformException:
+                return False
+
+        def _required_tf(self, stamp: TimeMessage) -> bool:
+            odom_frame = str(self.get_parameter("odom_frame").value)
+            base_frame = str(self.get_parameter("base_frame").value)
+            observation_time = Time.from_msg(stamp)
+            try:
                 first = self._tf_buffer.lookup_transform(
-                    "map", odom_frame, Time(), timeout=Duration(seconds=0.02)
+                    "map", odom_frame, observation_time, timeout=Duration(seconds=0.02)
                 )
                 self._tf_buffer.lookup_transform(
-                    odom_frame, base_frame, Time(), timeout=Duration(seconds=0.02)
+                    odom_frame,
+                    base_frame,
+                    observation_time,
+                    timeout=Duration(seconds=0.02),
                 )
-                self._last_tf_stamp = self._seconds(first.header.stamp)
+                del first
+                self._last_tf_stamp = self._seconds(stamp)
                 return True
             except TransformException:
                 return False
@@ -248,8 +278,34 @@ if rclpy is not None:
 
         def _timer_callback(self) -> None:
             now = self.get_clock().now().nanoseconds * 1e-9
+            scan_stamp = (
+                self._seconds(self._scan.header.stamp) if self._scan is not None else 0.0
+            )
+            odom_stamp = (
+                self._seconds(self._odom.header.stamp) if self._odom is not None else 0.0
+            )
+            stationary = False
+            if self._odom is not None:
+                twist = self._odom.twist.twist
+                stationary = odometry_is_stationary(
+                    twist.linear.x, twist.linear.y, twist.angular.z
+                )
+            amcl_topic = str(self.get_parameter("amcl_pose_topic").value)
+            amcl_live = self.count_publishers(amcl_topic) > 0
+            initial_pose_subscribed = self.count_subscribers("/initialpose") > 0
+            seed_tf_ok = (
+                self._scan is not None and self._seed_tf(self._scan.header.stamp)
+            )
             inputs_available = (
-                self._map is not None and self._scan is not None and self._odom is not None
+                self._map is not None
+                and self._scan is not None
+                and self._odom is not None
+                and amcl_live
+                and initial_pose_subscribed
+                and stationary
+                and seed_tf_ok
+                and 0.0 <= now - scan_stamp <= 0.30
+                and 0.0 <= now - odom_stamp <= 0.30
             )
             self._core.set_inputs_available(inputs_available)
             seed = self._core.consume_seed_request(now)
@@ -267,7 +323,7 @@ if rclpy is not None:
                 amcl_stamp = self._seconds(self._amcl.header.stamp)
                 scan_stamp = self._seconds(self._scan.header.stamp)
                 odom_stamp = self._seconds(self._odom.header.stamp)
-                tf_ok = self._required_tf()
+                tf_ok = self._required_tf(self._scan.header.stamp)
                 self._core.observe(
                     LocalizationObservation(
                         now=now,

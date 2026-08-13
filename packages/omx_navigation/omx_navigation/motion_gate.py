@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from .motion_gate_core import GateResult, MotionGateCore, VelocityCommand
@@ -32,10 +33,12 @@ if rclpy is not None:
             self.declare_parameter("cmd_vel_output", "/cmd_vel_safe")
             self.declare_parameter("localization_topic", "/localization/ready")
             self.declare_parameter("estop_topic", "/emergency_stop")
+            self.declare_parameter("mission_stop_topic", "/mission/stop_required")
             self.declare_parameter("heartbeat_rate", 10.0)
             self.declare_parameter("localization_timeout", 0.30)
             self.declare_parameter("estop_timeout", 0.30)
             self.declare_parameter("command_timeout", 0.25)
+            self.declare_parameter("mission_stop_timeout", 0.30)
             self.declare_parameter("max_linear_speed", 0.20)
             self.declare_parameter("max_angular_speed", 0.40)
 
@@ -45,6 +48,9 @@ if rclpy is not None:
                 ),
                 estop_timeout=float(self.get_parameter("estop_timeout").value),
                 command_timeout=float(self.get_parameter("command_timeout").value),
+                mission_stop_timeout=float(
+                    self.get_parameter("mission_stop_timeout").value
+                ),
                 max_linear_speed=float(
                     self.get_parameter("max_linear_speed").value
                 ),
@@ -82,6 +88,12 @@ if rclpy is not None:
                 self._estop_callback,
                 10,
             )
+            self.create_subscription(
+                Bool,
+                str(self.get_parameter("mission_stop_topic").value),
+                self._mission_stop_callback,
+                10,
+            )
             self.create_service(Trigger, "/motion_gate/arm", self._arm_callback)
             self.create_service(
                 Trigger, "/motion_gate/disarm", self._disarm_callback
@@ -92,7 +104,7 @@ if rclpy is not None:
             self._timer = self.create_timer(1.0 / rate, self._timer_callback)
 
         def _now(self) -> float:
-            return self.get_clock().now().nanoseconds * 1e-9
+            return time.monotonic()
 
         def _localization_callback(self, message: Bool) -> None:
             self._core.update_localization(message.data, self._now())
@@ -107,6 +119,9 @@ if rclpy is not None:
                 ),
                 self._now(),
             )
+
+        def _mission_stop_callback(self, message: Bool) -> None:
+            self._core.update_mission_stop(message.data, self._now())
 
         def _arm_callback(self, _request, response):
             result = self._core.arm(self._now())

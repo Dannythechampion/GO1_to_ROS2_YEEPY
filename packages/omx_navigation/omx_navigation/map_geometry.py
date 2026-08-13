@@ -18,22 +18,27 @@ class OccupancyMap:
     origin_y: float
     origin_yaw: float
     data: Tuple[int, ...]
-    _distances: Tuple[float, ...] = field(init=False, repr=False)
+    _clearance_distances: Tuple[float, ...] = field(init=False, repr=False)
+    _occupied_distances: Tuple[float, ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.width <= 0 or self.height <= 0 or self.resolution <= 0.0:
             raise ValueError("map dimensions and resolution must be positive")
         if len(self.data) != self.width * self.height:
             raise ValueError("occupancy data size does not match map dimensions")
-        self._distances = self._build_distance_field()
+        self._clearance_distances = self._build_distance_field(include_unknown=True)
+        self._occupied_distances = self._build_distance_field(include_unknown=False)
 
-    def world_to_cell(self, x: float, y: float) -> Optional[Tuple[int, int]]:
+    def world_to_local(self, x: float, y: float) -> Tuple[float, float]:
+        """Return map-local coordinates, accounting for a rotated map origin."""
         dx = float(x) - self.origin_x
         dy = float(y) - self.origin_y
         cosine = math.cos(self.origin_yaw)
         sine = math.sin(self.origin_yaw)
-        local_x = cosine * dx + sine * dy
-        local_y = -sine * dx + cosine * dy
+        return cosine * dx + sine * dy, -sine * dx + cosine * dy
+
+    def world_to_cell(self, x: float, y: float) -> Optional[Tuple[int, int]]:
+        local_x, local_y = self.world_to_local(x, y)
         column = math.floor(local_x / self.resolution)
         row = math.floor(local_y / self.resolution)
         if column < 0 or row < 0 or column >= self.width or row >= self.height:
@@ -44,14 +49,26 @@ class OccupancyMap:
         return self.data[column + row * self.width]
 
     def obstacle_distance(self, column: int, row: int) -> float:
-        return self._distances[column + row * self.width]
+        return self._clearance_distances[column + row * self.width]
 
-    def _build_distance_field(self) -> Tuple[float, ...]:
+    def occupied_distance(self, column: int, row: int) -> float:
+        return self._occupied_distances[column + row * self.width]
+
+    def boundary_distance(self, x: float, y: float) -> float:
+        local_x, local_y = self.world_to_local(x, y)
+        return min(
+            local_x,
+            local_y,
+            self.width * self.resolution - local_x,
+            self.height * self.resolution - local_y,
+        )
+
+    def _build_distance_field(self, *, include_unknown: bool) -> Tuple[float, ...]:
         count = self.width * self.height
         distances = [math.inf] * count
         queue = []
         for index, occupancy in enumerate(self.data):
-            if occupancy < 0 or occupancy >= 50:
+            if occupancy >= 50 or (include_unknown and occupancy < 0):
                 distances[index] = 0.0
                 heapq.heappush(queue, (0.0, index))
         neighbours = (
@@ -126,7 +143,7 @@ def validate_goal_pose(
         return GoalValidation(False, "goal is in unknown space")
     if occupancy >= 50:
         return GoalValidation(False, "goal cell is occupied")
-    if grid.obstacle_distance(*cell) < minimum_clearance:
+    if min(grid.obstacle_distance(*cell), grid.boundary_distance(x, y)) < minimum_clearance:
         return GoalValidation(False, "goal clearance is below minimum")
     return GoalValidation(True, "accepted", yaw)
 
@@ -162,7 +179,7 @@ def score_scan_pose(
         cell = grid.world_to_cell(endpoint_x, endpoint_y)
         if cell is None:
             continue
-        residuals.append(grid.obstacle_distance(*cell))
+        residuals.append(grid.occupied_distance(*cell))
     if len(residuals) < minimum_beams:
         raise ValueError(
             f"valid beams {len(residuals)} below required {minimum_beams}"
