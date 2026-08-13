@@ -6,6 +6,7 @@ DOC = ROOT / "docs" / "GO1_NAV2_END_TO_END.md"
 SAVE = ROOT / "migration" / "save_nav2_map.sh"
 VERIFY = ROOT / "migration" / "verify_mapping_pipeline.sh"
 STAGE = ROOT / "migration" / "stage_local_ros2_packages.sh"
+BUILD_FAST_LIO = ROOT / "migration" / "build_livox_fastlio.sh"
 
 
 def test_end_to_end_doc_contains_every_operating_gate():
@@ -56,3 +57,12 @@ def test_package_stager_includes_navigation_tests_for_colcon():
     text = STAGE.read_text(encoding="utf-8")
     entries = text[text.index("omx_entries=(") : text.index(")", text.index("omx_entries=("))]
     assert "  test\n" in entries
+
+
+def test_fast_lio_build_selects_a_validated_low_latency_mode():
+    text = BUILD_FAST_LIO.read_text(encoding="utf-8")
+
+    assert 'fast_lio_low_latency_mode="${FAST_LIO_LOW_LATENCY_MODE:-bounded}"' in text
+    assert "diagnostic|bounded" in text
+    assert '--mode "$fast_lio_low_latency_mode"' in text
+    assert "FAST_LIO_LOW_LATENCY_MODE must be diagnostic or bounded" in text

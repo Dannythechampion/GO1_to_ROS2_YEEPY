@@ -5,6 +5,15 @@ workspace="${GO1_ROS2_WS:-/mnt/t500/go1_ros2_ws}"
 livox_dir="$workspace/src/livox_ros_driver2"
 fast_lio_dir="$workspace/src/FAST_LIO_ROS2"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fast_lio_low_latency_mode="${FAST_LIO_LOW_LATENCY_MODE:-bounded}"
+
+case "$fast_lio_low_latency_mode" in
+  diagnostic|bounded) ;;
+  *)
+    printf 'ERROR: FAST_LIO_LOW_LATENCY_MODE must be diagnostic or bounded.\n' >&2
+    exit 2
+    ;;
+esac
 
 if [[ ! -r /opt/ros/humble/setup.bash ]]; then
   printf 'ERROR: ROS2 Humble is not installed.\n' >&2
@@ -35,6 +44,7 @@ cp -a "$livox_dir/launch_ROS2/." "$livox_dir/launch/"
 # FAST-LIO initializes its IMU before it can process scans. A deep Livox
 # subscription queue leaves odometry permanently behind real time afterward.
 python3 "$script_dir/patch_fast_lio_low_latency.py" \
+  --mode "$fast_lio_low_latency_mode" \
   "$fast_lio_dir/src/laserMapping.cpp"
 python3 "$script_dir/patch_livox_latest_frame_queue.py" \
   "$livox_dir/src/comm/comm.cpp" "$livox_dir/src/lds.cpp"
@@ -62,3 +72,4 @@ ros2 pkg prefix fast_lio
 
 printf '\nLivox ROS2 driver and FAST-LIO build completed.\n'
 printf 'Workspace: %s\n' "$workspace"
+printf 'FAST-LIO low-latency mode: %s\n' "$fast_lio_low_latency_mode"

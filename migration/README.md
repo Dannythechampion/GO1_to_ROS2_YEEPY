@@ -166,6 +166,41 @@ ros2 pkg prefix livox_ros_driver2
 ros2 pkg prefix fast_lio
 ```
 
+### FAST-LIO 시간 지연 진단과 최종 빌드
+
+기본 빌드는 FAST-LIO 내부 LiDAR 큐를 `in-flight 1 + latest 1`로 제한하는
+`bounded` 모드다. 원인 증거를 새로 수집할 때만 `diagnostic` 모드를 명시한다.
+`diagnostic` 모드는 내부 큐를 관찰할 뿐 backlog를 제거하지 않으므로 해결판으로
+간주하거나 최종 운용에 남겨 두지 않는다.
+
+```bash
+cd /mnt/t500/go1_ros2_project
+FAST_LIO_LOW_LATENCY_MODE=diagnostic ./migration/build_livox_fastlio.sh
+# FAST-LIO만 재시작한 다음 2분간 원인 확인
+./migration/verify_fast_lio_latency.sh fast-lio 120 --observe-only
+```
+
+내부 `queue_depth` 또는 `front_age` 증가가 확인되면 최종 bounded 빌드로 교체하고
+FAST-LIO만 다시 시작한다.
+
+```bash
+cd /mnt/t500/go1_ros2_project
+FAST_LIO_LOW_LATENCY_MODE=bounded ./migration/build_livox_fastlio.sh
+./migration/verify_fast_lio_latency.sh fast-lio 600
+```
+
+기존 지도와 겹치는 장소에서 RViz `2D Pose Estimate`로 실제 위치와 방향을 한 번
+지정한 뒤 AMCL 시간 정합을 3분간 검증한다. 이 단계는 초기 위치 파일을 저장하지
+않고 실제 주행도 활성화하지 않는다.
+
+```bash
+./migration/verify_fast_lio_latency.sh amcl 180
+```
+
+모든 명령은 `/go1_driver arm=false`, `/go1/control_state`의 `DRY-RUN`, Livox
+publisher 1개 및 FAST-LIO process 1개를 먼저 확인한다. 원시 결과는
+`/mnt/t500/go1_runtime/latency/<timestamp>-<mode>/`에 보존된다.
+
 아직 LiDAR를 실행하지 않는다. 먼저 MID-360 NIC와 JSON/YAML IP를 실제 장비
 값으로 수정한다.
 
