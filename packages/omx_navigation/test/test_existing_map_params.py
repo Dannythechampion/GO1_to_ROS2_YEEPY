@@ -22,6 +22,11 @@ def test_fast_lio_frames_and_topics():
     assert amcl["scan_topic"] == "scan"
 
 
+def test_amcl_tf_wait_is_bounded_for_low_latency_lidar():
+    amcl = params("amcl")
+    assert amcl["transform_tolerance"] == 0.15
+
+
 def test_ros1_dwa_tuning_intent_is_preserved():
     controller = params("controller_server")
     follow = controller["FollowPath"]

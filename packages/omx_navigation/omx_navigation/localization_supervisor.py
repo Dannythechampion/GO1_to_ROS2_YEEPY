@@ -69,7 +69,12 @@ try:
     from nav_msgs.msg import OccupancyGrid, Odometry
     from rclpy.duration import Duration
     from rclpy.node import Node
-    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    from rclpy.qos import (
+        DurabilityPolicy,
+        QoSProfile,
+        ReliabilityPolicy,
+        qos_profile_sensor_data,
+    )
     from rclpy.time import Time
     from sensor_msgs.msg import LaserScan
     from std_msgs.msg import Bool, String
@@ -137,13 +142,13 @@ if rclpy is not None:
                 LaserScan,
                 str(self.get_parameter("scan_topic").value),
                 self._scan_callback,
-                10,
+                qos_profile_sensor_data,
             )
             self.create_subscription(
                 Odometry,
                 str(self.get_parameter("odom_topic").value),
                 self._odom_callback,
-                10,
+                qos_profile_sensor_data,
             )
             self.create_subscription(
                 PoseWithCovarianceStamped,

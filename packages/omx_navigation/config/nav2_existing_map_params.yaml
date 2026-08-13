@@ -31,7 +31,7 @@ amcl:
     scan_topic: scan
     sigma_hit: 0.2
     tf_broadcast: true
-    transform_tolerance: 1.0
+    transform_tolerance: 0.15
     update_min_a: 0.10
     update_min_d: 0.10
     z_hit: 0.5
