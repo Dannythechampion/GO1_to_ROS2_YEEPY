@@ -2,7 +2,7 @@
   ros__parameters:
     # Keep false until all dry-run gates pass on the new Jetson.
     arm: false
-    cmd_vel_topic: /cmd_vel
+    cmd_vel_topic: /cmd_vel_safe
     applied_topic: /go1/cmd_vel_applied
     state_topic: /go1/control_state
     publish_rate: 100.0

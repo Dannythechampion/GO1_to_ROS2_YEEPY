@@ -29,6 +29,7 @@ setup(
             "rviz_goal_bridge = omx_navigation.rviz_goal_bridge:main",
             "commission_start_pose = omx_navigation.commission_start_pose:main",
             "localization_supervisor = omx_navigation.localization_supervisor:main",
+            "motion_gate = omx_navigation.motion_gate:main",
         ],
     },
 )

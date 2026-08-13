@@ -15,7 +15,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("config_file", default_value=default_config),
             DeclareLaunchArgument("arm", default_value="false"),
-            DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel"),
+            DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel_safe"),
             Node(
                 package="go1_driver",
                 executable="go1_driver",
