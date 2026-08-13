@@ -6,6 +6,8 @@ readonly armed_token="GO1_ARMED_AND_ESTOP_READY"
 readonly default_workspace="/mnt/t500/go1_ros2_ws"
 readonly default_sdk_root="/mnt/t500/go1_sdk"
 readonly default_diagnostics_root="/mnt/t500/localization_logs"
+readonly expected_sdk_library_sha256="4ec2f384271ecc6cc4266e10b888d5bb076d73f10ee680436718c26d1d865a6d"
+readonly expected_wrapper_source_sha256="d98151de542eacb74532af6aba35d79b36bed9398c8de09c0aaa1724aad049b7"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 fail() {
@@ -112,6 +114,10 @@ verify_unitree_wrapper() {
   [[ -s "$build_info" ]] || fail "Unitree wrapper BUILD_INFO is missing"
   grep -Fxq 'sdk_version=v3.8.6' "$build_info" || fail "Unitree SDK version is not v3.8.6"
   grep -Fxq 'architecture=aarch64' "$build_info" || fail "Unitree wrapper was not built on aarch64"
+  grep -Fxq "arm64_library_sha256=$expected_sdk_library_sha256" "$build_info" || \
+    fail "Unitree SDK library hash evidence is missing or wrong"
+  grep -Fxq "wrapper_source_sha256=$expected_wrapper_source_sha256" "$build_info" || \
+    fail "Unitree wrapper source hash evidence is missing or wrong"
   source_file "$environment"
 
   local module_path
@@ -121,6 +127,10 @@ print(robot_interface.__file__)
 PY
 )" || fail "robot_interface cannot be imported"
   [[ -f "$module_path" ]] || fail "robot_interface module is missing: $module_path"
+  case "$module_path" in
+    "$sdk_root"/unitree_legged_sdk/lib/python/arm64/*) ;;
+    *) fail "robot_interface was imported outside the verified SDK root: $module_path" ;;
+  esac
   file "$module_path" | grep -Eq 'ARM aarch64|ARM64' || fail "robot_interface is not ARM64"
   if ldd "$module_path" | grep -q 'not found'; then
     ldd "$module_path" >&2

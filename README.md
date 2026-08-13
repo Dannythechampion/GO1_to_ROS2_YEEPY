@@ -5,16 +5,16 @@ Ubuntu 22.04 / ROS2 Humble 환경에서 Unitree Go1과 Livox MID-360을 이용�
 > **현재 권장 절차는 `go1_posegraph_navigation.launch.py`를 사용하는 pose-graph
 > localization dry-run입니다.** 아래의 `go1_existing_map.launch.py`/AMCL 절차는
 > 비교와 장애 대응을 위해 남긴 레거시 fallback이며 새 운용의 기본 경로가 아닙니다.
-> 새 launch는 armed 실행을 거부합니다. MID-360 장착 위치와 extrinsic 보정이
-> 완료되고, Jetson용 별도 armed launch가 설계·검토되기 전까지 항상
-> `arm:=false`로만 실행합니다. 이 문서는 실제 하드웨어 주행 성공을 주장하지 않습니다.
+> 기본값은 항상 `arm:=false`입니다. armed 실행은 이 문서 마지막의 Jetson runner와
+> 이중 확인 조건을 통해서만 허용되며, MID-360 장착·extrinsic·e-stop을 현장에서
+> 확인하기 전에는 실행하지 않습니다. 이 문서는 실제 하드웨어 주행 성공을 주장하지 않습니다.
 
 이 문서는 다음 조건을 전제로 합니다.
 
 - `codex/hanyang-9f-mapping-pcl-fix` 브랜치에서 세션 `20260728_204825` 매핑을 완료했습니다.
 - 검증된 원본 지도와 반사 영역을 정리한 최종 Nav2 지도가 이 브랜치의 `maps/` 아래에 포함되어 있습니다.
 - 원본 지도 검증 결과는 `complete: true`, 출발점 복귀 오차는 약 `0.07 m`, `4.96 deg`입니다.
-- 실제 주행 절차는 아직 승인되지 않았으며, 현재 범위는 `arm:=false` dry-run입니다.
+- 실제 주행 합격은 아직 선언하지 않으며, 반드시 `arm:=false` dry-run과 현장 체크리스트를 먼저 통과합니다.
 - Jetson에서 Livox, FAST-LIO, Nav2 및 Go1 driver를 실행합니다.
 - 모든 터미널에서 동일한 `ROS_DOMAIN_ID=100`을 사용합니다.
 

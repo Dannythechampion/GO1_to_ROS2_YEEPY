@@ -1,7 +1,8 @@
 # Go1 ROS2 Humble 기존 지도 내비게이션
 
 이 패키지는 Livox MID-360과 FAST-LIO2가 이미 실행 중인 Jetson에서 기존
-2D 지도로 AMCL 로컬라이제이션과 Nav2 경로계획을 시험합니다. 기본 실행은
+2D posegraph로 SLAM Toolbox localization과 Nav2 경로계획을 수행합니다. AMCL은
+레거시 fallback일 뿐 권장 운용 경로가 아닙니다. 기본 실행은
 `arm:=false`이므로 `/cmd_vel`이 생성되어도 실제 Go1에는 동작 명령을
 전송하지 않습니다.
 
