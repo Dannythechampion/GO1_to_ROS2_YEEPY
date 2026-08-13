@@ -28,6 +28,7 @@ setup(
         "console_scripts": [
             "rviz_goal_bridge = omx_navigation.rviz_goal_bridge:main",
             "commission_start_pose = omx_navigation.commission_start_pose:main",
+            "localization_supervisor = omx_navigation.localization_supervisor:main",
         ],
     },
 )
