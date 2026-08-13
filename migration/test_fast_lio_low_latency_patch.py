@@ -202,3 +202,67 @@ def test_patch_rejects_unknown_upstream_without_partial_write(tmp_path):
     assert result.returncode != 0
     assert "expected exactly one" in result.stderr
     assert source.read_bytes() == before
+
+
+def test_bounded_mode_keeps_only_inflight_front_and_latest_waiting_scan(tmp_path):
+    source = write_fast_lio_fixture(tmp_path)
+
+    result = run_patch(source, "bounded")
+
+    assert result.returncode == 0, result.stderr
+    patched = source.read_text(encoding="utf-8")
+    assert "FAST_LIO_BOUNDED_BUFFER" in patched
+    assert "const size_t keep_count = lidar_pushed ? 1U : 0U;" in patched
+    assert "while (lidar_buffer.size() > keep_count)" in patched
+    assert "lidar_buffer.pop_back();" in patched
+    assert "time_buffer.pop_back();" in patched
+    assert patched.count("enqueue_latest_lidar_locked(ptr, last_timestamp_lidar);") == 2
+
+
+def test_bounded_mode_replaces_stale_inflight_after_latest_scan_is_queued(tmp_path):
+    source = write_fast_lio_fixture(tmp_path)
+
+    result = run_patch(source, "bounded")
+
+    assert result.returncode == 0, result.stderr
+    patched = source.read_text(encoding="utf-8")
+    assert "lidar_pushed && lidar_buffer.size() > 1" in patched
+    assert "newest_lidar_time - time_buffer.front() > 0.20" in patched
+    assert patched.count("discard_stale_inflight_locked(last_timestamp_lidar);") == 2
+    for callback in ("standard_pcl_cbk", "livox_pcl_cbk"):
+        body = patched.split(f"void {callback}", 1)[1].split("sig_buffer.notify_all();", 1)[0]
+        assert body.index("enqueue_latest_lidar_locked") < body.index(
+            "discard_stale_inflight_locked"
+        )
+
+
+def test_bounded_mode_keeps_lidar_and_time_queue_mutations_paired(tmp_path):
+    source = write_fast_lio_fixture(tmp_path)
+
+    result = run_patch(source, "bounded")
+
+    assert result.returncode == 0, result.stderr
+    patched = source.read_text(encoding="utf-8")
+    assert patched.count("lidar_buffer.pop_back();") == patched.count(
+        "time_buffer.pop_back();"
+    )
+    assert patched.count("lidar_buffer.pop_front();") == patched.count(
+        "time_buffer.pop_front();"
+    )
+    assert patched.count("lidar_buffer.clear();") == patched.count(
+        "time_buffer.clear();"
+    )
+
+
+def test_bounded_mode_upgrades_diagnostic_source_and_is_idempotent(tmp_path):
+    source = write_fast_lio_fixture(tmp_path)
+    diagnostic = run_patch(source, "diagnostic")
+    assert diagnostic.returncode == 0, diagnostic.stderr
+
+    first_bounded = run_patch(source, "bounded")
+    assert first_bounded.returncode == 0, first_bounded.stderr
+    bounded_bytes = source.read_bytes()
+    second_bounded = run_patch(source, "bounded")
+
+    assert second_bounded.returncode == 0, second_bounded.stderr
+    assert source.read_bytes() == bounded_bytes

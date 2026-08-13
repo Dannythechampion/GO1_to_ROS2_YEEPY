@@ -40,6 +40,78 @@ void clear_lidar_buffers_locked()
 }
 """
 
+BOUNDED_GLOBALS = """deque<double>                     time_buffer;
+deque<PointCloudXYZI::Ptr>        lidar_buffer;
+deque<sensor_msgs::msg::Imu::ConstSharedPtr> imu_buffer;
+
+// FAST_LIO_REALTIME_DIAGNOSTICS
+size_t fast_lio_lidar_drop_count = 0;
+double fast_lio_last_process_ms = 0.0;
+double fast_lio_max_process_ms = 0.0;
+
+// FAST_LIO_BOUNDED_BUFFER: caller must hold mtx_buffer.
+void clear_lidar_buffers_locked()
+{
+    fast_lio_lidar_drop_count += lidar_buffer.size();
+    lidar_buffer.clear();
+    time_buffer.clear();
+    lidar_pushed = false;
+}
+
+// Caller must hold mtx_buffer.
+void enqueue_latest_lidar_locked(PointCloudXYZI::Ptr scan, double stamp)
+{
+    const size_t keep_count = lidar_pushed ? 1U : 0U;
+    while (lidar_buffer.size() > keep_count)
+    {
+        lidar_buffer.pop_back();
+        time_buffer.pop_back();
+        ++fast_lio_lidar_drop_count;
+    }
+    lidar_buffer.push_back(scan);
+    time_buffer.push_back(stamp);
+}
+
+// Caller must hold mtx_buffer. The newest scan must already be queued.
+void discard_stale_inflight_locked(double newest_lidar_time)
+{
+    if (lidar_pushed && lidar_buffer.size() > 1 &&
+        newest_lidar_time - time_buffer.front() > 0.20)
+    {
+        lidar_buffer.pop_front();
+        time_buffer.pop_front();
+        lidar_pushed = false;
+        ++fast_lio_lidar_drop_count;
+    }
+}
+"""
+
+STANDARD_ENQUEUE = """    PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
+    p_pre->process(msg, ptr);
+    lidar_buffer.push_back(ptr);
+    time_buffer.push_back(cur_time);
+    last_timestamp_lidar = cur_time;
+"""
+
+BOUNDED_STANDARD_ENQUEUE = """    PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
+    p_pre->process(msg, ptr);
+    last_timestamp_lidar = cur_time;
+    enqueue_latest_lidar_locked(ptr, last_timestamp_lidar);
+    discard_stale_inflight_locked(last_timestamp_lidar);
+"""
+
+LIVOX_ENQUEUE = """    PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
+    p_pre->process(msg, ptr);
+    lidar_buffer.push_back(ptr);
+    time_buffer.push_back(last_timestamp_lidar);
+"""
+
+BOUNDED_LIVOX_ENQUEUE = """    PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
+    p_pre->process(msg, ptr);
+    enqueue_latest_lidar_locked(ptr, last_timestamp_lidar);
+    discard_stale_inflight_locked(last_timestamp_lidar);
+"""
+
 SYNC_START = """bool sync_packages(MeasureGroup &meas)
 {
     if (lidar_buffer.empty() || imu_buffer.empty()) {
@@ -184,22 +256,48 @@ def add_diagnostics(source: str) -> str:
     return source
 
 
-def patch(source_path: Path, mode: str = "diagnostic") -> None:
+def add_bounded_buffer(source: str) -> str:
+    source = replace_exactly_once(
+        source,
+        DIAGNOSTIC_GLOBALS,
+        BOUNDED_GLOBALS,
+        "diagnostic FAST-LIO global block",
+    )
+    source = replace_exactly_once(
+        source,
+        STANDARD_ENQUEUE,
+        BOUNDED_STANDARD_ENQUEUE,
+        "standard LiDAR enqueue block",
+    )
+    source = replace_exactly_once(
+        source,
+        LIVOX_ENQUEUE,
+        BOUNDED_LIVOX_ENQUEUE,
+        "Livox enqueue block",
+    )
+    return source
+
+
+def patch(source_path: Path, mode: str = "bounded") -> None:
     if mode not in VALID_MODES:
         raise ValueError(f"unsupported mode: {mode}")
     source = source_path.read_text(encoding="utf-8")
+    if BOUNDED_MARKER in source:
+        return
     if DIAGNOSTIC_MARKER in source:
-        if mode == "diagnostic" or BOUNDED_MARKER in source:
+        if mode == "diagnostic":
             return
-    transformed = add_diagnostics(source)
+        transformed = source
+    else:
+        transformed = add_diagnostics(source)
     if mode == "bounded":
-        raise RuntimeError("bounded FAST-LIO patch mode is not implemented yet")
+        transformed = add_bounded_buffer(transformed)
     source_path.write_text(transformed, encoding="utf-8")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=sorted(VALID_MODES), default="diagnostic")
+    parser.add_argument("--mode", choices=sorted(VALID_MODES), default="bounded")
     parser.add_argument("source", type=Path)
     return parser.parse_args(argv)
 
