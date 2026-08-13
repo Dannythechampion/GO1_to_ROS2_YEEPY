@@ -30,10 +30,30 @@ def valid_paths():
     }
 
 
-def test_validate_inputs_rejects_arm_before_ros_processes():
+def test_armed_mode_requires_driver_recording_and_exact_confirmation():
     launch = load_launch_module()
-    with pytest.raises(RuntimeError, match="arm:=true"):
-        launch.validate_inputs(valid_paths(), arm=True)
+    launch.validate_operating_mode(False, False, False, "")
+    with pytest.raises(RuntimeError, match="start_go1_driver"):
+        launch.validate_operating_mode(True, False, True, launch.ARMED_CONFIRMATION_TOKEN)
+    with pytest.raises(RuntimeError, match="record_localization"):
+        launch.validate_operating_mode(True, True, False, launch.ARMED_CONFIRMATION_TOKEN)
+    with pytest.raises(RuntimeError, match="armed_confirmation"):
+        launch.validate_operating_mode(True, True, True, "almost")
+    launch.validate_operating_mode(
+        True, True, True, launch.ARMED_CONFIRMATION_TOKEN
+    )
+
+
+def test_launch_declares_empty_armed_confirmation_by_default():
+    argument = next(
+        call for call in _calls("DeclareLaunchArgument")
+        if ast.literal_eval(call.args[0]) == "armed_confirmation"
+    )
+    assert _keyword_value(argument, "default_value") == ""
+    text = LAUNCH.read_text(encoding="utf-8")
+    assert 'LaunchConfiguration("start_go1_driver")' in text
+    assert 'LaunchConfiguration("record_localization")' in text
+    assert 'LaunchConfiguration("armed_confirmation")' in text
 
 
 def test_validate_inputs_requires_posegraph_data_file():
@@ -41,7 +61,7 @@ def test_validate_inputs_requires_posegraph_data_file():
     paths = valid_paths()
     paths["posegraph"] = paths["posegraph"] + "-missing"
     with pytest.raises(RuntimeError, match="posegraph"):
-        launch.validate_inputs(paths, arm=False)
+        launch.validate_inputs(paths)
 
 
 def test_parse_launch_boolean_accepts_only_explicit_values():

@@ -26,6 +26,9 @@ except ImportError:  # pragma: no cover - exercised on ROS 2 targets.
     get_package_share_directory = None
 
 
+ARMED_CONFIRMATION_TOKEN = "GO1_ARMED_AND_ESTOP_READY"
+
+
 def parse_launch_boolean(value: str, name: str) -> bool:
     """Accept only explicit launch boolean spellings before actions start."""
     normalized = str(value).strip().lower()
@@ -140,10 +143,8 @@ def validate_pgm_bytes(data: bytes) -> None:
         raise RuntimeError("PGM ASCII pixel payload is truncated or has extra samples")
 
 
-def validate_inputs(paths, arm: bool) -> None:
+def validate_inputs(paths) -> None:
     """Validate every static input before ROS actions can start processes."""
-    if arm:
-        raise RuntimeError("arm:=true is rejected by pose-graph navigation bringup")
     required = {
         "map": "map YAML",
         "nav2_params": "Nav2 parameters",
@@ -185,6 +186,26 @@ def validate_inputs(paths, arm: bool) -> None:
         _regular_nonempty(candidate, "posegraph artifact")
 
 
+def validate_operating_mode(
+    arm: bool,
+    start_go1_driver: bool,
+    record_localization: bool,
+    armed_confirmation: str,
+) -> None:
+    """Require explicit, auditable safeguards before physical commands are enabled."""
+
+    if not arm:
+        return
+    if not start_go1_driver:
+        raise RuntimeError("arm:=true requires start_go1_driver:=true")
+    if not record_localization:
+        raise RuntimeError("arm:=true requires record_localization:=true")
+    if armed_confirmation != ARMED_CONFIRMATION_TOKEN:
+        raise RuntimeError(
+            "arm:=true requires armed_confirmation:=" + ARMED_CONFIRMATION_TOKEN
+        )
+
+
 def _validate_launch_inputs(context, *_args, **_kwargs):
     paths = {
         "map": LaunchConfiguration("map").perform(context),
@@ -195,8 +216,18 @@ def _validate_launch_inputs(context, *_args, **_kwargs):
         "rviz_config": LaunchConfiguration("rviz_config").perform(context),
     }
     arm = parse_launch_boolean(LaunchConfiguration("arm").perform(context), "arm")
+    start_go1_driver = parse_launch_boolean(
+        LaunchConfiguration("start_go1_driver").perform(context), "start_go1_driver"
+    )
+    record_localization = parse_launch_boolean(
+        LaunchConfiguration("record_localization").perform(context), "record_localization"
+    )
     parse_launch_boolean(LaunchConfiguration("use_composition").perform(context), "use_composition")
-    validate_inputs(paths, arm)
+    armed_confirmation = LaunchConfiguration("armed_confirmation").perform(context)
+    validate_inputs(paths)
+    validate_operating_mode(
+        arm, start_go1_driver, record_localization, armed_confirmation
+    )
     return []
 
 
@@ -423,6 +454,7 @@ def generate_launch_description() -> "LaunchDescription":
         DeclareLaunchArgument("rviz", default_value="true"),
         DeclareLaunchArgument("start_go1_driver", default_value="false"),
         DeclareLaunchArgument("arm", default_value="false"),
+        DeclareLaunchArgument("armed_confirmation", default_value=""),
         DeclareLaunchArgument("use_composition", default_value="false"),
         DeclareLaunchArgument("ros_domain_id", default_value="100"),
         SetEnvironmentVariable("ROS_DOMAIN_ID", LaunchConfiguration("ros_domain_id")),
