@@ -48,6 +48,7 @@ omx_entries=(
   config
   launch
   rviz
+  test
 )
 
 for entry in "${omx_entries[@]}"; do

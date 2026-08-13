@@ -147,6 +147,32 @@ def test_commanded_motion_does_not_trigger_jump_restart():
     )
 
 
+def test_session_restart_waits_for_explicit_reset_before_reseeding():
+    core = seeded_core()
+    core.observe_odometry(1.0, "camera_init", 0.0, 0.0, 0.0, commanded=False)
+    assert core.observe_odometry(
+        1.2, "camera_init", 0.6, 0.0, 0.0, commanded=False
+    )
+    core.set_inputs_available(True)
+    assert core.state is LocalizationState.RELOCALIZING
+    assert core.consume_seed_request(2.0) is None
+    assert core.request_reset()
+    core.set_inputs_available(True)
+    assert core.consume_seed_request(2.1) == START
+
+
+def test_reseed_reapplies_initial_distance_to_start_check():
+    core = seeded_core()
+    core.observe(good_observation(now=1.0))
+    core.observe(good_observation(now=3.1))
+    assert core.request_reset()
+    core.set_inputs_available(True)
+    core.consume_seed_request(4.0)
+    status = core.observe(good_observation(now=4.1, x=10.0))
+    assert not status.ready
+    assert "start pose delta" in status.reason
+
+
 def test_explicit_reset_clears_ready_and_requests_reseed():
     core = seeded_core()
     core.observe(good_observation(now=1.0))

@@ -158,7 +158,7 @@ Any of these invalidates readiness immediately:
 - Sensor or odometry timestamp moves backwards.
 - Pose jumps more than `0.50 m` or `20 degrees` within `0.50 s` without corresponding commanded motion.
 
-The motion gate then outputs zero and the mission manager cancels the active goal. Recovery never resumes a goal automatically.
+The motion gate then outputs zero and the mission manager cancels the active goal. The supervisor stays in `RELOCALIZING` without publishing the fixed start pose. The operator must return the robot to the commissioned start tile and call `/localization/reset` before a new seed is allowed. Recovery never resumes a goal automatically.
 
 ## 7. Standalone Motion Gate
 
@@ -303,7 +303,7 @@ E-stop, stale readiness, stale commands, invalid velocity values, localization d
 | Invalid start pose | Configuration failure | Correct file |
 | Destination absent | Fixed start rejected | Record it; RViz goals remain available |
 | AMCL/scan/TF check fails | Zero velocity; active mission cancels | Restore readiness, then issue new goal |
-| FAST-LIO restart/jump | Readiness false; zero; cancel | Reseed/reset, then issue new goal |
+| FAST-LIO restart/jump | Readiness false; zero; cancel | Return to start tile, call reset, then issue new goal |
 | E-stop pressed | Zero; gate heartbeat false | Release, arm, issue new goal |
 | Goal is invalid | Reject before Nav2 | Choose or record a valid pose |
 | New goal while active | Reject | Cancel or wait for terminal state |

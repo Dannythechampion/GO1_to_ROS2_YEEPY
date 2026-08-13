@@ -5,6 +5,7 @@ ROOT = Path(__file__).parents[1]
 DOC = ROOT / "docs" / "GO1_NAV2_END_TO_END.md"
 SAVE = ROOT / "migration" / "save_nav2_map.sh"
 VERIFY = ROOT / "migration" / "verify_mapping_pipeline.sh"
+STAGE = ROOT / "migration" / "stage_local_ros2_packages.sh"
 
 
 def test_end_to_end_doc_contains_every_operating_gate():
@@ -49,3 +50,9 @@ def test_mapping_verifier_requires_sensor_slam_topics_and_tf():
     assert "require_tf camera_init body" in text
     assert "require_tf map camera_init" in text
     assert "PASS: MID-360, FAST-LIO, scan projection" in text
+
+
+def test_package_stager_includes_navigation_tests_for_colcon():
+    text = STAGE.read_text(encoding="utf-8")
+    entries = text[text.index("omx_entries=(") : text.index(")", text.index("omx_entries=("))]
+    assert "  test\n" in entries

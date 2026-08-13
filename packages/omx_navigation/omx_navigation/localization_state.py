@@ -77,6 +77,7 @@ class LocalizationSupervisorCore:
         self._ready = False
         self._seed_time: Optional[float] = None
         self._seed_consumed = False
+        self._reseed_authorized = bool(initial_pose_arm)
         self._good_since: Optional[float] = None
         self._initial_ready_completed = False
         self._last_odom: Optional[Tuple[float, str, float, float, float]] = None
@@ -100,6 +101,9 @@ class LocalizationSupervisorCore:
             self.state = LocalizationState.WAITING_FOR_INPUTS
             self.reason = "automatic initial pose seeding is disarmed"
             return self.status()
+        if self.state is LocalizationState.RELOCALIZING and not self._reseed_authorized:
+            self.reason = "reposition at start and request localization reset"
+            return self.status()
         if self.state in {
             LocalizationState.WAITING_FOR_INPUTS,
             LocalizationState.RELOCALIZING,
@@ -112,9 +116,15 @@ class LocalizationSupervisorCore:
     def consume_seed_request(self, now: float) -> Optional[PlanarPose]:
         if self.state not in {LocalizationState.SEEDING, LocalizationState.RELOCALIZING}:
             return None
-        if self._seed_consumed or not self.initial_pose_arm or self.start_pose is None:
+        if (
+            self._seed_consumed
+            or not self._reseed_authorized
+            or not self.initial_pose_arm
+            or self.start_pose is None
+        ):
             return None
         self._seed_consumed = True
+        self._reseed_authorized = False
         self._seed_time = float(now)
         self._good_since = None
         self._ready = False
@@ -218,6 +228,7 @@ class LocalizationSupervisorCore:
             self._ready = False
             self._good_since = None
             self._seed_consumed = False
+            self._reseed_authorized = False
             self.state = LocalizationState.RELOCALIZING
             self.reason = "localization session restart detected"
         return restarted
@@ -228,6 +239,8 @@ class LocalizationSupervisorCore:
         self._ready = False
         self._good_since = None
         self._seed_consumed = False
+        self._reseed_authorized = True
+        self._initial_ready_completed = False
         self.state = LocalizationState.RELOCALIZING
         self.reason = "explicit reset requested"
         return True

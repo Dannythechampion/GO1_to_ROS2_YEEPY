@@ -8,3 +8,9 @@
 6. 중단 시 물리 E-stop을 우선하고 `/motion_gate/disarm`과 `/mission/cancel`을 호출한다.
 
 자동 출발, goal 교체, queue와 자동 재개는 없다. 상태와 전체 명령은 [FIXED_START_AMCL_MISSION_COMMANDS.md](../FIXED_START_AMCL_MISSION_COMMANDS.md)를 따른다.
+
+FAST-LIO restart가 감지되면 로봇을 출발 타일로 되돌린 뒤 다음 명령으로만 재-seed한다.
+
+```bash
+ros2 service call /localization/reset std_srvs/srv/Trigger "{}"
+```

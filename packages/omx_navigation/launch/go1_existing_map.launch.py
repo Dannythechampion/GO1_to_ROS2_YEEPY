@@ -6,6 +6,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    GroupAction,
     IncludeLaunchDescription,
     OpaqueFunction,
     SetEnvironmentVariable,
@@ -68,22 +69,30 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[scan_params_file],
     )
 
-    navigation = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(package_share, "launch", "rviz_navigation.launch.py")
-        ),
-        launch_arguments={
-            "slam": "false",
-            "map": map_yaml,
-            "params_file": nav2_params_file,
-            "scan_topic": scan_topic,
-            "odom_topic": odom_topic,
-            "map_frame": "map",
-            "odom_frame": odom_frame,
-            "base_frame": base_frame,
-            "rviz": rviz,
-            "rviz_config": rviz_config,
-        }.items(),
+    navigation = GroupAction(
+        actions=[
+            # Humble Nav2 uses cmd_vel_nav between controller and velocity
+            # smoother, then publishes the smoothed result on cmd_vel.
+            SetRemap(src="/cmd_vel_nav", dst="/cmd_vel_controller"),
+            SetRemap(src="/cmd_vel", dst="/cmd_vel_nav"),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(package_share, "launch", "rviz_navigation.launch.py")
+                ),
+                launch_arguments={
+                    "slam": "false",
+                    "map": map_yaml,
+                    "params_file": nav2_params_file,
+                    "scan_topic": scan_topic,
+                    "odom_topic": odom_topic,
+                    "map_frame": "map",
+                    "odom_frame": odom_frame,
+                    "base_frame": base_frame,
+                    "rviz": rviz,
+                    "rviz_config": rviz_config,
+                }.items(),
+            ),
+        ]
     )
 
     localization_supervisor = Node(
@@ -181,11 +190,6 @@ def generate_launch_description() -> LaunchDescription:
             ),
             OpaqueFunction(function=validate_runtime_configuration),
             scan_projection,
-            # Humble Nav2 uses cmd_vel_nav between controller and velocity smoother,
-            # then publishes the smoothed result on cmd_vel. Keep those paths
-            # distinct so the smoother cannot subscribe to its own output.
-            SetRemap(src="/cmd_vel_nav", dst="/cmd_vel_controller"),
-            SetRemap(src="/cmd_vel", dst="/cmd_vel_nav"),
             navigation,
             localization_supervisor,
             motion_gate,

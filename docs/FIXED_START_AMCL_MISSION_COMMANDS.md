@@ -342,6 +342,12 @@ ros2 service list
 ros2 action list
 ~~~
 
+FAST-LIO restart 이후에는 자동 재-seed하지 않는다. GO1을 출발 타일에 다시 맞추고 완전히 정지시킨 뒤:
+
+~~~bash
+ros2 service call /localization/reset std_srvs/srv/Trigger "{}"
+~~~
+
 ## 15. 구현 후 회귀 검증
 
 ~~~bash

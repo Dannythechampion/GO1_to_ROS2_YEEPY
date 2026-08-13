@@ -35,6 +35,7 @@ class StartPoseEstimator:
         max_angular_speed: float = 0.01,
         max_position_spread: float = 0.10,
         max_yaw_spread: float = math.radians(5.0),
+        max_sample_age: float = 0.30,
     ) -> None:
         if sample_count < 2:
             raise ValueError("sample_count must be at least 2")
@@ -43,12 +44,15 @@ class StartPoseEstimator:
         self.max_angular_speed = max_angular_speed
         self.max_position_spread = max_position_spread
         self.max_yaw_spread = max_yaw_spread
+        self.max_sample_age = max_sample_age
         self.samples: List[PoseSample] = []
 
-    def add(self, sample: PoseSample) -> Optional[PlanarPose]:
+    def add(self, sample: PoseSample, *, now: Optional[float] = None) -> Optional[PlanarPose]:
         values = tuple(sample.__dict__.values())
         if not all(math.isfinite(float(value)) for value in values):
             raise CommissioningError("sample values must be finite")
+        if now is not None and (now - sample.stamp < 0.0 or now - sample.stamp > self.max_sample_age):
+            raise CommissioningError("pose sample is stale")
         if abs(sample.linear_speed) > self.max_linear_speed or abs(
             sample.angular_speed
         ) > self.max_angular_speed:
@@ -145,7 +149,8 @@ if rclpy is not None:
                         covariance_yaw=covariance[35],
                         linear_speed=self._linear_speed,
                         angular_speed=self._angular_speed,
-                    )
+                    ),
+                    now=self.get_clock().now().nanoseconds * 1e-9,
                 )
             except CommissioningError as exc:
                 self.get_logger().warning(str(exc))

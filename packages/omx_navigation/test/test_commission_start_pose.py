@@ -60,6 +60,12 @@ def test_estimator_rejects_out_of_order_stamp():
         estimator.add(sample(1))
 
 
+def test_estimator_rejects_stale_sample_when_receive_time_is_known():
+    estimator = StartPoseEstimator(sample_count=2, max_sample_age=0.30)
+    with pytest.raises(CommissioningError, match="stale"):
+        estimator.add(sample(1), now=1.31)
+
+
 def test_estimator_rejects_internally_inconsistent_set():
     estimator = StartPoseEstimator(sample_count=3, max_position_spread=0.10)
     estimator.add(sample(0, x=0.0))

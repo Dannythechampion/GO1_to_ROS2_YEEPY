@@ -16,6 +16,8 @@ def test_launch_exposes_unconfigured_pose_paths_and_safe_nodes():
     assert 'executable="motion_gate"' in text
     assert 'executable="fixed_mission_manager"' in text
     assert '"cmd_vel_topic": "/cmd_vel_safe"' in text
+    assert "navigation = GroupAction(" in text
+    assert "IncludeLaunchDescription(" in text
     assert "SetRemap(src=\"/cmd_vel_nav\", dst=\"/cmd_vel_controller\")" in text
     assert "SetRemap(src=\"/cmd_vel\", dst=\"/cmd_vel_nav\")" in text
     assert "rviz_goal_bridge" not in text
