@@ -22,6 +22,8 @@ SCRIPT = ROOT / "migration" / "verify_posegraph_navigation.sh"
 LAUNCH = ROOT / "packages" / "omx_navigation" / "launch" / "go1_posegraph_navigation.launch.py"
 STAGE = ROOT / "migration" / "stage_local_ros2_packages.sh"
 FIELD = ROOT / "migration" / "jetson_field_deploy.sh"
+ROOT_README = ROOT / "README.md"
+PACKAGE_README = ROOT / "packages" / "omx_navigation" / "README.md"
 BASE_TOPICS = (
     "/scan", "/Odometry", "/map", "/slam_localization/pose",
     "/localization_supervisor/status", "/localization_supervisor/ready",
@@ -277,3 +279,17 @@ def test_field_runner_rejects_bad_armed_token_before_preflight():
         assert result.returncode != 0
         assert "GO1_ARMED_AND_ESTOP_READY" in result.stderr
         assert "not implemented" not in result.stderr
+
+
+def test_korean_field_runbooks_cover_the_safe_operating_sequence():
+    for document in (ROOT_README, PACKAGE_README):
+        text = document.read_text(encoding="utf-8")
+        for value in (
+            "jetson_field_deploy.sh stage",
+            "jetson_field_deploy.sh build",
+            "jetson_field_deploy.sh preflight",
+            "jetson_field_deploy.sh dry-run",
+            "jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY",
+            "e-stop", "0.3 m", "READY", "Ctrl-C", "arm:=false",
+        ):
+            assert value in text

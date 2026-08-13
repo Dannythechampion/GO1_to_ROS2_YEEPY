@@ -168,71 +168,44 @@ cd /mnt/t500/go1_ros2_project
 ./migration/verify_existing_map_navigation.sh
 ```
 
-## 안전 제한
+## Jetson 현장 실행
 
-- 이번 단계에서는 `arm:=true`를 사용하지 않습니다.
-- LiDAR가 고정되지 않았으므로 지도와 scan 정합은 임시 시험 결과입니다.
-- 기존 지도와 실시간 scan이 맞지 않으면 새 지도를 작성해야 합니다.
-- 실제 주행은 고정 TF·extrinsic, 정지 watchdog, 초기 자세와 좁은 복도
-  검증을 모두 마친 뒤 별도 단계에서 진행합니다.
-
-## 포즈 그래프 진단 및 안전한 dry-run
-
-이 절차는 실제 Jetson·센서 동작을 확인했다는 뜻이 아닙니다. 모든 bringup은
-`arm:=false`로만 실행하며, 센서 장착 위치와 extrinsic 보정이 완료되기 전에는
-armed launch를 구현하거나 실행하지 않습니다.
-
-### Windows 테스트
-
-```powershell
-py -3 -m pytest migration/test_posegraph_scripts.py packages/omx_navigation/test/test_posegraph_launch.py -q
-```
-
-### WSL 빌드·테스트
+이 패키지는 fail-closed 현장 runner를 제공합니다. 실제 주행 전에는 LiDAR 고정,
+FAST-LIO extrinsic, 물리 e-stop, 안전 스탠드 또는 넓은 시험 공간을 운영자가 직접
+확인해야 합니다.
 
 ```bash
-cd /mnt/c/Users/npgy2/Documents/go1/GO1_to_ROS2_YEEPY
-bash -n migration/verify_posegraph_navigation.sh
-python3 -m pytest migration/test_posegraph_scripts.py packages/omx_navigation/test/test_posegraph_launch.py -q
-source /opt/ros/humble/setup.bash
-source /mnt/t500/go1_ros2_ws/install/setup.bash
-cd /mnt/t500/go1_ros2_ws
-colcon build --symlink-install --packages-select go1_driver omx_navigation
-colcon test --packages-select omx_navigation
-colcon test-result --verbose
+cd /mnt/t500/GO1_to_ROS2_YEEPY
+./migration/jetson_field_deploy.sh stage "$PWD" /mnt/t500/go1_ros2_ws
+./migration/build_unitree_go1_wrapper.sh /path/to/unitree_legged_sdk
+./migration/jetson_field_deploy.sh build /mnt/t500/go1_ros2_ws
+./migration/jetson_field_deploy.sh preflight /mnt/t500/go1_ros2_ws
 ```
 
-### 향후 Jetson dry-run
+MID-360과 FAST-LIO를 별도 터미널에서 시작한 다음 무구동 검증을 실행합니다.
 
 ```bash
-ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
-  start_go1_driver:=true arm:=false record_localization:=true record_cloud:=true \
-  diagnostics_root:=/mnt/t500/localization_logs
+./migration/jetson_field_deploy.sh dry-run /mnt/t500/go1_ros2_ws
 ```
 
-기본 진단 루트는 `/mnt/t500/localization_logs`입니다. `record_localization:=true`이면 UTC 시각 기반 세션 디렉터리
-`/mnt/t500/localization_logs/posegraph_*/`가 생성됩니다. 그 안의
-`localization_status.csv`와 `rosbag/`가 같은 세션의 진단 결과입니다.
-`record_localization:=false`이면 진단 디렉터리와 rosbag 프로세스를 만들지 않습니다.
+dry-run은 항상 `arm:=false`이며 진단 기록을 켭니다. RViz에서 대략적인
+`2D Pose Estimate`를 지정한 뒤 `READY/NONE`, `ready=true`, scan-map 정합과
+`map -> camera_init -> body_nav`를 확인합니다. `/slam_localization/pose`는 한 번 오는
+handshake이고, 이후 최신 scan과 두 TF edge가 연속 품질을 감시합니다.
 
-검증은 `./migration/verify_posegraph_navigation.sh preflight` 다음
-`./migration/verify_posegraph_navigation.sh ready` 순서로 실행합니다. `ready`는
-`/amcl` 미실행, TF `map -> camera_init -> body_nav`, 모든 Nav2 lifecycle active,
-그리고 `/go1_driver`의 `arm=false`를 요구합니다. `/slam_localization/pose`는
-토픽 존재만 확인합니다. 보정 뒤 한 번만 오는 handshake가 이미 끝났다는 증거는
-supervisor의 `status=READY/error=NONE` 및 `ready=true`이며, ready verifier는
-조용해진 one-shot pose를 다시 echo하지 않습니다.
+dry-run을 `Ctrl-C`로 종료해 모든 노드가 exit 0인지 확인한 뒤, Go1을 안전하게
+지지하고 운영자가 e-stop을 누를 준비가 된 경우에만 다음 명령을 사용합니다.
 
-상태 토픽의 `error`는 다음처럼 해석합니다: `NONE`은 준비됨, `INPUT_MISSING`은
-입력 누락/오래된 입력, `LOW_OVERLAP`·`AMBIGUOUS`는 scan-map 정합 품질 부족,
-`ODOM_RESET`·`TF_CONFLICT`는 odometry 또는 TF를 먼저 복구해야 함,
-`EXTRINSIC_UNCALIBRATED`는 센서 장착 보정이 필요함을 의미합니다.
+```bash
+./migration/jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY /mnt/t500/go1_ros2_ws
+```
 
-`[0, 0, 0]`의 `map_start_pose`는 저장 graph를 여는 시작값일 뿐 READY를 열지
-않습니다. 사용자의 보정 초기 자세 뒤 `/slam_localization/pose`가 한 번 도착해야
-scan-match handshake가 성립합니다. 그 뒤에는 `/slam_localization/pose`를 heartbeat로
-취급하지 않습니다. supervisor는 신선한 `map -> camera_init` 및
-`camera_init -> body_nav` TF를 합성한 현재 자세에서 최신 scan을 지도와 계속
-대조합니다. scan-map overlap이 `0.45` 아래로 내려가거나 `/scan`, `/Odometry`, 두 TF
-edge 중 하나가 `0.50 s` 넘게 갱신되지 않으면 다음 heartbeat에서 `ready=false`가 되어
-속도 gate가 닫힙니다.
+armed launch는 `arm:=true`, `start_go1_driver:=true`, `record_localization:=true`와
+정확한 토큰을 모두 요구합니다. 새 launch에서 초기 자세와 READY를 다시 확인하고 첫
+goal은 **0.3 m 이내**로 제한합니다. goal cancel, ready loss, watchdog 정지,
+`Ctrl-C` 반복 stand, 물리 e-stop을 각각 확인하기 전에는 시험 반경을 늘리지 마십시오.
+
+`INPUT_MISSING`, `LOW_OVERLAP`, `AMBIGUOUS`, `ODOM_RESET`, `TF_CONFLICT`,
+`POSE_OUTSIDE_MAP`, `SLAM_JUMP`, `EXTRINSIC_UNCALIBRATED` 중 하나라도 표시되면
+속도 gate가 닫힌 상태에서 원인을 먼저 복구하십시오. 기존 지도와 실시간 scan이 맞지
+않으면 armed 실행 대신 지도를 다시 작성해야 합니다.

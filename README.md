@@ -1197,52 +1197,80 @@ Goal cancel 및 watchdog 확인
 arm:=false 종료
 ```
 
-## 포즈 그래프 localization 진단
+## Jetson 현장 배포 및 포즈 그래프 localization
 
-이 저장소의 포즈 그래프 절차는 실제 하드웨어 성공을 주장하지 않습니다. Jetson에서
-실행할 때에도 반드시 `arm:=false` dry-run으로 시작하며, LiDAR/Go1 센서 장착과
-extrinsic 보정이 완료되기 전에는 armed launch를 구현하거나 실행하지 않습니다.
-`go1_posegraph_navigation.launch.py`는 armed 값을 거부하므로 항상 `arm:=false`로
-유지해야 합니다. MID-360 장착·extrinsic 보정 완료 후에도 현재 launch를 수정해
-우회하지 말고, Jetson용 별도 armed launch를 설계하고 안전 리뷰를 받아야 합니다.
-위의 `go1_existing_map.launch.py` 절차는 레거시 AMCL fallback일 뿐 권장 경로가 아닙니다.
+현장 진입은 반드시 `arm:=false` dry-run부터 시작합니다. 아래 armed 명령이 준비되어
+있다는 사실은 실제 센서 장착·extrinsic·e-stop을 자동으로 보증하지 않습니다. 운영자가
+그 항목을 현장에서 확인한 뒤에만 마지막 단계를 실행하십시오. 레거시 AMCL launch는
+비교·장애 대응용이며 권장 경로는 `go1_posegraph_navigation.launch.py`입니다.
 
-Windows PowerShell 테스트:
+### 1. 복사, SDK, 빌드와 테스트
 
-```powershell
-py -3 -m pytest migration/test_posegraph_scripts.py packages/omx_navigation/test/test_posegraph_launch.py -q
-```
-
-WSL에서 문법·빌드·테스트:
+Jetson Ubuntu 22.04의 저장소 루트에서 실행합니다. 기존 workspace 대상이 있으면 staging은
+덮어쓰지 않고 중단하므로, 이전 workspace를 보존하거나 운영자가 별도로 정리한 뒤 다시
+시작하십시오.
 
 ```bash
-cd /mnt/c/Users/npgy2/Documents/go1/GO1_to_ROS2_YEEPY
-bash -n migration/verify_posegraph_navigation.sh
-source /opt/ros/humble/setup.bash
-source /mnt/t500/go1_ros2_ws/install/setup.bash
-python3 -m pytest migration/test_posegraph_scripts.py packages/omx_navigation/test/test_posegraph_launch.py -q
-cd /mnt/t500/go1_ros2_ws && colcon build --symlink-install --packages-select go1_driver omx_navigation
+cd /mnt/t500/GO1_to_ROS2_YEEPY
+./migration/jetson_field_deploy.sh stage "$PWD" /mnt/t500/go1_ros2_ws
+./migration/build_unitree_go1_wrapper.sh /path/to/unitree_legged_sdk
+./migration/jetson_field_deploy.sh build /mnt/t500/go1_ros2_ws
 ```
 
-향후 Jetson dry-run 예시는 다음과 같습니다.
+`build`는 rosdep, 두 패키지 build와 test를 수행하고 `go1_driver`와
+`omx_navigation` 각각에서 테스트가 1개 이상 수집되었는지 확인합니다. error, failure,
+skip 또는 `0 tests`는 모두 실패입니다.
+
+### 2. 센서 실행과 정적 preflight
+
+기존 절차대로 별도 터미널에서 MID-360과 FAST-LIO를 먼저 실행한 뒤 다음 명령을
+실행합니다. `preflight`는 `aarch64`, Ubuntu 22.04, ROS 2 Humble, 필수 ROS 패키지,
+ARM64 Unitree wrapper, posegraph/map artifact, 진단 경로 쓰기 권한을 검사합니다.
 
 ```bash
-ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
-  start_go1_driver:=true arm:=false record_localization:=true \
-  diagnostics_root:=/mnt/t500/localization_logs
+cd /mnt/t500/GO1_to_ROS2_YEEPY
+./migration/jetson_field_deploy.sh preflight /mnt/t500/go1_ros2_ws
 ```
 
-기본 진단 루트는 `/mnt/t500/localization_logs`이며, 기록을 켜면 `/mnt/t500/localization_logs/posegraph_*/localization_status.csv`와
-동일 세션의 `rosbag/`가 생성됩니다. 기록 토픽에는 `/slam_localization/pose`가
-포함됩니다. `[0, 0, 0]` `map_start_pose`는 저장 graph를 여는 용도이고 READY를 열지
-않습니다. 보정 초기 자세 뒤의 `/slam_localization/pose` 한 번은 scan-match handshake이며,
-계속적인 위치·품질 판정은 신선한 `map -> camera_init`와
-`camera_init -> body_nav` TF heartbeat로 수행합니다. 상태 토픽 `error`가 `INPUT_MISSING`,
-`LOW_OVERLAP`, `AMBIGUOUS`, `ODOM_RESET`, `TF_CONFLICT`, 또는
-`EXTRINSIC_UNCALIBRATED`이면 이동하지 말고 해당 입력·정합·TF·보정을 먼저
-복구하십시오. `ready` 검증은 저장 `.posegraph`·`.data` artifact, `/amcl` 미실행, 두 TF
-edge, `READY/NONE` 상태, Nav2 lifecycle, `arm=false`를 확인합니다.
-`/slam_localization/pose`는 존재 여부만 요구하는 one-shot handshake 토픽이므로,
-ready 검증은 이미 조용해진 pose를 다시 echo하지 않습니다. 대신 supervisor의
-`status=READY/error=NONE`와 `ready=true`를 handshake 완료의 fail-closed 증거로
-사용합니다.
+### 3. 무구동 dry-run
+
+```bash
+./migration/jetson_field_deploy.sh dry-run /mnt/t500/go1_ros2_ws
+```
+
+이 명령은 live MID-360, FAST-LIO, `/Odometry`, `camera_init -> body`를 확인한 뒤
+`start_go1_driver:=true arm:=false record_localization:=true rviz:=false`로 시작합니다.
+RViz에서 대략적인 `2D Pose Estimate`를 한 번 지정하고 supervisor가
+`status=READY`, `error=NONE`, `ready=true`인지 확인합니다. READY가 아니면 움직이지 말고
+scan/TF/extrinsic/초기 자세를 복구합니다. 기본 진단 경로는
+`/mnt/t500/localization_logs/posegraph_*/`입니다.
+
+### 4. armed 현장 시험
+
+dry-run을 `Ctrl-C`로 정상 종료하고 모든 ROS 노드가 exit 0인지 확인합니다. Go1을
+스탠드에 올리거나 넓은 시험 공간에 두고, 운영자가 물리 e-stop을 즉시 누를 수 있는
+상태에서만 다음 명령을 실행합니다.
+
+```bash
+./migration/jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY /mnt/t500/go1_ros2_ws
+```
+
+launch도 독립적으로 `arm:=true`, `start_go1_driver:=true`,
+`record_localization:=true`, 정확한 확인 토큰을 모두 검사하므로 일부 인자만 전달해서
+우회할 수 없습니다. 새 프로세스이므로 RViz에서 `2D Pose Estimate`를 다시 지정해
+READY/NONE을 확인한 후 첫 goal은 현재 위치에서 **0.3 m 이내**로 지정합니다.
+
+### 5. 현장 합격 기준
+
+- READY 전에는 `/cmd_vel`이 0이고 goal이 거부됩니다.
+- goal cancel 즉시 정지하며, localization 손실 시 ready gate와 watchdog이 정지시킵니다.
+- `Ctrl-C` 시 gate가 정지를 발행하고 Go1 driver가 반복 stand를 보낸 뒤 모든 노드가
+  exit 0으로 끝납니다.
+- 실제 센서 timestamp/주기, `map -> camera_init -> body_nav`, extrinsic, 0.3 m goal,
+  cancel, ready loss, e-stop을 모두 통과하기 전에는 자율주행 합격으로 기록하지 않습니다.
+
+`/slam_localization/pose`는 보정 뒤 한 번 오는 handshake 토픽입니다. 이후 연속 품질은
+최신 scan과 `map -> camera_init`, `camera_init -> body_nav` TF로 감시됩니다. 오류가
+`INPUT_MISSING`, `LOW_OVERLAP`, `AMBIGUOUS`, `ODOM_RESET`, `TF_CONFLICT`,
+`POSE_OUTSIDE_MAP`, `SLAM_JUMP` 또는 `EXTRINSIC_UNCALIBRATED`이면 원인을 복구하기
+전까지 이동하지 마십시오.
