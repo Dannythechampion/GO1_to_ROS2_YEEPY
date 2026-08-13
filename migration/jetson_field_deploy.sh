@@ -58,10 +58,11 @@ for package in ("go1_driver", "omx_navigation"):
     if not report.is_file():
         raise SystemExit(f"ERROR: missing pytest result for {package}: {report}")
     root = ET.parse(report).getroot()
-    tests = int(root.attrib.get("tests", 0))
-    errors = int(root.attrib.get("errors", 0))
-    failures = int(root.attrib.get("failures", 0))
-    skipped = int(root.attrib.get("skipped", 0))
+    suites = [root] if root.tag == "testsuite" else root.findall(".//testsuite")
+    tests = sum(int(suite.attrib.get("tests", 0)) for suite in suites)
+    errors = sum(int(suite.attrib.get("errors", 0)) for suite in suites)
+    failures = sum(int(suite.attrib.get("failures", 0)) for suite in suites)
+    skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
     if tests <= 0 or errors or failures or skipped:
         raise SystemExit(
             f"ERROR: unsafe test result for {package}: "

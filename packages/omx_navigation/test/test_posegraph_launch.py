@@ -19,7 +19,9 @@ def load_launch_module():
 
 def valid_paths():
     package = Path(__file__).parents[1]
-    map_root = package.parents[1] / "maps" / "hanyang_9f" / "20260728_204825" / "slam_toolbox"
+    staged_maps = package / "maps"
+    maps = staged_maps if staged_maps.is_dir() else package.parents[1] / "maps"
+    map_root = maps / "hanyang_9f" / "20260728_204825" / "slam_toolbox"
     return {
         "map": str(map_root / "hanyang_9f_annotated.yaml"),
         "posegraph": str(map_root / "hanyang_9f"),
