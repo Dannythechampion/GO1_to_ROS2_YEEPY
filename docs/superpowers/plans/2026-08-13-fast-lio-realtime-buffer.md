@@ -741,3 +741,45 @@ Expected: no commissioned pose was written, `arm=false`, and DRY-RUN remains act
 If FAST-LIO passes but AMCL cannot be tested because the location is outside the map, report that
 specific missing evidence and keep the goal active. If all items pass, report the exact evidence
 paths and commit hashes; only then mark the goal complete.
+
+### Task 10: Publish a GitHub-Ready Investigation Handoff
+
+**Files:**
+- Create: `docs/reports/2026-08-13-fast-lio-amcl-time-alignment.md`
+
+**Interfaces:**
+- Consumes: local commits/tests and every Jetson evidence directory produced by Tasks 6-9.
+- Produces: a self-contained Markdown report that another engineer can use after cloning the GitHub branch, even if the runtime issue remains unresolved.
+
+- [ ] **Step 1: Record reproducible context before runtime changes**
+
+Include the repository branch and commit graph, pinned FAST-LIO/Livox revisions, Jetson and ROS
+paths, MID-360 address, `ROS_DOMAIN_ID`, process launch helpers, safety state, and the exact local
+test command including `PYTHONPATH`.
+
+- [ ] **Step 2: Maintain an evidence table during each experiment**
+
+For every diagnostic or fix attempt record: timestamp, hypothesis, single variable changed,
+commands, process IDs, input/output topic statistics, FAST-LIO queue statistics, outcome, raw
+evidence path, and commit containing the change. Never replace failed attempts; append them so the
+report preserves the causal history.
+
+- [ ] **Step 3: Document reproduction, deployment, rollback, and continuation commands**
+
+Provide copyable commands for cloning/checking out the branch, setting `PYTHONPATH`, running unit
+tests, deploying migration files, restoring the newest backup, building diagnostic/bounded modes,
+restarting only FAST-LIO, running both verifiers, and collecting logs. Use placeholders only for
+the remote Git URL and future evidence timestamps, and label those values explicitly.
+
+- [ ] **Step 4: End with a current-state decision table**
+
+List each required gate as `PASS`, `FAIL`, or `NOT RUN`, cite direct evidence, state the next single
+hypothesis to test, and list actions that must not be taken (`arm=true`, initial-pose save, Nav2 goal)
+until all gates pass.
+
+- [ ] **Step 5: Commit the report independently**
+
+```bash
+git add docs/reports/2026-08-13-fast-lio-amcl-time-alignment.md
+git commit -m "docs: report FAST-LIO time alignment investigation"
+```
