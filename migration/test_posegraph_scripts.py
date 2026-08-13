@@ -21,6 +21,7 @@ ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "migration" / "verify_posegraph_navigation.sh"
 LAUNCH = ROOT / "packages" / "omx_navigation" / "launch" / "go1_posegraph_navigation.launch.py"
 STAGE = ROOT / "migration" / "stage_local_ros2_packages.sh"
+FIELD = ROOT / "migration" / "jetson_field_deploy.sh"
 BASE_TOPICS = (
     "/scan", "/Odometry", "/map", "/slam_localization/pose",
     "/localization_supervisor/status", "/localization_supervisor/ready",
@@ -242,6 +243,8 @@ def test_launch_has_exact_diagnostics_root_and_safe_record_action():
 
 def test_stage_copies_posegraph_runtime_files_and_maps():
     text = STAGE.read_text(encoding="utf-8")
-    for entry in ("package.xml", "omx_navigation", "config", "launch", "maps"):
+    for entry in ("package.xml", "omx_navigation", "config", "launch", "maps", "test"):
         assert entry in text
     assert "verify_posegraph_navigation.sh" in text
+    assert "jetson_field_deploy.sh" in text
+    assert FIELD.is_file()

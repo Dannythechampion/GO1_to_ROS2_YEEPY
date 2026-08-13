@@ -50,6 +50,7 @@ omx_entries=(
   config
   launch
   rviz
+  test
 )
 
 for entry in "${omx_entries[@]}"; do
@@ -62,6 +63,8 @@ done
 # install it on the Jetson without relying on the source repository path.
 cp -a "$maps_source" "$omx_target/maps"
 cp -a "$repo_root/migration/verify_posegraph_navigation.sh" "$omx_target/verify_posegraph_navigation.sh"
+cp -a "$repo_root/migration/jetson_field_deploy.sh" "$omx_target/jetson_field_deploy.sh"
+chmod +x "$omx_target/verify_posegraph_navigation.sh" "$omx_target/jetson_field_deploy.sh"
 
 printf 'Staged local ROS2 packages:\n'
 printf '  %s\n' "$go1_target" "$omx_target"
