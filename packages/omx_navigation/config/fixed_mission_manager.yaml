@@ -1,0 +1,5 @@
+fixed_mission_manager:
+  ros__parameters:
+    destination_pose_file: ""
+    minimum_clearance: 0.35
+    heartbeat_rate: 10.0

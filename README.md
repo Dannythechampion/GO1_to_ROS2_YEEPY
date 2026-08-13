@@ -2,6 +2,8 @@
 
 Ubuntu 22.04 / ROS2 Humble 환경에서 Unitree Go1과 Livox MID-360을 이용하여, 이미 생성된 한양대 9층 2D 지도를 불러오고 AMCL localization과 Nav2를 통해 Go1을 자율주행시키는 절차입니다.
 
+> **현재 고정 출발점 운영 경로:** AMCL supervisor, standalone motion gate, `/mission/start` 및 RViz 임의 goal의 최신 명령은 [고정 출발점 AMCL 및 Mission 실행 명령어](docs/FIXED_START_AMCL_MISSION_COMMANDS.md)를 사용합니다. 아래 기존 `rviz_goal_bridge` 및 직접 `/cmd_vel` 설명은 과거 end-to-end bringup 기록이며 현재 안전 경로를 대체하지 않습니다.
+
 이 문서는 다음 조건을 전제로 합니다.
 
 - `codex/hanyang-9f-mapping-pcl-fix` 브랜치에서 세션 `20260728_204825` 매핑을 완료했습니다.

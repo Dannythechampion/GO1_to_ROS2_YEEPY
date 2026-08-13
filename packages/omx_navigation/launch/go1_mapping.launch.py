@@ -104,7 +104,7 @@ def generate_launch_description() -> LaunchDescription:
             os.path.join(go1_share, "launch", "go1_driver.launch.py")
         ),
         condition=IfCondition(start_go1_driver),
-        launch_arguments={"arm": arm, "cmd_vel_topic": "/cmd_vel"}.items(),
+        launch_arguments={"arm": arm, "cmd_vel_topic": "/cmd_vel_safe"}.items(),
     )
 
     rosbag = OpaqueFunction(

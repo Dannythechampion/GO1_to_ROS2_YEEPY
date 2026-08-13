@@ -1,4 +1,4 @@
-"""Start SLAM/localization, Nav2, RViz, and the RViz goal bridge."""
+"""Start SLAM/localization, Nav2, and RViz."""
 
 import os
 
@@ -106,13 +106,6 @@ def generate_launch_description() -> LaunchDescription:
             slam_launch,
             localization_launch,
             navigation_launch,
-            Node(
-                package="omx_navigation",
-                executable="rviz_goal_bridge",
-                name="rviz_goal_bridge",
-                output="screen",
-                parameters=[{"use_sim_time": use_sim_time}],
-            ),
         ]
     )
 

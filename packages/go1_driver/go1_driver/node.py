@@ -22,7 +22,7 @@ class Go1Driver(Node):
         super().__init__("go1_driver")
 
         self.declare_parameter("arm", False)
-        self.declare_parameter("cmd_vel_topic", "/cmd_vel")
+        self.declare_parameter("cmd_vel_topic", "/cmd_vel_safe")
         self.declare_parameter("applied_topic", "/go1/cmd_vel_applied")
         self.declare_parameter("state_topic", "/go1/control_state")
         self.declare_parameter("publish_rate", 100.0)
