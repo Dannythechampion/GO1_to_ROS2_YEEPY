@@ -144,9 +144,15 @@ class LocalizationSupervisor(Node):
         self._ready_publisher = self.create_publisher(Bool, "~/ready", 10)
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE)
         map_qos = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        latest_sensor_qos = QoSProfile(
+            depth=1,
+            history=HistoryPolicy.KEEP_LAST,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self._map_subscription = self.create_subscription(OccupancyGrid, "/map", self._on_map, map_qos)
         self._scan_subscription = self.create_subscription(LaserScan, "/scan", self._on_scan, qos_profile_sensor_data)
-        self._odom_subscription = self.create_subscription(Odometry, "/Odometry", self._on_odom, qos_profile_sensor_data)
+        self._odom_subscription = self.create_subscription(Odometry, "/Odometry", self._on_odom, latest_sensor_qos)
         self._initialpose_subscription = self.create_subscription(PoseWithCovarianceStamped, "/initialpose", self._on_initial_pose, reliable_qos)
         self._slam_pose_subscription = self.create_subscription(PoseWithCovarianceStamped, "/slam_localization/pose", self._on_slam_pose, reliable_qos)
         self._tf_subscription = self.create_subscription(TFMessage, "/tf", self._on_tf, qos_profile_sensor_data)

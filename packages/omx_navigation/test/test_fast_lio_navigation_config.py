@@ -42,6 +42,7 @@ def test_scan_projection_uses_the_planar_navigation_frame():
     )["pointcloud_to_laserscan"]["ros__parameters"]
 
     assert params["target_frame"] == "body_nav"
+    assert params["queue_size"] == 1
 
 
 def test_readme_launches_fast_lio_with_low_load_navigation_profile():

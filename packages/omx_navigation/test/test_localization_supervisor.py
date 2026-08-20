@@ -107,7 +107,9 @@ def supervisor_module(monkeypatch):
     modules["rclpy.node"] = node_module
     qos_module = ModuleType("rclpy.qos")
     qos_module.QoSProfile = lambda **kwargs: SimpleNamespace(**kwargs)
-    qos_module.ReliabilityPolicy = SimpleNamespace(RELIABLE="reliable")
+    qos_module.ReliabilityPolicy = SimpleNamespace(
+        RELIABLE="reliable", BEST_EFFORT="best_effort"
+    )
     qos_module.DurabilityPolicy = SimpleNamespace(TRANSIENT_LOCAL="transient_local", VOLATILE="volatile")
     qos_module.HistoryPolicy = SimpleNamespace(KEEP_LAST="keep_last")
     qos_module.qos_profile_sensor_data = "sensor_data"
@@ -609,7 +611,10 @@ def test_supervisor_clears_invalid_data_and_uses_required_qos(supervisor_module)
     subscriptions = {subscription.topic: subscription for subscription in node.subscriptions}
     assert subscriptions["/map"].qos.durability == "transient_local"
     assert subscriptions["/scan"].qos == "sensor_data"
-    assert subscriptions["/Odometry"].qos == "sensor_data"
+    assert subscriptions["/Odometry"].qos.depth == 1
+    assert subscriptions["/Odometry"].qos.history == "keep_last"
+    assert subscriptions["/Odometry"].qos.reliability == "best_effort"
+    assert subscriptions["/Odometry"].qos.durability == "volatile"
     assert subscriptions["/tf"].qos == "sensor_data"
 
     node._on_map(map_message(occupied_world=((1.0, 0.0), (2.0, 0.0))))
