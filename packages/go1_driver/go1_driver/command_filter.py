@@ -7,7 +7,10 @@ import math
 from typing import Optional
 
 
-STAND_MODE = 1
+# Unitree HighCmd mode: 0 = idle/default stand, 1 = force stand, 2 = velocity walking.
+# The robot ignores a direct force-stand -> walking transition, so the neutral state
+# must be idle stand (matches unitree_legged_sdk example_walk.py).
+STAND_MODE = 0
 WALK_MODE = 2
 
 
