@@ -1,233 +1,164 @@
 import math
+from dataclasses import replace
 
 import pytest
 
 from omx_navigation.localization_state import (
-    LocalizationObservation,
+    ErrorCode,
+    LocalizationPolicy,
     LocalizationState,
-    LocalizationSupervisorCore,
+    LocalizationStateMachine,
+    QualityObservation,
 )
-from omx_navigation.pose_config import PlanarPose, PoseConfigurationError
 
 
-START = PlanarPose("map", 1.0, 2.0, 0.1)
-
-
-def good_observation(now=1.0, *, x=1.02, covariance=0.01, scan_count=10):
-    return LocalizationObservation(
+def good(now: float) -> QualityObservation:
+    return QualityObservation(
         now=now,
-        amcl_stamp=now - 0.01,
-        x=x,
-        y=2.01,
-        yaw=0.11,
-        covariance_x=covariance,
-        covariance_y=covariance,
-        covariance_yaw=0.01,
-        pose_age=0.01,
-        scan_age=0.01,
-        odom_age=0.01,
-        tf_age=0.01,
-        tf_ok=True,
-        valid_beams=120,
-        consecutive_scans=scan_count,
-        median_residual=0.10,
-        p80_residual=0.20,
+        inputs_fresh=True,
+        pose_available=True,
+        overlap=0.70,
+        ambiguity_margin=0.20,
+        position_jump=0.01,
+        yaw_jump=0.01,
+        odom_reset=False,
+        tf_conflict=False,
     )
 
 
-def seeded_core():
-    core = LocalizationSupervisorCore(START, initial_pose_arm=True)
-    core.set_inputs_available(True)
-    assert core.state is LocalizationState.SEEDING
-    assert core.consume_seed_request(0.5) == START
-    assert core.state is LocalizationState.VERIFYING
-    return core
+def ready_machine() -> LocalizationStateMachine:
+    machine = LocalizationStateMachine(LocalizationPolicy(verify_duration=3.0))
+    machine.receive_initial_pose(0.0)
+    machine.observe(good(0.1))
+    machine.observe(good(3.2))
+    return machine
 
 
-def test_missing_pose_is_uncommissioned_when_not_armed():
-    core = LocalizationSupervisorCore(None, initial_pose_arm=False)
-    core.set_inputs_available(True)
-    assert core.state is LocalizationState.UNCOMMISSIONED
-    assert core.consume_seed_request(0.0) is None
-    assert not core.ready
+def test_one_input_reaches_ready_after_stable_verification():
+    machine = LocalizationStateMachine(LocalizationPolicy(verify_duration=3.0))
+    assert machine.receive_initial_pose(0.0).state is LocalizationState.ALIGNING
+    assert machine.observe(good(0.1)).state is LocalizationState.VERIFYING
+    assert machine.observe(good(3.2)).state is LocalizationState.READY
 
 
-def test_missing_pose_is_configuration_error_when_armed():
-    with pytest.raises(PoseConfigurationError):
-        LocalizationSupervisorCore(None, initial_pose_arm=True)
-
-
-def test_configured_pose_remains_unseeded_when_initial_pose_is_disarmed():
-    core = LocalizationSupervisorCore(START, initial_pose_arm=False)
-    core.set_inputs_available(True)
-    assert core.state is LocalizationState.WAITING_FOR_INPUTS
-    assert core.consume_seed_request(1.0) is None
-    assert "disarmed" in core.reason
-
-
-def test_seed_is_emitted_once_and_requires_post_seed_amcl_pose():
-    core = seeded_core()
-    assert core.consume_seed_request(0.6) is None
-    stale = good_observation(now=1.0)
-    stale = LocalizationObservation(**{**stale.__dict__, "amcl_stamp": 0.4})
-    result = core.observe(stale)
-    assert result.state is LocalizationState.VERIFYING
-    assert result.reason == "amcl pose predates current seed"
-
-
-@pytest.mark.parametrize(
-    "changes, reason",
-    [
-        ({"x": 1.4}, "start pose delta"),
-        ({"covariance_x": 0.05}, "covariance"),
-        ({"pose_age": 0.31}, "stale"),
-        ({"tf_ok": False}, "TF"),
-        ({"valid_beams": 99}, "beams"),
-        ({"consecutive_scans": 9}, "scans"),
-        ({"median_residual": 0.16}, "median"),
-        ({"p80_residual": 0.31}, "p80"),
-    ],
-)
-def test_each_readiness_condition_fails_closed(changes, reason):
-    core = seeded_core()
-    observation = good_observation()
-    observation = LocalizationObservation(**{**observation.__dict__, **changes})
-    status = core.observe(observation)
-    assert status.state is LocalizationState.VERIFYING
-    assert reason.lower() in status.reason.lower()
-
-
-def test_all_checks_must_hold_continuously_for_two_seconds():
-    core = seeded_core()
-    assert not core.observe(good_observation(now=1.0)).ready
-    assert not core.observe(good_observation(now=2.99)).ready
-    assert core.observe(good_observation(now=3.01)).ready
-
-
-def test_distance_from_start_is_not_checked_after_initial_readiness():
-    core = seeded_core()
-    core.observe(good_observation(now=1.0))
-    assert core.observe(good_observation(now=3.1)).ready
-    assert core.observe(good_observation(now=3.2, x=10.0)).ready
-
-
-def test_runtime_failure_immediately_degrades_ready_state():
-    core = seeded_core()
-    core.observe(good_observation(now=1.0))
-    core.observe(good_observation(now=3.1))
-    status = core.observe(good_observation(now=3.2, covariance=0.05))
-    assert status.state is LocalizationState.DEGRADED
-    assert not status.ready
-
-
-@pytest.mark.parametrize(
-    "second",
-    [
-        {"stamp": 0.9, "frame_id": "camera_init", "x": 0.0, "y": 0.0, "yaw": 0.0},
-        {"stamp": 1.2, "frame_id": "new_odom", "x": 0.0, "y": 0.0, "yaw": 0.0},
-        {"stamp": 1.2, "frame_id": "camera_init", "x": 0.6, "y": 0.0, "yaw": 0.0},
-        {"stamp": 1.2, "frame_id": "camera_init", "x": 0.0, "y": 0.0, "yaw": math.radians(21)},
-    ],
-)
-def test_session_restart_signals_clear_readiness(second):
-    core = seeded_core()
-    core.observe(good_observation(now=1.0))
-    core.observe(good_observation(now=3.1))
-    core.observe_odometry(1.0, "camera_init", 0.0, 0.0, 0.0, commanded=False)
-    assert core.observe_odometry(commanded=False, **second)
-    assert core.state is LocalizationState.RELOCALIZING
-    assert not core.ready
-
-
-def test_commanded_motion_does_not_trigger_jump_restart():
-    core = seeded_core()
-    core.observe_odometry(1.0, "camera_init", 0.0, 0.0, 0.0, commanded=False)
-    assert not core.observe_odometry(
-        1.2, "camera_init", 0.6, 0.0, 0.0, commanded=True
+def test_alignment_timeout_retries_three_times_then_loses():
+    machine = LocalizationStateMachine(
+        LocalizationPolicy(alignment_timeout=6.0, max_attempts=3)
     )
+    machine.receive_initial_pose(0.0)
+    first = machine.observe(QualityObservation.missing(now=2.1))
+    second = machine.observe(QualityObservation.missing(now=4.2))
+    final = machine.observe(QualityObservation.missing(now=6.3))
+    assert first.republish_initial_pose is True
+    assert second.republish_initial_pose is True
+    assert final.state is LocalizationState.LOST
+    assert final.error is ErrorCode.ALIGNMENT_TIMEOUT
 
 
-def test_session_restart_waits_for_explicit_reset_before_reseeding():
-    core = seeded_core()
-    core.observe_odometry(1.0, "camera_init", 0.0, 0.0, 0.0, commanded=False)
-    assert core.observe_odometry(
-        1.2, "camera_init", 0.6, 0.0, 0.0, commanded=False
-    )
-    core.set_inputs_available(True)
-    assert core.state is LocalizationState.RELOCALIZING
-    assert core.consume_seed_request(2.0) is None
-    assert core.request_reset()
-    core.set_inputs_available(True)
-    assert core.consume_seed_request(2.1) == START
+def test_ready_degrades_then_loses_after_two_seconds():
+    machine = ready_machine()
+    degraded = machine.observe(replace(good(4.0), overlap=0.10))
+    lost = machine.observe(replace(good(6.1), overlap=0.10))
+    assert degraded.state is LocalizationState.DEGRADED
+    assert lost.state is LocalizationState.LOST
+    assert lost.error is ErrorCode.LOW_OVERLAP
 
 
-def test_reseed_reapplies_initial_distance_to_start_check():
-    core = seeded_core()
-    core.observe(good_observation(now=1.0))
-    core.observe(good_observation(now=3.1))
-    assert core.request_reset()
-    core.set_inputs_available(True)
-    core.consume_seed_request(4.0)
-    status = core.observe(good_observation(now=4.1, x=10.0))
-    assert not status.ready
-    assert "start pose delta" in status.reason
-
-
-def test_scan_timestamp_rollback_enters_relocalizing_without_reseed():
-    core = seeded_core()
-    assert not core.observe_scan_stamp(2.0)
-    assert core.observe_scan_stamp(1.9)
-    assert core.state is LocalizationState.RELOCALIZING
-    core.set_inputs_available(False)
-    assert core.state is LocalizationState.RELOCALIZING
-    assert core.consume_seed_request(2.1) is None
-
-
-def test_wrong_amcl_frame_and_future_observation_fail_closed():
-    core = seeded_core()
-    wrong_frame = good_observation(now=1.0)
-    wrong_frame = LocalizationObservation(**{**wrong_frame.__dict__, "amcl_frame": "odom"})
-    assert "frame" in core.observe(wrong_frame).reason
-    future = good_observation(now=1.1)
-    future = LocalizationObservation(**{**future.__dict__, "scan_age": -0.01})
-    assert "future" in core.observe(future).reason
+def test_odom_reset_and_tf_conflict_are_immediate_loss():
+    for field, error in (
+        ("odom_reset", ErrorCode.ODOM_RESET),
+        ("tf_conflict", ErrorCode.TF_CONFLICT),
+    ):
+        machine = ready_machine()
+        transition = machine.observe(replace(good(4.0), **{field: True}))
+        assert transition.state is LocalizationState.LOST
+        assert transition.error is error
+        assert transition.publish_stop is True
 
 
 @pytest.mark.parametrize(
-    "changes",
-    [
-        {"x": float("nan")},
-        {"yaw": float("inf")},
-        {"covariance_x": float("nan")},
-        {"covariance_y": -0.01},
-        {"median_residual": float("nan")},
-        {"p80_residual": float("inf")},
-    ],
+    "kwargs",
+    (
+        {"alignment_timeout": 0.0},
+        {"max_attempts": 0},
+        {"verify_duration": -1.0},
+        {"degraded_timeout": -1.0},
+        {"min_overlap": 1.01},
+        {"min_ambiguity_margin": -0.01},
+        {"max_position_jump": 0.0},
+        {"max_yaw_jump": math.pi + 0.01},
+    ),
 )
-def test_invalid_numeric_localization_observation_never_becomes_ready(changes):
-    core = seeded_core()
-    observation = good_observation(now=1.0)
-    invalid = LocalizationObservation(**{**observation.__dict__, **changes})
-    status = core.observe(invalid)
-    assert not status.ready
-    assert "invalid numeric" in status.reason
+def test_policy_rejects_invalid_duration_count_and_ranges(kwargs):
+    with pytest.raises(ValueError):
+        LocalizationPolicy(**kwargs)
 
 
-def test_missing_runtime_observation_clears_ready_without_reseeding():
-    core = seeded_core()
-    core.observe(good_observation(now=1.0))
-    assert core.observe(good_observation(now=3.1)).ready
-    status = core.mark_runtime_unavailable("scan transform unavailable")
-    assert not status.ready
-    assert status.state is LocalizationState.DEGRADED
-    assert core.consume_seed_request(3.2) is None
+def test_bad_quality_during_verification_restarts_alignment_without_accepting_pose():
+    machine = LocalizationStateMachine(LocalizationPolicy(verify_duration=3.0))
+    machine.receive_initial_pose(0.0)
+    assert machine.observe(good(0.1)).state is LocalizationState.VERIFYING
+    transition = machine.observe(replace(good(1.0), ambiguity_margin=0.01))
+    assert transition.state is LocalizationState.ALIGNING
+    assert transition.error is ErrorCode.AMBIGUOUS
+    assert transition.publish_stop is True
 
 
-def test_explicit_reset_clears_ready_and_requests_reseed():
-    core = seeded_core()
-    core.observe(good_observation(now=1.0))
-    core.observe(good_observation(now=3.1))
-    assert core.request_reset()
-    assert core.state is LocalizationState.RELOCALIZING
-    assert not core.ready
-    assert core.consume_seed_request(4.0) == START
+def test_retry_restarts_a_lost_machine_and_republishes_initial_pose():
+    machine = LocalizationStateMachine(LocalizationPolicy(max_attempts=1))
+    machine.receive_initial_pose(0.0)
+    machine.observe(QualityObservation.missing(now=20.1))
+    transition = machine.retry(now=21.0)
+    assert transition.state is LocalizationState.ALIGNING
+    assert transition.error is ErrorCode.NONE
+    assert transition.republish_initial_pose is True
+
+
+def test_default_alignment_timeout_limits_all_three_attempts_to_twenty_seconds():
+    machine = LocalizationStateMachine()
+    machine.receive_initial_pose(0.0)
+    assert machine.observe(QualityObservation.missing(now=6.7)).republish_initial_pose
+    assert machine.observe(QualityObservation.missing(now=13.4)).republish_initial_pose
+    transition = machine.observe(QualityObservation.missing(now=20.1))
+    assert transition.state is LocalizationState.LOST
+    assert transition.error is ErrorCode.ALIGNMENT_TIMEOUT
+
+
+def test_retry_does_not_extend_the_first_initial_pose_deadline():
+    machine = LocalizationStateMachine()
+    machine.receive_initial_pose(0.0)
+    machine.retry(now=10.0)
+    transition = machine.observe(QualityObservation.missing(now=20.1))
+    assert transition.state is LocalizationState.LOST
+    assert transition.error is ErrorCode.ALIGNMENT_TIMEOUT
+
+
+@pytest.mark.parametrize(
+    ("field", "error"),
+    (("odom_reset", ErrorCode.ODOM_RESET), ("tf_conflict", ErrorCode.TF_CONFLICT)),
+)
+def test_waiting_input_still_loses_immediately_on_safety_fault(field, error):
+    machine = LocalizationStateMachine()
+    transition = machine.observe(replace(good(0.0), **{field: True}))
+    assert transition.state is LocalizationState.LOST
+    assert transition.error is error
+
+
+@pytest.mark.parametrize("field", ("position_jump", "yaw_jump"))
+def test_negative_observation_distance_is_rejected(field):
+    with pytest.raises(ValueError, match=field):
+        replace(good(0.0), **{field: -0.01})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("alignment_timeout", True),
+        ("verify_duration", "3.0"),
+        ("min_overlap", False),
+        ("max_position_jump", object()),
+    ),
+)
+def test_policy_rejects_boolean_and_non_numeric_float_values(field, value):
+    with pytest.raises(ValueError, match=field):
+        LocalizationPolicy(**{field: value})

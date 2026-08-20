@@ -17,8 +17,20 @@ def test_mapping_launch_uses_fast_lio_topics_and_frames():
         '"slam": "true"',
         '"map_frame": "map"',
         '"pointcloud_to_laserscan_node"',
+        'executable="planar_base_frame"',
+        'planar_base_frame = LaunchConfiguration("planar_base_frame")',
+        '"odom_frame": odom_frame',
+        '"source_base_frame": base_frame',
+        '"planar_base_frame": planar_base_frame',
+        'DeclareLaunchArgument("planar_base_frame", default_value="body_nav")',
+        'parameters=[scan_params_file, {"target_frame": planar_base_frame}]',
     ):
         assert expected in text
+
+
+def test_mapping_launch_registers_planar_frame_before_scan_projection():
+    text = LAUNCH.read_text(encoding="utf-8")
+    assert text.index("planar_base_frame,") < text.index("scan_projection,")
 
 
 def test_mapping_launch_defaults_to_manual_controller_and_disarmed_driver():

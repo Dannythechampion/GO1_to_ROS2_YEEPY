@@ -64,6 +64,7 @@ def generate_launch_description() -> LaunchDescription:
     odom_topic = LaunchConfiguration("odom_topic")
     odom_frame = LaunchConfiguration("odom_frame")
     base_frame = LaunchConfiguration("base_frame")
+    planar_base_frame = LaunchConfiguration("planar_base_frame")
     nav2_params_file = LaunchConfiguration("params_file")
     slam_params_file = LaunchConfiguration("slam_params_file")
     scan_params_file = LaunchConfiguration("scan_params_file")
@@ -78,7 +79,21 @@ def generate_launch_description() -> LaunchDescription:
         name="pointcloud_to_laserscan",
         output="screen",
         remappings=[("cloud_in", cloud_topic), ("scan", scan_topic)],
-        parameters=[scan_params_file],
+        parameters=[scan_params_file, {"target_frame": planar_base_frame}],
+    )
+
+    planar_base_frame = Node(
+        package="omx_navigation",
+        executable="planar_base_frame",
+        name="planar_base_frame",
+        output="screen",
+        parameters=[
+            {
+                "odom_frame": odom_frame,
+                "source_base_frame": base_frame,
+                "planar_base_frame": planar_base_frame,
+            }
+        ],
     )
 
     mapping = IncludeLaunchDescription(
@@ -104,7 +119,7 @@ def generate_launch_description() -> LaunchDescription:
             os.path.join(go1_share, "launch", "go1_driver.launch.py")
         ),
         condition=IfCondition(start_go1_driver),
-        launch_arguments={"arm": arm, "cmd_vel_topic": "/cmd_vel_safe"}.items(),
+        launch_arguments={"arm": arm, "cmd_vel_topic": "/cmd_vel"}.items(),
     )
 
     rosbag = OpaqueFunction(
@@ -119,6 +134,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("odom_topic", default_value="/Odometry"),
             DeclareLaunchArgument("odom_frame", default_value="camera_init"),
             DeclareLaunchArgument("base_frame", default_value="body"),
+            DeclareLaunchArgument("planar_base_frame", default_value="body_nav"),
             DeclareLaunchArgument("ros_domain_id", default_value="100"),
             DeclareLaunchArgument(
                 "params_file",
@@ -167,6 +183,10 @@ def generate_launch_description() -> LaunchDescription:
                 "ROS_DOMAIN_ID", LaunchConfiguration("ros_domain_id")
             ),
             rosbag,
+            # This is action registration order, not a TF readiness barrier.
+            # Early clouds may be dropped transiently; conversion resumes once
+            # FAST-LIO publishes the source transform and the planar TF arrives.
+            planar_base_frame,
             scan_projection,
             mapping,
             go1_driver,

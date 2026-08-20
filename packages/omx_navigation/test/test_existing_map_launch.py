@@ -16,14 +16,13 @@ def test_launch_defaults_are_safe():
     assert 'default_value="/Odometry"' in text
     assert 'default_value="camera_init"' in text
     assert 'default_value="body"' in text
-    assert "OpaqueFunction(function=validate_runtime_configuration)" in text
+    assert "OpaqueFunction(function=validate_map)" in text
     assert "Existing map YAML does not exist" in text
 
 
-def test_scan_projection_is_low_load_and_body_framed():
+def test_scan_projection_is_low_load_and_planar_framed():
     text = SCAN.read_text(encoding="utf-8")
     for expected in (
-        "target_frame: body",
         "min_height: -0.20",
         "max_height: 0.60",
         "angle_increment: 0.0174533",
@@ -31,3 +30,20 @@ def test_scan_projection_is_low_load_and_body_framed():
         "range_max: 10.0",
     ):
         assert expected in text
+    assert "target_frame: body_nav" in text
+    assert "target_frame: body\n" not in text
+
+
+def test_existing_map_launch_registers_planar_frame_before_scan_projection():
+    text = LAUNCH.read_text(encoding="utf-8")
+    for expected in (
+        'executable="planar_base_frame"',
+        'planar_base_frame = LaunchConfiguration("planar_base_frame")',
+        '"odom_frame": odom_frame',
+        '"source_base_frame": base_frame',
+        '"planar_base_frame": planar_base_frame',
+        'DeclareLaunchArgument("planar_base_frame", default_value="body_nav")',
+        'parameters=[scan_params_file, {"target_frame": planar_base_frame}]',
+    ):
+        assert expected in text
+    assert text.index("planar_base_frame,") < text.index("scan_projection,")

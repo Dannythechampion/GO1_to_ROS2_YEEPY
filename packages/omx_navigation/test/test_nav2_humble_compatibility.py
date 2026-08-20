@@ -25,3 +25,10 @@ def test_inflation_radius_is_not_smaller_than_robot_radius():
             params["inflation_layer"]["inflation_radius"]
             >= params["robot_radius"]
         )
+
+
+def test_humble_fallback_tolerates_fast_lio_tf_latency():
+    config = load_config()
+    assert config["amcl"]["ros__parameters"]["transform_tolerance"] == 0.5
+    assert config["controller_server"]["ros__parameters"]["FollowPath"]["transform_tolerance"] == 0.5
+    assert config["behavior_server"]["ros__parameters"]["transform_tolerance"] == 0.5

@@ -15,12 +15,14 @@ else
 fi
 go1_target="$src_dir/go1_driver"
 omx_target="$src_dir/omx_navigation"
+maps_source="$repo_root/maps"
 
 for required in \
   "$go1_source/package.xml" \
   "$omx_source/package.xml" \
   "$omx_source/setup.py" \
-  "$omx_source/omx_navigation"; do
+  "$omx_source/omx_navigation" \
+  "$maps_source"; do
   if [[ ! -e "$required" ]]; then
     printf 'ERROR: required source is missing: %s\n' "$required" >&2
     exit 1
@@ -56,6 +58,13 @@ for entry in "${omx_entries[@]}"; do
     cp -a "$omx_source/$entry" "$omx_target/"
   fi
 done
+
+# Keep the bundled pose-graph map with the staged package so its setup.py can
+# install it on the Jetson without relying on the source repository path.
+cp -a "$maps_source" "$omx_target/maps"
+cp -a "$repo_root/migration/verify_posegraph_navigation.sh" "$omx_target/verify_posegraph_navigation.sh"
+cp -a "$repo_root/migration/jetson_field_deploy.sh" "$omx_target/jetson_field_deploy.sh"
+chmod +x "$omx_target/verify_posegraph_navigation.sh" "$omx_target/jetson_field_deploy.sh"
 
 printf 'Staged local ROS2 packages:\n'
 printf '  %s\n' "$go1_target" "$omx_target"

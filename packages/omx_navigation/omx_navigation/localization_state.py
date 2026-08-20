@@ -1,313 +1,280 @@
-"""Pure AMCL readiness and localization-session state machine."""
+"""ROS-independent safety state machine for pose-graph localization."""
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
-import math
-from typing import Optional, Tuple
-
-from .pose_config import PlanarPose, PoseConfigurationError
 
 
-class LocalizationState(Enum):
-    BOOT = "BOOT"
-    UNCOMMISSIONED = "UNCOMMISSIONED"
-    WAITING_FOR_INPUTS = "WAITING_FOR_INPUTS"
-    SEEDING = "SEEDING"
+class LocalizationState(str, Enum):
+    WAITING_INPUT = "WAITING_INPUT"
+    ALIGNING = "ALIGNING"
     VERIFYING = "VERIFYING"
     READY = "READY"
     DEGRADED = "DEGRADED"
-    RELOCALIZING = "RELOCALIZING"
-    ERROR = "ERROR"
+    LOST = "LOST"
+
+
+class ErrorCode(str, Enum):
+    NONE = "NONE"
+    INPUT_MISSING = "INPUT_MISSING"
+    POSE_OUTSIDE_MAP = "POSE_OUTSIDE_MAP"
+    ALIGNMENT_TIMEOUT = "ALIGNMENT_TIMEOUT"
+    LOW_OVERLAP = "LOW_OVERLAP"
+    AMBIGUOUS = "AMBIGUOUS"
+    ODOM_RESET = "ODOM_RESET"
+    TF_CONFLICT = "TF_CONFLICT"
+    EXTRINSIC_UNCALIBRATED = "EXTRINSIC_UNCALIBRATED"
 
 
 @dataclass(frozen=True)
-class LocalizationObservation:
+class LocalizationPolicy:
+    alignment_timeout: float = 20.0
+    max_attempts: int = 3
+    verify_duration: float = 3.0
+    degraded_timeout: float = 2.0
+    min_overlap: float = 0.45
+    min_ambiguity_margin: float = 0.05
+    max_position_jump: float = 0.30
+    max_yaw_jump: float = math.radians(10.0)
+
+    def __post_init__(self) -> None:
+        finite_positive = (
+            "alignment_timeout",
+            "verify_duration",
+            "degraded_timeout",
+            "max_position_jump",
+            "max_yaw_jump",
+        )
+        for name in finite_positive:
+            value = getattr(self, name)
+            if not _is_finite_number(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+        if not isinstance(self.max_attempts, int) or isinstance(self.max_attempts, bool) or self.max_attempts < 1:
+            raise ValueError("max_attempts must be a positive integer")
+        for name in ("min_overlap", "min_ambiguity_margin"):
+            value = getattr(self, name)
+            if not _is_finite_number(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be within [0.0, 1.0]")
+        if self.max_yaw_jump > math.pi:
+            raise ValueError("max_yaw_jump must not exceed pi radians")
+
+
+@dataclass(frozen=True)
+class QualityObservation:
     now: float
-    amcl_stamp: float
-    x: float
-    y: float
-    yaw: float
-    covariance_x: float
-    covariance_y: float
-    covariance_yaw: float
-    pose_age: float
-    scan_age: float
-    odom_age: float
-    tf_age: float
-    tf_ok: bool
-    valid_beams: int
-    consecutive_scans: int
-    median_residual: float
-    p80_residual: float
-    amcl_frame: str = "map"
+    inputs_fresh: bool
+    pose_available: bool
+    overlap: float
+    ambiguity_margin: float
+    position_jump: float
+    yaw_jump: float
+    odom_reset: bool
+    tf_conflict: bool
+
+    def __post_init__(self) -> None:
+        if not _is_finite_number(self.now):
+            raise ValueError("now must be finite")
+        for name in ("overlap", "ambiguity_margin"):
+            value = getattr(self, name)
+            if not _is_finite_number(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be within [0.0, 1.0]")
+        for name in ("position_jump", "yaw_jump"):
+            value = getattr(self, name)
+            if not _is_finite_number(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative")
+
+    @classmethod
+    def missing(cls, now: float) -> "QualityObservation":
+        return cls(now, False, False, 0.0, 0.0, 0.0, 0.0, False, False)
 
 
 @dataclass(frozen=True)
-class LocalizationStatus:
+class Transition:
     state: LocalizationState
-    ready: bool
-    reason: str
+    error: ErrorCode
+    republish_initial_pose: bool
+    publish_stop: bool
 
 
-def angle_distance(first: float, second: float) -> float:
-    return abs((first - second + math.pi) % (2.0 * math.pi) - math.pi)
+class LocalizationStateMachine:
+    """Owns policy-driven localization transitions without reading a system clock."""
 
-
-class LocalizationSupervisorCore:
-    def __init__(
-        self, start_pose: Optional[PlanarPose], *, initial_pose_arm: bool
-    ) -> None:
-        if start_pose is None and initial_pose_arm:
-            raise PoseConfigurationError(
-                "initial_pose_arm requires a configured start pose"
-            )
-        self.start_pose = start_pose
-        self.initial_pose_arm = bool(initial_pose_arm)
-        self.state = (
-            LocalizationState.UNCOMMISSIONED
-            if start_pose is None
-            else LocalizationState.WAITING_FOR_INPUTS
-        )
-        self.reason = (
-            "start pose is not commissioned"
-            if start_pose is None
-            else "waiting for map, scan, odometry, and AMCL"
-        )
-        self._ready = False
-        self._seed_time: Optional[float] = None
-        self._seed_consumed = False
-        self._reseed_authorized = bool(initial_pose_arm)
-        self._good_since: Optional[float] = None
-        self._initial_ready_completed = False
-        self._last_odom: Optional[Tuple[float, str, float, float, float]] = None
-        self._last_scan_stamp: Optional[float] = None
+    def __init__(self, policy: LocalizationPolicy | None = None) -> None:
+        self.policy = policy or LocalizationPolicy()
+        self.state = LocalizationState.WAITING_INPUT
+        self.error = ErrorCode.NONE
+        self._attempts = 0
+        self._alignment_deadline: float | None = None
+        self._alignment_started_at: float | None = None
+        self._verification_started_at: float | None = None
+        self._degraded_started_at: float | None = None
 
     @property
-    def ready(self) -> bool:
-        return self._ready
+    def attempts(self) -> int:
+        """Number of alignment attempts in the current initial-pose session."""
+        return self._attempts
 
-    def status(self) -> LocalizationStatus:
-        return LocalizationStatus(self.state, self.ready, self.reason)
+    def receive_initial_pose(self, now: float) -> Transition:
+        self._validate_now(now)
+        self._attempts = 1
+        self._alignment_deadline = now + self.policy.alignment_timeout
+        self._start_alignment(now)
+        return self._transition()
 
-    def set_inputs_available(self, available: bool) -> LocalizationStatus:
-        if self.start_pose is None:
-            return self.status()
-        if self.state is LocalizationState.RELOCALIZING and not self._reseed_authorized:
-            self._ready = False
-            self.reason = "reposition at start and request localization reset"
-            return self.status()
-        if not available:
-            self._ready = False
-            self.state = LocalizationState.WAITING_FOR_INPUTS
-            self.reason = "waiting for required inputs"
-            return self.status()
-        if not self.initial_pose_arm:
-            self.state = LocalizationState.WAITING_FOR_INPUTS
-            self.reason = "automatic initial pose seeding is disarmed"
-            return self.status()
-        if self.state in {
-            LocalizationState.WAITING_FOR_INPUTS,
-            LocalizationState.RELOCALIZING,
-        }:
-            self.state = LocalizationState.SEEDING
-            self.reason = "initial pose seed requested"
-            self._seed_consumed = False
-        return self.status()
+    def reject_initial_pose(self, now: float) -> Transition:
+        """Record an invalid user supplied pose without attempting alignment."""
+        self._validate_now(now)
+        self._attempts = 1
+        self._lose(ErrorCode.POSE_OUTSIDE_MAP)
+        return self._transition()
 
-    def consume_seed_request(self, now: float) -> Optional[PlanarPose]:
-        if self.state not in {LocalizationState.SEEDING, LocalizationState.RELOCALIZING}:
-            return None
-        if (
-            self._seed_consumed
-            or not self._reseed_authorized
-            or not self.initial_pose_arm
-            or self.start_pose is None
-        ):
-            return None
-        self._seed_consumed = True
-        self._reseed_authorized = False
-        self._seed_time = float(now)
-        self._good_since = None
-        self._ready = False
-        self.state = LocalizationState.VERIFYING
-        self.reason = "waiting for post-seed AMCL convergence"
-        return self.start_pose
-
-    def observe(self, observation: LocalizationObservation) -> LocalizationStatus:
-        if self.state not in {
-            LocalizationState.VERIFYING,
-            LocalizationState.READY,
-            LocalizationState.DEGRADED,
-        }:
-            return self.status()
-        failure = self._failure_reason(observation)
-        if failure is not None:
-            self._good_since = None
-            self._ready = False
-            if self.state is LocalizationState.READY or self._initial_ready_completed:
-                self.state = LocalizationState.DEGRADED
-            else:
-                self.state = LocalizationState.VERIFYING
-            self.reason = failure
-            return self.status()
-
-        if self._good_since is None:
-            self._good_since = observation.now
-        if observation.now - self._good_since >= 2.0:
-            self._ready = True
-            self._initial_ready_completed = True
-            self.state = LocalizationState.READY
-            self.reason = "AMCL and scan-to-map checks are stable"
+    def retry(self, now: float) -> Transition:
+        self._validate_now(now)
+        if self.state in (LocalizationState.WAITING_INPUT, LocalizationState.LOST):
+            self._attempts = 1
+            self._alignment_deadline = now + self.policy.alignment_timeout
+        elif self._deadline_reached(now):
+            self._lose(ErrorCode.ALIGNMENT_TIMEOUT)
+            return self._transition()
+        elif self._attempts < self.policy.max_attempts:
+            self._attempts += 1
         else:
-            self._ready = False
-            self.state = LocalizationState.VERIFYING
-            self.reason = "readiness hold time not yet satisfied"
-        return self.status()
+            self._lose(ErrorCode.ALIGNMENT_TIMEOUT)
+            return self._transition()
+        self._start_alignment(now)
+        return self._transition(republish_initial_pose=True)
 
-    def mark_runtime_unavailable(self, reason: str) -> LocalizationStatus:
-        if self.state not in {
-            LocalizationState.VERIFYING,
-            LocalizationState.READY,
-            LocalizationState.DEGRADED,
-        }:
-            return self.status()
-        self._ready = False
-        self._good_since = None
-        self.state = (
-            LocalizationState.DEGRADED
-            if self._initial_ready_completed
-            else LocalizationState.VERIFYING
-        )
-        self.reason = str(reason)
-        return self.status()
+    def observe(self, observation: QualityObservation) -> Transition:
+        self._validate_now(observation.now)
+        immediate_error = self._immediate_error(observation)
+        if immediate_error is not None:
+            self._lose(immediate_error)
+            return self._transition()
+        if self.state is LocalizationState.WAITING_INPUT:
+            self.error = ErrorCode.INPUT_MISSING
+            return self._transition()
+        if self.state in (LocalizationState.ALIGNING, LocalizationState.VERIFYING) and self._deadline_reached(observation.now):
+            self._lose(ErrorCode.ALIGNMENT_TIMEOUT)
+            return self._transition()
+        quality_error = self._quality_error(observation)
 
-    def _failure_reason(self, observation: LocalizationObservation) -> Optional[str]:
-        numeric_values = (
-            observation.now,
-            observation.amcl_stamp,
-            observation.x,
-            observation.y,
-            observation.yaw,
-            observation.covariance_x,
-            observation.covariance_y,
-            observation.covariance_yaw,
-            observation.pose_age,
-            observation.scan_age,
-            observation.odom_age,
-            observation.tf_age,
-            observation.median_residual,
-            observation.p80_residual,
+        if self.state is LocalizationState.ALIGNING:
+            if quality_error is None:
+                self.state = LocalizationState.VERIFYING
+                self.error = ErrorCode.NONE
+                self._verification_started_at = observation.now
+                return self._transition()
+            if self._timed_out(
+                observation.now,
+                self._alignment_started_at,
+                self.policy.alignment_timeout / self.policy.max_attempts,
+            ):
+                return self._retry_or_lose(ErrorCode.ALIGNMENT_TIMEOUT, observation.now)
+            self.error = quality_error
+            return self._transition()
+
+        if self.state is LocalizationState.VERIFYING:
+            if quality_error is not None:
+                self._start_alignment(observation.now, quality_error)
+                return self._transition()
+            if self._timed_out(observation.now, self._verification_started_at, self.policy.verify_duration):
+                self.state = LocalizationState.READY
+                self.error = ErrorCode.NONE
+            return self._transition()
+
+        if self.state is LocalizationState.READY:
+            if quality_error is not None:
+                self.state = LocalizationState.DEGRADED
+                self.error = quality_error
+                self._degraded_started_at = observation.now
+            return self._transition()
+
+        if self.state is LocalizationState.DEGRADED:
+            if quality_error is None:
+                self.state = LocalizationState.READY
+                self.error = ErrorCode.NONE
+                self._degraded_started_at = None
+            elif self._timed_out(observation.now, self._degraded_started_at, self.policy.degraded_timeout):
+                self._lose(quality_error)
+            else:
+                self.error = quality_error
+            return self._transition()
+
+        return self._transition()
+
+    def _retry_or_lose(self, error: ErrorCode, now: float) -> Transition:
+        if self._attempts < self.policy.max_attempts:
+            self._attempts += 1
+            self._start_alignment(now)
+            return self._transition(republish_initial_pose=True)
+        self._lose(error)
+        return self._transition()
+
+    def _start_alignment(self, now: float, error: ErrorCode = ErrorCode.NONE) -> None:
+        self.state = LocalizationState.ALIGNING
+        self.error = error
+        self._alignment_started_at = now
+        self._verification_started_at = None
+        self._degraded_started_at = None
+
+    def _lose(self, error: ErrorCode) -> None:
+        self.state = LocalizationState.LOST
+        self.error = error
+        self._verification_started_at = None
+        self._degraded_started_at = None
+
+    def _deadline_reached(self, now: float) -> bool:
+        return self._alignment_deadline is not None and now >= self._alignment_deadline
+
+    def _transition(self, republish_initial_pose: bool = False) -> Transition:
+        return Transition(
+            state=self.state,
+            error=self.error,
+            republish_initial_pose=republish_initial_pose,
+            publish_stop=self.state is not LocalizationState.READY,
         )
-        if not all(math.isfinite(float(value)) for value in numeric_values):
-            return "invalid numeric localization observation"
-        ages = (
-            observation.pose_age,
-            observation.scan_age,
-            observation.odom_age,
-            observation.tf_age,
-        )
-        if min(ages) < 0.0:
-            return "localization data timestamp is in the future"
-        if min(
-            observation.covariance_x,
-            observation.covariance_y,
-            observation.covariance_yaw,
-            observation.median_residual,
-            observation.p80_residual,
-        ) < 0.0:
-            return "invalid numeric localization observation"
-        if observation.valid_beams < 0 or observation.consecutive_scans < 0:
-            return "invalid numeric localization observation"
-        if self._seed_time is None or observation.amcl_stamp <= self._seed_time:
-            return "amcl pose predates current seed"
-        if observation.amcl_frame != "map":
-            return "AMCL pose frame is not map"
-        if not observation.tf_ok:
-            return "required TF chain is unavailable"
-        if max(ages) > 0.30:
-            return "required localization data is stale"
-        if (
-            observation.covariance_x > 0.04
-            or observation.covariance_y > 0.04
-            or observation.covariance_yaw > 0.0305
-        ):
-            return "AMCL covariance exceeds limit"
-        if not self._initial_ready_completed and self.start_pose is not None:
-            position_delta = math.hypot(
-                observation.x - self.start_pose.x,
-                observation.y - self.start_pose.y,
-            )
-            if position_delta > 0.25 or angle_distance(
-                observation.yaw, self.start_pose.yaw
-            ) > math.radians(15.0):
-                return "AMCL start pose delta exceeds limit"
-        if observation.valid_beams < 100:
-            return "not enough valid scan beams"
-        if observation.consecutive_scans < 10:
-            return "not enough consecutive scans"
-        if observation.median_residual > 0.15:
-            return "scan median residual exceeds limit"
-        if observation.p80_residual > 0.30:
-            return "scan p80 residual exceeds limit"
+
+    def _immediate_error(self, observation: QualityObservation) -> ErrorCode | None:
+        if observation.tf_conflict:
+            return ErrorCode.TF_CONFLICT
+        if observation.odom_reset:
+            return ErrorCode.ODOM_RESET
         return None
 
-    def observe_odometry(
-        self,
-        stamp: float,
-        frame_id: str,
-        x: float,
-        y: float,
-        yaw: float,
-        *,
-        commanded: bool,
-    ) -> bool:
-        current = (float(stamp), str(frame_id), float(x), float(y), float(yaw))
-        restarted = False
-        if self._last_odom is not None:
-            previous_stamp, previous_frame, previous_x, previous_y, previous_yaw = (
-                self._last_odom
-            )
-            elapsed = current[0] - previous_stamp
-            restarted = current[0] < previous_stamp or current[1] != previous_frame
-            if not restarted and 0.0 <= elapsed <= 0.50 and not commanded:
-                restarted = (
-                    math.hypot(current[2] - previous_x, current[3] - previous_y) > 0.50
-                    or angle_distance(current[4], previous_yaw) > math.radians(20.0)
-                )
-        self._last_odom = current
-        if restarted:
-            self._ready = False
-            self._good_since = None
-            self._seed_consumed = False
-            self._reseed_authorized = False
-            self.state = LocalizationState.RELOCALIZING
-            self.reason = "localization session restart detected"
-        return restarted
+    def _quality_error(self, observation: QualityObservation) -> ErrorCode | None:
+        numbers = (
+            observation.overlap,
+            observation.ambiguity_margin,
+            observation.position_jump,
+            observation.yaw_jump,
+        )
+        if not observation.inputs_fresh:
+            return ErrorCode.INPUT_MISSING
+        if not observation.pose_available:
+            return ErrorCode.POSE_OUTSIDE_MAP
+        if not all(_is_finite_number(value) for value in numbers):
+            return ErrorCode.INPUT_MISSING
+        if observation.overlap < self.policy.min_overlap:
+            return ErrorCode.LOW_OVERLAP
+        if observation.ambiguity_margin < self.policy.min_ambiguity_margin:
+            return ErrorCode.AMBIGUOUS
+        if observation.position_jump > self.policy.max_position_jump:
+            return ErrorCode.POSE_OUTSIDE_MAP
+        if abs(observation.yaw_jump) > self.policy.max_yaw_jump:
+            return ErrorCode.POSE_OUTSIDE_MAP
+        return None
 
-    def observe_scan_stamp(self, stamp: float) -> bool:
-        """Invalidate the localization session when the sensor clock rolls back."""
-        current = float(stamp)
-        restarted = self._last_scan_stamp is not None and current < self._last_scan_stamp
-        self._last_scan_stamp = current
-        if restarted:
-            self._ready = False
-            self._good_since = None
-            self._seed_consumed = False
-            self._reseed_authorized = False
-            self.state = LocalizationState.RELOCALIZING
-            self.reason = "scan timestamp rollback detected"
-        return restarted
+    @staticmethod
+    def _timed_out(now: float, started_at: float | None, timeout: float) -> bool:
+        return started_at is not None and now - started_at >= timeout
 
-    def request_reset(self) -> bool:
-        if self.start_pose is None or not self.initial_pose_arm:
-            return False
-        self._ready = False
-        self._good_since = None
-        self._seed_consumed = False
-        self._reseed_authorized = True
-        self._initial_ready_completed = False
-        self.state = LocalizationState.RELOCALIZING
-        self.reason = "explicit reset requested"
-        return True
+    @staticmethod
+    def _validate_now(now: float) -> None:
+        if not _is_finite_number(now):
+            raise ValueError("now must be finite")
+
+
+def _is_finite_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)

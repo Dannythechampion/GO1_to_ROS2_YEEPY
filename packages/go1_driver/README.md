@@ -1,7 +1,6 @@
 # Go1 ROS2 Driver
 
-ROS2 Humble port of the existing Go1 velocity safety bridge. The node accepts
-only the motion gate output `/cmd_vel_safe` by default and is
+ROS2 Humble port of the existing Go1 `cmd_vel` safety bridge. The node is
 disarmed by default, so it can be built and tested without the Unitree SDK or a
 physical robot.
 
@@ -27,7 +26,7 @@ ros2 launch go1_driver go1_driver.launch.py arm:=false
 In another terminal:
 
 ```bash
-ros2 topic pub -r 10 /cmd_vel_safe geometry_msgs/msg/Twist \
+ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.08, y: 0.08, z: 0.0}, angular: {z: 0.0}}"
 ros2 topic echo /go1/cmd_vel_applied
 ros2 topic echo /go1/control_state
@@ -38,12 +37,13 @@ zero after `cmd_timeout`.
 
 ## Armed mode
 
-Do not arm until the wrapper has been rebuilt for the new Jetson Python ABI,
-the dry-run checks pass, and the robot is supported with an emergency stop
-ready.
+Direct `go1_driver arm:=true` is intentionally rejected because it bypasses
+the localization gate, recording, ARM64 wrapper checks, and live sensor checks.
+After the full dry-run and emergency-stop checklist, use only the canonical
+field runner from the repository root:
 
 ```bash
-ros2 launch go1_driver go1_driver.launch.py arm:=true
+./migration/jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY /mnt/t500/go1_ros2_ws
 ```
 
 The configured `sdk_path` is under `/mnt/t500/go1_sdk`. It must contain the

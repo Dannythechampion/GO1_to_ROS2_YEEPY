@@ -40,11 +40,7 @@ def test_runtime_verifier_enforces_arm_false_and_core_topics():
         "/Odometry",
         "/map",
         "/amcl_pose",
-        "/cmd_vel_nav",
-        "/cmd_vel_safe",
-        "/localization/ready",
-        "/motion_gate/enabled",
-        "/mission/active",
+        "/cmd_vel",
     ):
         assert topic in text
     assert "require_tf map camera_init" in text

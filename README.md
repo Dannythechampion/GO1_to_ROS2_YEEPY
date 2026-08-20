@@ -1,15 +1,162 @@
 # Go1 ROS2 — 저장 지도 기반 Localization 및 Nav2 자율주행
 
-Ubuntu 22.04 / ROS2 Humble 환경에서 Unitree Go1과 Livox MID-360을 이용하여, 이미 생성된 한양대 9층 2D 지도를 불러오고 AMCL localization과 Nav2를 통해 Go1을 자율주행시키는 절차입니다.
+<!-- BRANCH_OVERVIEW_START -->
+> [!IMPORTANT]
+> 이 문서는 **`codex/verified-posegraph-navigation` 브랜치 전용 README**입니다.
+> 기본 브랜치인 `main`의 README가 아니며, 아래 비교는 2026-08-13에 갱신한
+> `origin/main`(`02ee166`)과 이 브랜치를 직접 확인한 결과입니다.
 
-> **현재 고정 출발점 운영 경로:** AMCL supervisor, standalone motion gate, `/mission/start` 및 RViz 임의 goal의 최신 명령은 [고정 출발점 AMCL 및 Mission 실행 명령어](docs/FIXED_START_AMCL_MISSION_COMMANDS.md)를 사용합니다. 아래 기존 `rviz_goal_bridge` 및 직접 `/cmd_vel` 설명은 과거 end-to-end bringup 기록이며 현재 안전 경로를 대체하지 않습니다.
+## 이 브랜치는 무엇을 해결하는가
+
+이 브랜치는 RViz의 `2D Pose Estimate`를 지도 위에 대략 한 번 지정하면, 저장된
+SLAM Toolbox posegraph와 최신 `/scan`을 이용해 주변 **반경 3 m, 방향 ±90°** 안에서
+더 적합한 초기 자세를 찾는 내비게이션 경로입니다. 같은 위치를 여러 번 찍어야 했던
+초기 정합 문제를 줄이는 것이 핵심 목적입니다.
+
+초기 정합만 바꾼 것이 아니라 다음 안전 계층도 함께 포함합니다.
+
+- `localization_supervisor`: 초기 후보 탐색, SLAM handshake, scan-map overlap,
+  `/Odometry`, TF, 위치 jump와 AMCL 충돌을 지속 감시합니다.
+- `cmd_vel_safety_gate`: supervisor의 최신 `READY` heartbeat가 있을 때만 Nav2의
+  `/cmd_vel_nav`를 실제 `/cmd_vel`로 전달합니다.
+- `rviz_goal_bridge`: localization 준비 전 goal을 거부하고, 준비 상태가 사라지면
+  실행 중인 Nav2 goal을 취소합니다.
+- `body_nav`: FAST-LIO의 6-DoF `camera_init -> body`를 변경하지 않고 중력 정렬된
+  평면 내비게이션 프레임을 별도로 제공합니다.
+- Jetson field runner: staging, ROS dependency, build, non-zero test, ARM64 Unitree
+  wrapper, 지도 artifact, live 센서와 TF를 단계별로 fail-closed 검증합니다.
+
+## 실제 운영 흐름
+
+```mermaid
+flowchart LR
+    L["Livox MID-360"] --> F["FAST-LIO"]
+    F --> C["/cloud_registered_body"]
+    F --> O["/Odometry + camera_init → body"]
+    O --> P["planar_base_frame<br/>camera_init → body_nav"]
+    C --> S["pointcloud_to_laserscan<br/>/scan"]
+
+    G["저장 .posegraph + .data"] --> ST["SLAM Toolbox localization"]
+    M["Nav2 2D map"] --> MS["map_server /map"]
+    S --> LS["localization_supervisor"]
+    O --> LS
+    P --> LS
+    ST --> LS
+    LS -->|"보정 initialpose"| ST
+    ST -->|"map → camera_init"| LS
+    LS -->|"READY heartbeat"| GB["rviz_goal_bridge"]
+    LS -->|"READY heartbeat"| VG["cmd_vel_safety_gate"]
+
+    GB --> N["Nav2"]
+    MS --> N
+    S --> N
+    N -->|"/cmd_vel_nav"| VG
+    VG -->|"/cmd_vel"| D["go1_driver<br/>limit + watchdog"]
+    D --> R["Unitree Go1"]
+```
+
+## 최신 `main`과의 차이
+
+두 브랜치는 서로 다른 현장 운용 문제를 해결합니다. 이 브랜치는 최신 `main`에서
+단순히 몇 파일을 더한 형태가 아니라 공통 조상 `aec7227` 이후 별도로 발전했습니다.
+따라서 어느 한쪽을 무조건 최신·상위 버전으로 간주하거나 그대로 병합하면 안 됩니다.
+
+| 구분 | `origin/main` | 이 브랜치 |
+|---|---|---|
+| 주 localization | AMCL | 저장 SLAM Toolbox posegraph localization |
+| 출발 조건 | 현장에서 좌표를 commissioning한 **고정 출발점** | 지도 위에 대략 지정한 RViz `2D Pose Estimate` |
+| 초기 위치 처리 | 저장 `start_pose.yaml`을 사용해 AMCL 초기화 | scan-map coarse search: 반경 3 m, 방향 ±90°, 최대 3회/20초 |
+| 정합 품질 | AMCL pose 및 고정 출발점 supervisor 중심 | 현재 SLAM pose에서 scan-map overlap과 ambiguity를 계속 재평가 |
+| goal 운용 | 등록 목적지와 RViz 목적지를 다루는 **dual goal mission** manager | READY로 보호되는 RViz `NavigateToPose` bridge |
+| 속도 차단 | `motion_gate`와 mission 상태 | `cmd_vel_safety_gate`: READY/명령 0.30초 timeout 시 즉시 0 |
+| 내비게이션 base | FAST-LIO `body` 중심 | 중력 정렬 평면 프레임 `body_nav` |
+| TF/localization 충돌 | AMCL 기반 `map -> camera_init` | SLAM Toolbox 단독 소유, AMCL·TF 충돌 시 fail-closed |
+| 현장 배포 | 고정 출발점 commissioning runbook | `jetson_field_deploy.sh`의 stage/build/preflight/dry-run/armed 게이트 |
+| armed 보호 | `main` 고유 mission 안전 계약 | posegraph launch와 `go1_driver` 양쪽에서 정확한 확인 토큰 요구 |
+| 이 브랜치에 없는 기능 | — | 최신 main의 fixed mission manager, start/destination pose recorder는 포함하지 않음 |
+
+전체 소스 차이는 GitHub의
+[main ↔ verified posegraph 비교](https://github.com/Dannythechampion/GO1_to_ROS2_YEEPY/compare/main...codex/verified-posegraph-navigation)에서 확인할 수 있습니다.
+
+## Jetson 빠른 시작
+
+대상은 **NVIDIA Jetson AGX Orin 64GB, Ubuntu 22.04, ROS 2 Humble**입니다.
+새 workspace를 사용하며 기존 target을 자동으로 덮어쓰지 않습니다.
+
+```bash
+cd /mnt/t500/GO1_to_ROS2_YEEPY
+git fetch origin
+git switch --track origin/codex/verified-posegraph-navigation
+
+./migration/jetson_field_deploy.sh stage "$PWD" /mnt/t500/go1_ros2_ws
+./migration/build_unitree_go1_wrapper.sh /path/to/unitree_legged_sdk
+./migration/jetson_field_deploy.sh build /mnt/t500/go1_ros2_ws
+./migration/jetson_field_deploy.sh preflight /mnt/t500/go1_ros2_ws
+```
+
+MID-360과 FAST-LIO를 별도 터미널에서 실행한 다음 반드시 무구동 모드부터 확인합니다.
+
+```bash
+./migration/jetson_field_deploy.sh dry-run /mnt/t500/go1_ros2_ws
+```
+
+RViz에서 대략적인 `2D Pose Estimate`를 지정하고
+`status=READY`, `error=NONE`, `ready=true`를 확인합니다. dry-run을 `Ctrl-C`로
+정상 종료하고 실제 센서/TF/extrinsic/e-stop을 확인한 경우에만 다음 현장 명령을
+사용합니다.
+
+```bash
+./migration/jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY /mnt/t500/go1_ros2_ws
+```
+
+직접 `ros2 launch ... arm:=true`로 우회할 수 없습니다. posegraph launch는 driver,
+진단 녹화와 확인 토큰의 조합을 검사하고, `go1_driver`도 SDK 생성 전에 같은 토큰을
+다시 검사합니다. 첫 goal은 현재 위치에서 **0.3 m 이내**로 제한하십시오.
+
+## 검증 상태와 아직 남은 현장 확인
+
+2026-08-13의 브랜치 HEAD 기준 검증 결과입니다.
+
+- Windows 전체 순수 Python 회귀: **242 passed, 13 skipped**
+- fresh WSL Ubuntu 22.04 / ROS 2 Humble staged build: 두 패키지 성공
+- staged colcon test: **229 passed, 0 errors, 0 failures, 0 skipped**
+  (`go1_driver` 15, `omx_navigation` 214)
+- WSL에서 Bash 문법, 설치된 launch 인자, 지도·posegraph artifact, x86_64의 ARM64
+  preflight 거부를 확인했습니다.
+- 독립 최종 코드리뷰에서 추가 Critical/Important 이슈는 발견되지 않았습니다.
+
+위 결과는 x86_64 WSL 검증입니다. **Jetson AGX Orin 실기 성공을 대신하지 않습니다.**
+현장에서는 다음 항목을 반드시 별도로 확인해야 합니다.
+
+- aarch64에서 Unitree SDK v3.8.6 wrapper native build와 고정 SHA-256/ABI
+- 실제 `/livox/lidar`, `/livox/imu`, `/cloud_registered_body`, `/Odometry` 주기와 timestamp
+- 실제 `map -> camera_init -> body_nav` TF 및 MID-360/FAST-LIO extrinsic
+- 대략적인 초기 pose 한 번으로 READY 진입하는지 반복 시험
+- 안전 스탠드 또는 통제 공간에서 0.3 m goal, cancel, localization loss, watchdog,
+  `Ctrl-C` 반복 stand와 물리 e-stop
+
+아래부터는 지도 파일, 매핑, 레거시 AMCL fallback과 상세 운영 절차를 포함한 기존
+문서입니다. 신규 posegraph 현장 운용은 위 quick start와
+[`packages/omx_navigation/README.md`](packages/omx_navigation/README.md)를 우선하십시오.
+
+---
+<!-- BRANCH_OVERVIEW_END -->
+
+Ubuntu 22.04 / ROS2 Humble 환경에서 Unitree Go1과 Livox MID-360을 이용하여, 이미 생성된 한양대 9층 2D 지도를 불러오는 localization 및 Nav2 절차입니다.
+
+> **현재 권장 절차는 `go1_posegraph_navigation.launch.py`를 사용하는 pose-graph
+> localization dry-run입니다.** 아래의 `go1_existing_map.launch.py`/AMCL 절차는
+> 비교와 장애 대응을 위해 남긴 레거시 fallback이며 새 운용의 기본 경로가 아닙니다.
+> 기본값은 항상 `arm:=false`입니다. armed 실행은 이 문서 마지막의 Jetson runner와
+> 이중 확인 조건을 통해서만 허용되며, MID-360 장착·extrinsic·e-stop을 현장에서
+> 확인하기 전에는 실행하지 않습니다. 이 문서는 실제 하드웨어 주행 성공을 주장하지 않습니다.
 
 이 문서는 다음 조건을 전제로 합니다.
 
 - `codex/hanyang-9f-mapping-pcl-fix` 브랜치에서 세션 `20260728_204825` 매핑을 완료했습니다.
 - 검증된 원본 지도와 반사 영역을 정리한 최종 Nav2 지도가 이 브랜치의 `maps/` 아래에 포함되어 있습니다.
 - 원본 지도 검증 결과는 `complete: true`, 출발점 복귀 오차는 약 `0.07 m`, `4.96 deg`입니다.
-- 실제 주행은 `agent/nav2-end-to-end-workflow` 브랜치에서 수행합니다.
+- 실제 주행 합격은 아직 선언하지 않으며, 반드시 `arm:=false` dry-run과 현장 체크리스트를 먼저 통과합니다.
 - Jetson에서 Livox, FAST-LIO, Nav2 및 Go1 driver를 실행합니다.
 - 모든 터미널에서 동일한 `ROS_DOMAIN_ID=100`을 사용합니다.
 
@@ -20,7 +167,8 @@ Ubuntu 22.04 / ROS2 Humble 환경에서 Unitree Go1과 Livox MID-360을 이용�
 | 단계 | 브랜치 | 역할 |
 |---|---|---|
 | 지도 생성 | `codex/hanyang-9f-mapping-pcl-fix` | FAST-LIO, 3D PCD, rosbag, SLAM Toolbox 2D 지도 생성 |
-| Localization 및 자율주행 | `agent/nav2-end-to-end-workflow` | 저장 지도 로드, AMCL localization, Nav2 경로계획, Go1 제어 |
+| 레거시 AMCL fallback | `agent/nav2-end-to-end-workflow` | 저장 지도 로드와 AMCL 비교·장애 대응용 dry-run |
+| 현재 권장 localization | 현재 브랜치 | pose-graph localization, Nav2 경로계획, `arm:=false` 진단 |
 
 매핑이 이미 완료되었으므로 평상시 자율주행을 위해 매핑 브랜치를 다시 실행할 필요가 없습니다.
 
@@ -558,7 +706,9 @@ FAST-LIO 출력이 확인되기 전에는 Nav2를 실행하지 마십시오.
 
 ## 13. 터미널 C — 저장 지도 Localization 및 Nav2 dry-run
 
-처음에는 반드시 `arm:=false`로 실행합니다.
+이 절의 `go1_existing_map.launch.py`는 레거시 AMCL fallback입니다. 신규 운용은 문서
+끝의 pose-graph 절차를 따릅니다. 레거시 fallback을 진단 목적으로 사용할 때에도
+반드시 `arm:=false`로 실행합니다.
 
 ```bash
 export GO1_ROS2_WS="$HOME/ros2_ws"
@@ -770,11 +920,13 @@ DRY-RUN
 
 ---
 
-# 실제 Go1 주행
+# 레거시 AMCL armed 절차 보류
 
-## 17. 실제 주행 전 필수 조건
+## 17. 별도 armed launch 설계 전 검토 항목
 
-다음 조건을 모두 통과하기 전에는 `arm:=true`를 사용하지 않습니다.
+아래 항목은 향후 별도 armed launch를 설계·검토할 때 필요한 참고 목록입니다.
+충족 여부는 이 저장소에서 하드웨어로 검증되지 않았으며, 목록을 확인했다는 이유로
+현재 launch를 armed 상태로 변경해서는 안 됩니다.
 
 - Livox가 Go1에 단단히 고정되어 있습니다.
 - FAST-LIO extrinsic이 실제 장착 위치와 일치합니다.
@@ -813,9 +965,11 @@ ros2 node list |
 
 ---
 
-## 19. 터미널 C — 실제 Go1 주행
+## 19. 레거시 AMCL armed 전환 예시 폐기
 
-Unitree SDK 환경까지 source합니다.
+과거 문서에는 `go1_existing_map.launch.py`를 armed 상태로 재실행하는 명령이 있었으나
+안전하지 않으므로 실행 예시를 제거했습니다. 이 레거시 AMCL 경로에서는 dry-run만
+허용되며, 실제 저속 시험은 문서 마지막의 `jetson_field_deploy.sh`만 사용합니다.
 
 ```bash
 export GO1_ROS2_WS="$HOME/ros2_ws"
@@ -827,20 +981,19 @@ export MAP_FILE="$GO1_PROJECT_ROOT/maps/hanyang_9f/$SESSION_ID/slam_toolbox/hany
 
 source /opt/ros/humble/setup.bash
 source "$HOME/ws_livox/install/setup.bash"
-source /mnt/t500/go1_sdk/setup_unitree_sdk.bash
 source "$GO1_ROS2_WS/install/setup.bash"
 
 test -s "$MAP_FILE"
 ```
 
-실제 주행 모드:
+레거시 AMCL fallback dry-run:
 
 ```bash
 ros2 launch omx_navigation \
   go1_existing_map.launch.py \
   map:="$MAP_FILE" \
   start_go1_driver:=true \
-  arm:=true \
+  arm:=false \
   rviz:=true
 ```
 
@@ -851,17 +1004,18 @@ ros2 launch omx_navigation \
   go1_existing_map.launch.py \
   map:="$MAP_FILE" \
   start_go1_driver:=true \
-  arm:=true \
+  arm:=false \
   rviz:=false
 ```
 
-`arm:=true`로 재시작했기 때문에 RViz에서 `2D Pose Estimate`를 다시 지정합니다.
+이 명령은 Go1에 동작 명령을 전송하지 않는 레거시 진단용 dry-run입니다.
 
 ---
 
-## 20. 권장 실제 시험 순서
+## 20. 향후 별도 armed launch 검토 시 시험 항목
 
-다음 순서로 범위를 조금씩 늘립니다.
+다음 항목은 별도 armed launch가 Jetson에서 설계·리뷰된 이후에만 시험 계획으로
+사용합니다. 현재 저장소에서 실행을 승인하거나 하드웨어 성공을 의미하지 않습니다.
 
 1. 현재 위치에서 localization 안정성 확인
 2. 전방 약 `0.3 m` goal
@@ -931,11 +1085,11 @@ Go1 driver는 종료 전에 반복적으로 stand 명령을 전송하도록 구�
 9. 가까운 goal dry-run
 10. Goal cancel과 watchdog 확인
 11. 터미널 C의 arm:=false launch 종료
-12. Unitree SDK source
-13. 터미널 C에서 arm:=true 재실행
-14. 2D Pose Estimate 재지정
-15. 가까운 goal부터 실제 주행
+12. 생성된 진단 CSV와 rosbag 검토
+13. 이상이 있으면 원인을 수정한 뒤 arm:=false로 다시 검증
 ```
+
+이 일상 절차에는 armed 재실행 단계가 없습니다.
 
 평상시에는 `codex/hanyang-9f-mapping-pcl-fix` 브랜치를 실행하지 않습니다.
 
@@ -1040,7 +1194,7 @@ pointcloud_to_laserscan
 - `camera_init → body` TF가 정상인지
 - 시간 동기화 또는 timestamp 문제가 없는지
 
-지도와 `/scan`이 계속 맞지 않으면 `arm:=true`를 사용하지 않습니다.
+지도와 `/scan`이 계속 맞지 않으면 armed 전환을 시도하지 않습니다.
 
 ---
 
@@ -1084,15 +1238,16 @@ ros2 topic echo /go1/control_state
 DRY-RUN
 ```
 
-실제 주행에는 다음 조건이 필요합니다.
+현재 `DRY-RUN`은 정상입니다. 직접 launch 인자를 바꿔 armed로 전환하지 말고, 문서
+마지막의 fail-closed Jetson runner와 현장 체크리스트만 사용합니다.
 
 ```text
-arm:=true
+MID-360 장착 및 extrinsic 보정 완료
 Unitree SDK 환경 source
 Go1 네트워크 연결 정상
 ```
 
-단, 안전 검증 없이 `arm:=true`로 변경하지 마십시오.
+이 레거시 진단 단계의 pose-graph launch는 `arm:=false`로 유지하십시오.
 
 ---
 
@@ -1159,7 +1314,7 @@ Unitree High-Level UDP
 Go1
 ```
 
-매핑이 이미 완료된 경우의 최소 실행 구성:
+레거시 AMCL fallback의 최소 dry-run 구성:
 
 ```text
 터미널 A: Livox
@@ -1167,26 +1322,98 @@ Go1
 터미널 C: 저장 지도 + AMCL + Nav2 + RViz + Go1 driver
 ```
 
-실제 주행 전에는 항상 다음 순서를 지킵니다.
+현재 권장 pose-graph dry-run은 다음 단계에서 종료합니다.
 
 ```text
-arm:=false 검증
+go1_posegraph_navigation.launch.py arm:=false 실행
     ↓
-2D Pose Estimate
+초기 자세 지정
     ↓
 /scan 지도 정합
     ↓
-AMCL/TF 확인
+map → camera_init → body_nav TF와 supervisor READY 확인
     ↓
 가까운 goal dry-run
     ↓
 Goal cancel 및 watchdog 확인
     ↓
 arm:=false 종료
-    ↓
-arm:=true 재실행
-    ↓
-2D Pose Estimate 재지정
-    ↓
-저속 실제 주행
 ```
+
+## Jetson 현장 배포 및 포즈 그래프 localization
+
+현장 진입은 반드시 `arm:=false` dry-run부터 시작합니다. 아래 armed 명령이 준비되어
+있다는 사실은 실제 센서 장착·extrinsic·e-stop을 자동으로 보증하지 않습니다. 운영자가
+그 항목을 현장에서 확인한 뒤에만 마지막 단계를 실행하십시오. 레거시 AMCL launch는
+비교·장애 대응용이며 권장 경로는 `go1_posegraph_navigation.launch.py`입니다.
+
+### 1. 복사, SDK, 빌드와 테스트
+
+Jetson Ubuntu 22.04의 저장소 루트에서 실행합니다. 기존 workspace 대상이 있으면 staging은
+덮어쓰지 않고 중단하므로, 이전 workspace를 보존하거나 운영자가 별도로 정리한 뒤 다시
+시작하십시오.
+
+```bash
+cd /mnt/t500/GO1_to_ROS2_YEEPY
+./migration/jetson_field_deploy.sh stage "$PWD" /mnt/t500/go1_ros2_ws
+./migration/build_unitree_go1_wrapper.sh /path/to/unitree_legged_sdk
+./migration/jetson_field_deploy.sh build /mnt/t500/go1_ros2_ws
+```
+
+`build`는 rosdep, 두 패키지 build와 test를 수행하고 `go1_driver`와
+`omx_navigation` 각각에서 테스트가 1개 이상 수집되었는지 확인합니다. error, failure,
+skip 또는 `0 tests`는 모두 실패입니다.
+
+### 2. 센서 실행과 정적 preflight
+
+기존 절차대로 별도 터미널에서 MID-360과 FAST-LIO를 먼저 실행한 뒤 다음 명령을
+실행합니다. `preflight`는 `aarch64`, Ubuntu 22.04, ROS 2 Humble, 필수 ROS 패키지,
+ARM64 Unitree wrapper, posegraph/map artifact, 진단 경로 쓰기 권한을 검사합니다.
+
+```bash
+cd /mnt/t500/GO1_to_ROS2_YEEPY
+./migration/jetson_field_deploy.sh preflight /mnt/t500/go1_ros2_ws
+```
+
+### 3. 무구동 dry-run
+
+```bash
+./migration/jetson_field_deploy.sh dry-run /mnt/t500/go1_ros2_ws
+```
+
+이 명령은 live MID-360, FAST-LIO, `/Odometry`, `camera_init -> body`를 확인한 뒤
+`start_go1_driver:=true arm:=false record_localization:=true rviz:=false`로 시작합니다.
+RViz에서 대략적인 `2D Pose Estimate`를 한 번 지정하고 supervisor가
+`status=READY`, `error=NONE`, `ready=true`인지 확인합니다. READY가 아니면 움직이지 말고
+scan/TF/extrinsic/초기 자세를 복구합니다. 기본 진단 경로는
+`/mnt/t500/localization_logs/posegraph_*/`입니다.
+
+### 4. armed 현장 시험
+
+dry-run을 `Ctrl-C`로 정상 종료하고 모든 ROS 노드가 exit 0인지 확인합니다. Go1을
+스탠드에 올리거나 넓은 시험 공간에 두고, 운영자가 물리 e-stop을 즉시 누를 수 있는
+상태에서만 다음 명령을 실행합니다.
+
+```bash
+./migration/jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY /mnt/t500/go1_ros2_ws
+```
+
+launch도 독립적으로 `arm:=true`, `start_go1_driver:=true`,
+`record_localization:=true`, 정확한 확인 토큰을 모두 검사하므로 일부 인자만 전달해서
+우회할 수 없습니다. 새 프로세스이므로 RViz에서 `2D Pose Estimate`를 다시 지정해
+READY/NONE을 확인한 후 첫 goal은 현재 위치에서 **0.3 m 이내**로 지정합니다.
+
+### 5. 현장 합격 기준
+
+- READY 전에는 `/cmd_vel`이 0이고 goal이 거부됩니다.
+- goal cancel 즉시 정지하며, localization 손실 시 ready gate와 watchdog이 정지시킵니다.
+- `Ctrl-C` 시 gate가 정지를 발행하고 Go1 driver가 반복 stand를 보낸 뒤 모든 노드가
+  exit 0으로 끝납니다.
+- 실제 센서 timestamp/주기, `map -> camera_init -> body_nav`, extrinsic, 0.3 m goal,
+  cancel, ready loss, e-stop을 모두 통과하기 전에는 자율주행 합격으로 기록하지 않습니다.
+
+`/slam_localization/pose`는 보정 뒤 한 번 오는 handshake 토픽입니다. 이후 연속 품질은
+최신 scan과 `map -> camera_init`, `camera_init -> body_nav` TF로 감시됩니다. 오류가
+`INPUT_MISSING`, `LOW_OVERLAP`, `AMBIGUOUS`, `ODOM_RESET`, `TF_CONFLICT`,
+`POSE_OUTSIDE_MAP`, `SLAM_JUMP` 또는 `EXTRINSIC_UNCALIBRATED`이면 원인을 복구하기
+전까지 이동하지 마십시오.

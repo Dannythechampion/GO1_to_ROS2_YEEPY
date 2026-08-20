@@ -37,7 +37,7 @@ def test_ros1_dwa_tuning_intent_is_preserved():
     assert follow["PathDist.scale"] == 40.0
     assert follow["GoalAlign.scale"] == 20.0
     assert follow["GoalDist.scale"] == 20.0
-    assert follow["BaseObstacle.scale"] == 0.01
+    assert follow["BaseObstacle.scale"] == 0.02
     assert follow["Oscillation.oscillation_reset_dist"] == 0.20
 
 
@@ -56,3 +56,11 @@ def test_global_planner_rejects_unknown_space():
     planner = params("planner_server")["GridBased"]
     assert global_costmap["track_unknown_space"] is True
     assert planner["allow_unknown"] is False
+
+
+def test_fallback_uses_safe_footprint_and_tf_tolerances():
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    for name in ("local_costmap", "global_costmap"):
+        params = config[name][name]["ros__parameters"]
+        assert params["footprint"] == "[[0.37, 0.19], [0.37, -0.19], [-0.37, -0.19], [-0.37, 0.19]]"
+        assert params["transform_tolerance"] == 0.5

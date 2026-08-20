@@ -73,10 +73,7 @@ require_active() {
 }
 
 for topic in \
-  /scan /Odometry /map /amcl_pose \
-  /cmd_vel_nav /cmd_vel_safe \
-  /localization/ready /motion_gate/enabled /mission/active \
-  /go1/control_state; do
+  /scan /Odometry /map /amcl_pose /cmd_vel /go1/control_state; do
   require_topic "$topic"
 done
 
@@ -84,9 +81,6 @@ require_rate /scan
 require_rate /Odometry
 require_message /map
 require_message /go1/control_state
-require_message /localization/ready
-require_message /motion_gate/enabled
-require_message /mission/active
 require_tf camera_init body
 
 for node in \

@@ -323,27 +323,19 @@ ros2 topic echo /go1/cmd_vel_applied
 
 ## 14. 실제 Go1 저속 시험
 
-다음 조건을 모두 만족한 후에만 진행한다.
-
-- dry-run 자동 검증 통과
-- Go1 ping 정상
-- 리모컨과 비상 정지 준비
-- 로봇 지지 또는 충분한 안전 공간 확보
-- 속도 제한 `0.20 m/s`, yaw `0.40 rad/s` 이하
+과거의 `go1_driver` 직접 armed 실행은 ARM64·artifact·localization gate를 우회하므로
+폐기했습니다. 먼저 posegraph dry-run, READY/NONE, cancel, watchdog, Ctrl-C 반복 stand를
+확인하고 로봇 지지대 또는 안전 공간과 물리 e-stop을 준비합니다. 실제 저속 시험의 유일한
+진입점은 다음 runner입니다.
 
 ```bash
-source /mnt/t500/go1_sdk/setup_unitree_sdk.bash
-source /mnt/t500/go1_ros2_ws/install/setup.bash
-ros2 launch go1_driver go1_driver.launch.py arm:=true
+cd /mnt/t500/GO1_to_ROS2_YEEPY
+./migration/jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY /mnt/t500/go1_ros2_ws
 ```
 
-시험 순서:
-
-```text
-zero -> forward -> lateral -> diagonal -> yaw -> curved motion
-```
-
-zero 명령 또는 command timeout 뒤에도 stepping이 계속되면 즉시 중단한다.
+새 launch에서 `2D Pose Estimate`와 READY/NONE을 다시 확인한 뒤 첫 goal은 `0.3 m`
+이내로 제한합니다. zero 명령, goal cancel, localization loss 또는 command timeout 뒤에도
+stepping이 계속되면 즉시 e-stop을 누르고 시험을 중단합니다.
 
 ## 15. 완료 증거 저장
 
