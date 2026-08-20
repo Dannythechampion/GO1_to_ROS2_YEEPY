@@ -264,6 +264,7 @@ def test_field_runner_has_fail_closed_jetson_contract():
         "pointcloud_to_laserscan", ".posegraph", ".data",
         "GO1_ARMED_AND_ESTOP_READY", "arm:=false", "arm:=true",
         "start_go1_driver:=true", "record_localization:=true",
+        "coarse_search_translation_radius:=",
     ):
         assert value in text
     assert "verify_nonzero_test_results" in text
@@ -377,3 +378,15 @@ def test_verified_branch_readme_explains_main_delta_and_field_path():
     for value in required:
         assert value in top
     assert "| 구분 | `origin/main` | 이 브랜치 |" in top
+def test_field_runner_passes_coarse_search_radius_to_both_launch_paths():
+    """Both dry-run and armed launches must narrow the initial-pose search window.
+
+    A 3.0 m window makes corridor poses ambiguous, so localization never reaches
+    READY.  The runner therefore has to forward the narrowed radius on both paths.
+    """
+    text = FIELD.read_text(encoding="utf-8")
+    assert 'readonly default_coarse_search_translation_radius="1.0"' in text
+    assert "COARSE_SEARCH_TRANSLATION_RADIUS" in text
+    assert text.count("exec ros2 launch omx_navigation") == 2
+    assert text.count("coarse_search_translation_radius:=") == 2
+    subprocess.run([_bash(), "-n", str(FIELD)], check=True)

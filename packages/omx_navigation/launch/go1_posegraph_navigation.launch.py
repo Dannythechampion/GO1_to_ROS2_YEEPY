@@ -231,12 +231,14 @@ def _validate_launch_inputs(context, *_args, **_kwargs):
     return []
 
 
-def _supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, diagnostics_csv):
+def _supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, diagnostics_csv,
+                       search_translation_radius):
     """Create the supervisor with either a session CSV or no filesystem output."""
     return Node(
         package="omx_navigation", executable="localization_supervisor", name="localization_supervisor", output="screen",
         parameters=[{"camera_init_frame": odom_frame, "source_base_frame": source_base_frame, "base_frame": base_frame,
-                     "diagnostics_csv": diagnostics_csv}],
+                     "diagnostics_csv": diagnostics_csv,
+                     "coarse_search_translation_radius": search_translation_radius}],
         remappings=[("/scan", scan_topic), ("/Odometry", odom_topic)],
     )
 
@@ -269,19 +271,26 @@ def _setup_diagnostics(context, *_args, **_kwargs):
     base_frame = LaunchConfiguration("base_frame")
     scan_topic = LaunchConfiguration("scan_topic")
     odom_topic = LaunchConfiguration("odom_topic")
+    search_translation_radius = float(
+        LaunchConfiguration("coarse_search_translation_radius").perform(context)
+    )
+    if not 0.0 < search_translation_radius < 100.0:
+        raise ValueError("coarse_search_translation_radius must be finite and positive")
     recording = prepare_recording_session(
         record_localization,
         record_cloud,
         LaunchConfiguration("diagnostics_root").perform(context),
     )
     if recording is None:
-        return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, "")]
+        return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, "",
+                                   search_translation_radius)]
     session_dir, topics = recording
     bag = ExecuteProcess(
         cmd=["ros2", "bag", "record", "--output", str(session_dir / "rosbag"), *topics],
         output="screen",
     )
-    return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, str(session_dir / "localization_status.csv")), bag]
+    return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic,
+                               str(session_dir / "localization_status.csv"), search_translation_radius), bag]
 
 
 def generate_launch_description() -> "LaunchDescription":
@@ -452,6 +461,7 @@ def generate_launch_description() -> "LaunchDescription":
         DeclareLaunchArgument("slam_params_file", default_value=os.path.join(package_share, "config", "slam_toolbox_localization_hanyang_9f.yaml")),
         DeclareLaunchArgument("scan_params_file", default_value=os.path.join(package_share, "config", "mid360_scan.yaml")),
         DeclareLaunchArgument("rviz_config", default_value=os.path.join(package_share, "rviz", "go1_existing_map_low_load.rviz")),
+        DeclareLaunchArgument("coarse_search_translation_radius", default_value="3.0"),
         DeclareLaunchArgument("diagnostics_root", default_value="/mnt/t500/localization_logs"),
         DeclareLaunchArgument("record_localization", default_value="false"),
         DeclareLaunchArgument("record_cloud", default_value="false"),

@@ -6,6 +6,7 @@ readonly armed_token="GO1_ARMED_AND_ESTOP_READY"
 readonly default_workspace="/mnt/t500/go1_ros2_ws"
 readonly default_sdk_root="/mnt/t500/go1_sdk"
 readonly default_diagnostics_root="/mnt/t500/localization_logs"
+readonly default_coarse_search_translation_radius="1.0"
 readonly expected_sdk_library_sha256="4ec2f384271ecc6cc4266e10b888d5bb076d73f10ee680436718c26d1d865a6d"
 readonly expected_wrapper_source_sha256="d98151de542eacb74532af6aba35d79b36bed9398c8de09c0aaa1724aad049b7"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -218,11 +219,13 @@ launch_navigation() {
     exec ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
       rviz:=false start_go1_driver:=true arm:=true \
       record_localization:=true diagnostics_root:="${DIAGNOSTICS_ROOT:-$default_diagnostics_root}" \
+      coarse_search_translation_radius:="${COARSE_SEARCH_TRANSLATION_RADIUS:-$default_coarse_search_translation_radius}" \
       armed_confirmation:="$armed_token" ros_domain_id:="$ROS_DOMAIN_ID"
   fi
   exec ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
     rviz:=false start_go1_driver:=true arm:=false \
     record_localization:=true diagnostics_root:="${DIAGNOSTICS_ROOT:-$default_diagnostics_root}" \
+    coarse_search_translation_radius:="${COARSE_SEARCH_TRANSLATION_RADIUS:-$default_coarse_search_translation_radius}" \
     ros_domain_id:="$ROS_DOMAIN_ID"
 }
 
