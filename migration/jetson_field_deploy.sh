@@ -18,6 +18,12 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # These patterns match the installed executables this runner owns, so a relaunch
 # fails closed instead of stacking a fourth generation. Livox and FAST-LIO are
 # deliberately absent: this runner requires them to be already running.
+# Every executable this launch starts must be listed. A missing entry is worse
+# than no guard at all: on 2026-09-10 controller_server was absent here, a
+# second launch stacked on the first one's orphan, the two same-named nodes made
+# the lifecycle manager fail its change_state call, and bringup aborted leaving
+# velocity_smoother unconfigured -- so goals were accepted and instantly
+# aborted with no /cmd_vel_nav at all.
 readonly -a managed_node_patterns=(
   "lib/go1_driver/go1_driver"
   "lib/omx_navigation/planar_base_frame"
@@ -26,11 +32,18 @@ readonly -a managed_node_patterns=(
   "lib/omx_navigation/localization_supervisor"
   "lib/nav2_map_server/map_server"
   "lib/nav2_lifecycle_manager/lifecycle_manager"
+  "lib/nav2_controller/controller_server"
+  "lib/nav2_planner/planner_server"
+  "lib/nav2_bt_navigator/bt_navigator"
+  "lib/nav2_behaviors/behavior_server"
+  "lib/nav2_smoother/smoother_server"
+  "lib/nav2_waypoint_follower/waypoint_follower"
   "lib/nav2_velocity_smoother/velocity_smoother"
   "lib/rclcpp_components/component_container_isolated"
   "lib/slam_toolbox/localization_slam_toolbox_node"
   "lib/slam_toolbox/async_slam_toolbox_node"
   "lib/pointcloud_to_laserscan/pointcloud_to_laserscan_node"
+  "lib/rviz2/rviz2"
 )
 
 fail() {
