@@ -8,6 +8,7 @@ import sys
 import time
 
 from .command_filter import MotionCommand, WALK_MODE
+from .high_state import high_state_snapshot
 
 
 class UnitreeHighLevel:
@@ -36,11 +37,19 @@ class UnitreeHighLevel:
         self._udp = sdk.UDP(0xEE, local_port, robot_ip, robot_port)
         self._cmd = sdk.HighCmd()
         self._state = sdk.HighState()
+        self._receive_sequence = 0
         self._udp.InitCmdData(self._cmd)
 
-    def send(self, command: MotionCommand) -> None:
+    def send(self, command: MotionCommand) -> dict:
         self._udp.Recv()
         self._udp.GetRecv(self._state)
+        self._receive_sequence += 1
+        snapshot = high_state_snapshot(
+            self._state,
+            self._receive_sequence,
+            time.monotonic_ns(),
+        )
+        snapshot["udp_freshness_basis"] = "recv_return"
 
         cmd = self._cmd
         cmd.mode = command.mode
@@ -53,6 +62,7 @@ class UnitreeHighLevel:
         cmd.reserve = 0
         self._udp.SetSend(cmd)
         self._udp.Send()
+        return snapshot
 
     def stand(self, repeats: int = 30, period: float = 0.01) -> None:
         command = MotionCommand.stand("shutdown")

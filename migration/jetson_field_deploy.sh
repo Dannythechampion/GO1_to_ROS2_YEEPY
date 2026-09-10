@@ -165,6 +165,8 @@ preflight() {
   require_command python3
   require_command file
   require_command ldd
+  require_command tegrastats
+  require_command journalctl
   require_command timeout
   source_ros_workspace "$workspace"
   require_command ros2
@@ -210,23 +212,124 @@ verify_live_inputs() {
   printf 'PASS: live MID-360, FAST-LIO, odometry, and body TF inputs\n'
 }
 
+finalize_recording_session() {
+  local session_dir="$1"
+  local operating_mode="${2:-DRY-RUN}"
+  [[ -d "$session_dir/rosbag" ]] || fail "recorded rosbag directory is missing: $session_dir/rosbag"
+  ros2 bag info "$session_dir/rosbag" >"$session_dir/bag_info.txt" 2>&1 || {
+    printf 'ERROR: rosbag verification failed; inspect %s\n' "$session_dir/bag_info.txt" >&2
+    return 1
+  }
+  python3 - "$session_dir/rosbag/metadata.yaml" "$operating_mode" \
+    "$session_dir/bag_verification.txt" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+metadata_path = Path(sys.argv[1])
+mode = sys.argv[2]
+report_path = Path(sys.argv[3])
+required = {
+    "/scan",
+    "/Odometry",
+    "/tf",
+    "/initialpose",
+    "/slam_localization/pose",
+    "/localization_supervisor/status",
+    "/cmd_vel_nav",
+    "/cmd_vel",
+    "/go1/cmd_vel_applied",
+    "/go1/control_state",
+    "/goal_pose",
+    "/plan",
+    "/local_plan",
+    "/navigate_to_pose/_action/status",
+    "/navigate_to_pose/_action/feedback",
+}
+if mode == "ARMED":
+    required.add("/go1/high_state")
+try:
+    document = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
+    entries = document["rosbag2_bagfile_information"]["topics_with_message_count"]
+    counts = {
+        entry["topic_metadata"]["name"]: int(entry["message_count"])
+        for entry in entries
+    }
+except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as error:
+    report_path.write_text(f"FAIL: invalid rosbag metadata: {error}\n", encoding="utf-8")
+    raise SystemExit(1)
+missing = sorted(topic for topic in required if counts.get(topic, 0) <= 0)
+if missing:
+    report_path.write_text(
+        "FAIL: required topics have zero messages or are absent:\n"
+        + "".join(f"- {topic}\n" for topic in missing),
+        encoding="utf-8",
+    )
+    raise SystemExit(1)
+report_path.write_text(
+    f"PASS: {mode} required evidence topics contain messages\n",
+    encoding="utf-8",
+)
+PY
+  printf 'PASS: verified field recording: %s\n' "$session_dir"
+}
+
+find_new_recording_session() {
+  local diagnostics_root="$1"
+  local marker="$2"
+  python3 - "$diagnostics_root" "$marker" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+marker_time = Path(sys.argv[2]).stat().st_mtime_ns
+candidates = [
+    path for path in root.glob("posegraph_*")
+    if path.is_dir() and path.stat().st_mtime_ns >= marker_time
+]
+if not candidates:
+    raise SystemExit("ERROR: launch did not create a field recording session")
+print(max(candidates, key=lambda path: path.stat().st_mtime_ns))
+PY
+}
+
 launch_navigation() {
   local armed="$1"
   local workspace="$2"
   preflight "$workspace"
   verify_live_inputs
-  if [[ "$armed" == "true" ]]; then
-    exec ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
-      rviz:=false start_go1_driver:=true arm:=true \
-      record_localization:=true diagnostics_root:="${DIAGNOSTICS_ROOT:-$default_diagnostics_root}" \
-      coarse_search_translation_radius:="${COARSE_SEARCH_TRANSLATION_RADIUS:-$default_coarse_search_translation_radius}" \
-      armed_confirmation:="$armed_token" ros_domain_id:="$ROS_DOMAIN_ID"
+  local diagnostics_root="${DIAGNOSTICS_ROOT:-$default_diagnostics_root}"
+  local marker session_dir launch_status git_commit
+  marker="$(mktemp "$diagnostics_root/.go1-session-start.XXXXXX")"
+  git_commit="${GO1_GIT_COMMIT:-unknown}"
+  if [[ "$git_commit" == "unknown" ]] && command -v git >/dev/null 2>&1; then
+    git_commit="$(git -C "$script_dir/.." describe --always --dirty=+dirty 2>/dev/null || printf unknown)"
   fi
-  exec ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
-    rviz:=false start_go1_driver:=true arm:=false \
-    record_localization:=true diagnostics_root:="${DIAGNOSTICS_ROOT:-$default_diagnostics_root}" \
-    coarse_search_translation_radius:="${COARSE_SEARCH_TRANSLATION_RADIUS:-$default_coarse_search_translation_radius}" \
+  local -a launch_args=(
+    rviz:=false start_go1_driver:=true
+    record_localization:=true diagnostics_root:="$diagnostics_root"
+    coarse_search_translation_radius:="${COARSE_SEARCH_TRANSLATION_RADIUS:-$default_coarse_search_translation_radius}"
     ros_domain_id:="$ROS_DOMAIN_ID"
+    experiment_git_commit:="$git_commit"
+  )
+  if [[ "$armed" == "true" ]]; then
+    launch_args+=(arm:=true armed_confirmation:="$armed_token")
+  else
+    launch_args+=(arm:=false)
+  fi
+  set +e
+  ros2 launch omx_navigation go1_posegraph_navigation.launch.py "${launch_args[@]}"
+  launch_status=$?
+  set -e
+  session_dir="$(find_new_recording_session "$diagnostics_root" "$marker")"
+  rm -f -- "$marker"
+  if [[ "$armed" == "true" ]]; then
+    finalize_recording_session "$session_dir" ARMED
+  else
+    finalize_recording_session "$session_dir" DRY-RUN
+  fi
+  return "$launch_status"
 }
 
 main() {

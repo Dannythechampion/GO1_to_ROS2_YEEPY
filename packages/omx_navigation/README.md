@@ -194,6 +194,14 @@ dry-run은 항상 `arm:=false`이며 진단 기록을 켭니다. RViz에서 대�
 `map -> camera_init -> body_nav`를 확인합니다. `/slam_localization/pose`는 한 번 오는
 handshake이고, 이후 최신 scan과 두 TF edge가 연속 품질을 감시합니다.
 
+각 실행은 `/mnt/t500/localization_logs/posegraph_*/` 아래 한 폴더에 자동으로
+묶입니다. `rosbag/`에는 센서·TF·localization뿐 아니라 Nav2 goal/plan/action 상태,
+요청·gate·적용 속도, `/go1/control_state`, `/go1/high_state`가 기록됩니다. 같은 폴더의
+`session_metadata.json`, `localization_status.csv`, `tegrastats.log`, `kernel.log`로
+환경과 시스템 이상을 대조할 수 있고, 정상 종료 뒤 `bag_info.txt`가 생성되어 bag을
+다시 열 수 있는지 자동 확인합니다. dry-run에서는 안전상 Unitree UDP를 열지 않으므로
+`/go1/high_state` 메시지는 armed 실행에서만 발생합니다.
+
 dry-run을 `Ctrl-C`로 종료해 모든 노드가 exit 0인지 확인한 뒤, Go1을 안전하게
 지지하고 운영자가 e-stop을 누를 준비가 된 경우에만 다음 명령을 사용합니다.
 

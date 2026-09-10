@@ -15,6 +15,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).parents[1]
@@ -35,6 +36,8 @@ BASE_TOPICS = (
 BAG_TOPICS = (
     "/scan", "/Odometry", "/tf", "/tf_static", "/initialpose", "/slam_localization/pose",
     "/localization_supervisor/status", "/localization_supervisor/ready", "/cmd_vel_nav", "/cmd_vel",
+    "/go1/cmd_vel_applied", "/go1/control_state", "/go1/high_state", "/goal_pose",
+    "/plan", "/local_plan", "/navigate_to_pose/_action/status", "/navigate_to_pose/_action/feedback",
 )
 
 
@@ -46,6 +49,14 @@ def _bash():
     if probe.returncode != 0:
         pytest.skip("usable bash is unavailable")
     return candidate
+
+
+def _bash_path(path: Path) -> str:
+    if os.name != "nt":
+        return str(path)
+    resolved = path.resolve()
+    drive = resolved.drive.rstrip(":").lower()
+    return f"/mnt/{drive}/" + "/".join(resolved.parts[1:])
 
 
 def _shell_array(text: str, name: str) -> tuple[str, ...]:
@@ -260,15 +271,100 @@ def test_field_runner_has_fail_closed_jetson_contract():
     assert "set -euo pipefail" in text
     for value in (
         "aarch64", 'VERSION_ID="22.04"', "ROS_DISTRO", "humble",
-        "robot_interface", "ldd", "livox_ros_driver2", "fast_lio",
+        "robot_interface", "ldd", "tegrastats", "journalctl", "livox_ros_driver2", "fast_lio",
         "pointcloud_to_laserscan", ".posegraph", ".data",
         "GO1_ARMED_AND_ESTOP_READY", "arm:=false", "arm:=true",
         "start_go1_driver:=true", "record_localization:=true",
         "coarse_search_translation_radius:=",
+        "--dirty=+dirty",
     ):
         assert value in text
     assert "verify_nonzero_test_results" in text
-    subprocess.run([_bash(), "-n", str(FIELD)], check=True)
+    subprocess.run([_bash(), "-n", _bash_path(FIELD)], check=True)
+
+
+def test_field_runner_writes_rosbag_verification_to_the_session_directory():
+    bash = _bash()
+    with TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        session = root / "posegraph_trial"
+        (session / "rosbag").mkdir(parents=True)
+        required_counts = {
+            "/scan": 10,
+            "/Odometry": 10,
+            "/tf": 10,
+            "/initialpose": 1,
+            "/slam_localization/pose": 1,
+            "/localization_supervisor/status": 4,
+            "/cmd_vel_nav": 5,
+            "/cmd_vel": 5,
+            "/go1/cmd_vel_applied": 5,
+            "/go1/control_state": 5,
+            "/goal_pose": 1,
+            "/plan": 1,
+            "/local_plan": 1,
+            "/navigate_to_pose/_action/status": 1,
+            "/navigate_to_pose/_action/feedback": 1,
+        }
+        metadata = {
+            "rosbag2_bagfile_information": {
+                "topics_with_message_count": [
+                    {"topic_metadata": {"name": name}, "message_count": count}
+                    for name, count in required_counts.items()
+                ]
+            }
+        }
+        (session / "rosbag" / "metadata.yaml").write_text(
+            yaml.safe_dump(metadata), encoding="utf-8"
+        )
+        environment = os.environ.copy()
+        command = (
+            "ros2() { printf 'Files: rosbag_0.db3\\nDuration: 12.5s\\n'; }; "
+            f"source {shlex.quote(_bash_path(FIELD))}; "
+            f"finalize_recording_session {shlex.quote(_bash_path(session))}"
+        )
+
+        result = subprocess.run(
+            [bash, "-c", command],
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert (session / "bag_info.txt").read_text(encoding="utf-8") == (
+            "Files: rosbag_0.db3\nDuration: 12.5s\n"
+        )
+        assert "PASS" in (session / "bag_verification.txt").read_text(encoding="utf-8")
+
+
+def test_field_runner_rejects_armed_bag_without_high_state_evidence():
+    bash = _bash()
+    with TemporaryDirectory() as temp_dir:
+        session = Path(temp_dir) / "posegraph_armed"
+        bag = session / "rosbag"
+        bag.mkdir(parents=True)
+        metadata = {
+            "rosbag2_bagfile_information": {
+                "topics_with_message_count": [
+                    {"topic_metadata": {"name": "/scan"}, "message_count": 10}
+                ]
+            }
+        }
+        (bag / "metadata.yaml").write_text(yaml.safe_dump(metadata), encoding="utf-8")
+        command = (
+            "ros2() { printf 'readable bag\\n'; }; "
+            f"source {shlex.quote(_bash_path(FIELD))}; "
+            f"finalize_recording_session {shlex.quote(_bash_path(session))} ARMED"
+        )
+
+        result = subprocess.run([bash, "-c", command], text=True, capture_output=True)
+
+        assert result.returncode != 0
+        report = (session / "bag_verification.txt").read_text(encoding="utf-8")
+        assert "/go1/high_state" in report
+        assert "FAIL" in report
 
 
 def test_field_runner_is_executable_in_a_fresh_linux_clone():
@@ -387,6 +483,6 @@ def test_field_runner_passes_coarse_search_radius_to_both_launch_paths():
     text = FIELD.read_text(encoding="utf-8")
     assert 'readonly default_coarse_search_translation_radius="1.0"' in text
     assert "COARSE_SEARCH_TRANSLATION_RADIUS" in text
-    assert text.count("exec ros2 launch omx_navigation") == 2
-    assert text.count("coarse_search_translation_radius:=") == 2
-    subprocess.run([_bash(), "-n", str(FIELD)], check=True)
+    assert text.count("ros2 launch omx_navigation") == 1
+    assert text.count("coarse_search_translation_radius:=") == 1
+    subprocess.run([_bash(), "-n", _bash_path(FIELD)], check=True)

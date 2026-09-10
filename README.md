@@ -1388,6 +1388,12 @@ RViz에서 대략적인 `2D Pose Estimate`를 한 번 지정하고 supervisor가
 scan/TF/extrinsic/초기 자세를 복구합니다. 기본 진단 경로는
 `/mnt/t500/localization_logs/posegraph_*/`입니다.
 
+이 폴더에는 rosbag, localization CSV, 실행 메타데이터, `tegrastats`, 커널 로그가
+자동 저장됩니다. rosbag은 Nav2 goal/plan/action feedback, 명령 속도와 gate 출력,
+Go1 적용 속도·제어 상태·HighState를 포함하며 종료 후 `bag_info.txt`로 무결성을
+확인합니다. 무구동 dry-run은 Unitree UDP 자체를 열지 않으므로 HighState는 armed
+시험에서만 발행됩니다.
+
 ### 4. armed 현장 시험
 
 dry-run을 `Ctrl-C`로 정상 종료하고 모든 ROS 노드가 exit 0인지 확인합니다. Go1을

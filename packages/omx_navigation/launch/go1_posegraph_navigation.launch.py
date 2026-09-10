@@ -15,7 +15,7 @@ import yaml
 try:  # Keeping input validation importable makes dry-run checks ROS-independent.
     from ament_index_python.packages import get_package_share_directory
     from launch import LaunchDescription
-    from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable
+    from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable, Shutdown
     from launch.conditions import IfCondition, UnlessCondition
     from launch.launch_description_sources import PythonLaunchDescriptionSource
     from launch.substitutions import LaunchConfiguration
@@ -254,6 +254,8 @@ def prepare_recording_session(record_localization: bool, record_cloud: bool, dia
     topics = (
         "/scan", "/Odometry", "/tf", "/tf_static", "/initialpose", "/slam_localization/pose",
         "/localization_supervisor/status", "/localization_supervisor/ready", "/cmd_vel_nav", "/cmd_vel",
+        "/go1/cmd_vel_applied", "/go1/control_state", "/go1/high_state", "/goal_pose",
+        "/plan", "/local_plan", "/navigate_to_pose/_action/status", "/navigate_to_pose/_action/feedback",
     )
     if record_cloud:
         topics += ("/cloud_registered_body",)
@@ -285,12 +287,33 @@ def _setup_diagnostics(context, *_args, **_kwargs):
         return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, "",
                                    search_translation_radius)]
     session_dir, topics = recording
+    arm = parse_launch_boolean(LaunchConfiguration("arm").perform(context), "arm")
     bag = ExecuteProcess(
         cmd=["ros2", "bag", "record", "--output", str(session_dir / "rosbag"), *topics],
         output="screen",
     )
+    system_logs = Node(
+        package="omx_navigation",
+        executable="field_session_recorder",
+        name="field_session_recorder",
+        output="screen",
+        on_exit=Shutdown(reason="field system logger exited"),
+        parameters=[{
+            "session_dir": str(session_dir),
+            "operating_mode": "ARMED" if arm else "DRY-RUN",
+            "map": LaunchConfiguration("map").perform(context),
+            "posegraph": LaunchConfiguration("posegraph").perform(context),
+            "nav2_params_file": LaunchConfiguration("nav2_params_file").perform(context),
+            "slam_params_file": LaunchConfiguration("slam_params_file").perform(context),
+            "scan_params_file": LaunchConfiguration("scan_params_file").perform(context),
+            "search_radius": str(search_translation_radius),
+            "recorded_topics": list(topics),
+            "git_commit": LaunchConfiguration("experiment_git_commit").perform(context),
+        }],
+    )
     return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic,
-                               str(session_dir / "localization_status.csv"), search_translation_radius), bag]
+                               str(session_dir / "localization_status.csv"), search_translation_radius), bag,
+            system_logs]
 
 
 def generate_launch_description() -> "LaunchDescription":
@@ -471,6 +494,7 @@ def generate_launch_description() -> "LaunchDescription":
         DeclareLaunchArgument("armed_confirmation", default_value=""),
         DeclareLaunchArgument("use_composition", default_value="false"),
         DeclareLaunchArgument("ros_domain_id", default_value="100"),
+        DeclareLaunchArgument("experiment_git_commit", default_value="unknown"),
         SetEnvironmentVariable("ROS_DOMAIN_ID", LaunchConfiguration("ros_domain_id")),
         OpaqueFunction(function=_validate_launch_inputs),
         # Register the component container before LoadComposableNodes. This is

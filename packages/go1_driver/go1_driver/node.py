@@ -12,6 +12,7 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 from .command_filter import CommandFilter, MotionCommand, apply_watchdog
+from .high_state import encode_high_state_message
 from .unitree_adapter import UnitreeHighLevel
 
 try:
@@ -43,6 +44,7 @@ class Go1Driver(Node):
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
         self.declare_parameter("applied_topic", "/go1/cmd_vel_applied")
         self.declare_parameter("state_topic", "/go1/control_state")
+        self.declare_parameter("high_state_topic", "/go1/high_state")
         self.declare_parameter("publish_rate", 100.0)
         self.declare_parameter("cmd_timeout", 0.35)
         self.declare_parameter("max_linear_speed", 0.20)
@@ -94,8 +96,10 @@ class Go1Driver(Node):
         cmd_vel_topic = str(self.get_parameter("cmd_vel_topic").value)
         applied_topic = str(self.get_parameter("applied_topic").value)
         state_topic = str(self.get_parameter("state_topic").value)
+        high_state_topic = str(self.get_parameter("high_state_topic").value)
         self._applied_pub = self.create_publisher(Twist, applied_topic, 10)
         self._state_pub = self.create_publisher(String, state_topic, 10)
+        self._high_state_pub = self.create_publisher(String, high_state_topic, 10)
         self._subscription = self.create_subscription(
             Twist, cmd_vel_topic, self._cmd_vel_callback, 1
         )
@@ -154,7 +158,10 @@ class Go1Driver(Node):
         self._state_pub.publish(state)
 
         if self._robot is not None:
-            self._robot.send(command)
+            snapshot = self._robot.send(command)
+            high_state = String()
+            high_state.data = encode_high_state_message(snapshot, time.monotonic_ns())
+            self._high_state_pub.publish(high_state)
 
         if command.reason != self._last_reported_reason:
             self.get_logger().info(state.data)

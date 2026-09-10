@@ -40,6 +40,7 @@ setup(
             "planar_base_frame = omx_navigation.planar_base_frame:main",
             "localization_supervisor = omx_navigation.localization_supervisor:main",
             "rviz_goal_bridge = omx_navigation.rviz_goal_bridge:main",
+            "field_session_recorder = omx_navigation.field_session_recorder:main",
         ],
     },
 )

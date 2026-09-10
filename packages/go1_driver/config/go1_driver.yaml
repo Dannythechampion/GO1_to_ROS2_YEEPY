@@ -5,6 +5,7 @@
     cmd_vel_topic: /cmd_vel
     applied_topic: /go1/cmd_vel_applied
     state_topic: /go1/control_state
+    high_state_topic: /go1/high_state
     publish_rate: 100.0
     cmd_timeout: 0.35
 
