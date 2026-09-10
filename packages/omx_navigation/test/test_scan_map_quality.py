@@ -358,3 +358,25 @@ def test_translation_candidates_stay_inside_euclidean_radius():
     assert (3.0, 3.0) not in translations
     assert {(0.0, 0.0), (-3.0, 0.0), (3.0, 0.0), (0.0, -3.0), (0.0, 3.0)} <= translations
     assert poses == _candidate_poses(initial, window)
+
+
+def test_continuous_monitoring_keeps_score_when_one_endpoint_leaves_the_map():
+    """`disqualify_outside=False` must degrade gracefully, not collapse.
+
+    Disqualification is correct while choosing a pose but wrong while watching
+    a verified one: on the Hanyang 9F map a single beam of 180 crossed the
+    boundary on 8.2% of scans, and zeroing overlap there cancelled the active
+    navigation goal every few seconds.
+    """
+    grid = GridMap(3, 3, 1.0, 0.0, 0.0, 0.0, (100,) * 9)
+    field = build_distance_field(grid)
+    points = (ScanPoint(0.0, 0.0),) * 99 + (ScanPoint(100.0, 100.0),)
+    pose = Pose2D(0.5, 0.5, 0.0)
+    disqualified = score_pose(grid, field, points, pose, hit_distance=0.25)
+    monitored = score_pose(
+        grid, field, points, pose, hit_distance=0.25, disqualify_outside=False
+    )
+    assert disqualified.overlap == 0.0
+    assert monitored.overlap == pytest.approx(0.99)
+    assert not math.isinf(monitored.mean_distance)
+    assert monitored.points_used == disqualified.points_used == 100

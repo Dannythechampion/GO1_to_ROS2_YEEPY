@@ -611,6 +611,9 @@ class LocalizationSupervisor(Node):
                 self._points,
                 self._current_base_pose,
                 self._window.hit_distance,
+                # Watching a verified pose, not choosing one: a lone beam past
+                # the map edge is one unmatched beam, not a lost fix.
+                disqualify_outside=False,
             )
         except (TypeError, ValueError):
             self._quality_received_at = None

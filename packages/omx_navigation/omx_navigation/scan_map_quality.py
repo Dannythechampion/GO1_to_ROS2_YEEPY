@@ -133,7 +133,21 @@ def score_pose(
     points: Sequence[ScanPoint],
     pose: Pose2D,
     hit_distance: float,
+    disqualify_outside: bool = True,
 ) -> PoseScore:
+    """Score one pose, by default disqualifying any scan that leaves the map.
+
+    Disqualification is the right rule when *choosing* a pose: a candidate whose
+    scan runs off the map cannot be validated against it. It is the wrong rule
+    for watching an already-verified pose, because a single beam of 180 crossing
+    the boundary then collapses overlap from 0.89 to exactly 0.0. On the Hanyang
+    9F map that happened on 8.2% of scans once the projection reached 20 m
+    across a 20x29 m map, and each collapse cancelled the active navigation
+    goal. Continuous monitoring passes ``disqualify_outside=False`` so an
+    off-map beam counts as one unmatched beam instead; it still counts in
+    ``used``, so a pose that throws most of its scan off the map scores near
+    zero on its own.
+    """
     if len(field) != len(grid.cells):
         raise ValueError("distance field must match grid dimensions")
     if not math.isfinite(hit_distance) or hit_distance <= 0.0:
@@ -144,22 +158,23 @@ def score_pose(
     total_distance = 0.0
     hits = 0
     used = 0
-    outside = False
+    outside = 0
     for point in points:
         if not math.isfinite(point.x) or not math.isfinite(point.y):
             continue
         used += 1
         cell = grid.world_to_cell(pose.x + c * point.x - s * point.y, pose.y + s * point.x + c * point.y)
         if cell is None:
-            outside = True
+            outside += 1
             continue
         distance = field[cell[1] * grid.width + cell[0]]
         total_distance += distance
         hits += distance <= hit_distance
-    if outside:
+    if outside and disqualify_outside:
         overlap, mean_distance = 0.0, math.inf
     else:
-        mean_distance = total_distance / used if used else math.inf
+        matched = used - outside
+        mean_distance = total_distance / matched if matched else math.inf
         overlap = hits / used if used else 0.0
     return PoseScore(pose, overlap, mean_distance, _score_value(overlap, mean_distance), used)
 
