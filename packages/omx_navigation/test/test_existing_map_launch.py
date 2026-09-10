@@ -20,14 +20,25 @@ def test_launch_defaults_are_safe():
     assert "Existing map YAML does not exist" in text
 
 
-def test_scan_projection_is_low_load_and_planar_framed():
+def test_scan_projection_matches_the_mapping_scan_and_is_planar_framed():
+    """The three matching-critical values must equal go1_mapping's scan config.
+
+    Localization scores the live scan against a map built from
+    go1_mapping/config/pointcloud_to_scan_mapping.yaml. Cheaper values were used
+    here once -- range_max 10.0, angle_increment 0.0174533, max_height 0.60 --
+    and the live scan then could not see features the map contains: the pose
+    score went flat, the supervisor held 0.010-0.027 ambiguity margin against a
+    required 0.05, and it never left ALIGNING. Matching the mapping values
+    reaches READY on the first attempt at 0.092. The extra cost measured well
+    inside the Jetson's headroom, so quality wins over load here.
+    """
     text = SCAN.read_text(encoding="utf-8")
     for expected in (
         "min_height: -0.20",
-        "max_height: 0.60",
-        "angle_increment: 0.0174533",
+        "max_height: 1.30",
+        "angle_increment: 0.0087266",
         "scan_time: 0.10",
-        "range_max: 10.0",
+        "range_max: 20.0",
     ):
         assert expected in text
     assert "target_frame: body_nav" in text

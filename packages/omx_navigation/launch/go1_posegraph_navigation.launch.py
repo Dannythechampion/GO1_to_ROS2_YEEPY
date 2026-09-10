@@ -461,7 +461,12 @@ def generate_launch_description() -> "LaunchDescription":
         DeclareLaunchArgument("slam_params_file", default_value=os.path.join(package_share, "config", "slam_toolbox_localization_hanyang_9f.yaml")),
         DeclareLaunchArgument("scan_params_file", default_value=os.path.join(package_share, "config", "mid360_scan.yaml")),
         DeclareLaunchArgument("rviz_config", default_value=os.path.join(package_share, "rviz", "go1_existing_map_low_load.rviz")),
-        DeclareLaunchArgument("coarse_search_translation_radius", default_value="3.0"),
+        # 1.0 m is the value the 2026-08-18 field session verified. At 3.0 m the
+        # corridor's runner-up candidate stays in the search set, the ambiguity
+        # margin falls under the guard's 0.05, and localization never reaches
+        # READY. jetson_field_deploy.sh already passes 1.0; this keeps a direct
+        # `ros2 launch` from silently reproducing that failure.
+        DeclareLaunchArgument("coarse_search_translation_radius", default_value="1.0"),
         DeclareLaunchArgument("diagnostics_root", default_value="/mnt/t500/localization_logs"),
         DeclareLaunchArgument("record_localization", default_value="false"),
         DeclareLaunchArgument("record_cloud", default_value="false"),

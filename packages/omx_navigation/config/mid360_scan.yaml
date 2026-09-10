@@ -1,15 +1,22 @@
+# Localization matches this scan against a map built by go1_mapping's
+# pointcloud_to_scan_mapping.yaml. Where the two disagree, the live scan
+# cannot see features the map contains and the pose score goes flat: with
+# range_max 10.0, angle_increment 0.0174533 and max_height 0.60 the
+# supervisor scored 0.010-0.027 ambiguity margin against a required 0.05 and
+# never left ALIGNING. Matching the mapping values gives 0.092 on the first
+# attempt. Keep these three in step with that file.
 pointcloud_to_laserscan:
   ros__parameters:
     target_frame: body_nav
     queue_size: 1
     transform_tolerance: 0.05
     min_height: -0.20
-    max_height: 0.60
+    max_height: 1.30
     angle_min: -3.1415927
     angle_max: 3.1415927
-    angle_increment: 0.0174533
+    angle_increment: 0.0087266
     scan_time: 0.10
     range_min: 0.20
-    range_max: 10.0
+    range_max: 20.0
     use_inf: true
     inf_epsilon: 1.0

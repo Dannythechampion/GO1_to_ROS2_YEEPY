@@ -11,6 +11,28 @@ readonly expected_sdk_library_sha256="4ec2f384271ecc6cc4266e10b888d5bb076d73f10e
 readonly expected_wrapper_source_sha256="d98151de542eacb74532af6aba35d79b36bed9398c8de09c0aaa1724aad049b7"
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+# Killing a `ros2 launch` orphans its child nodes instead of terminating them.
+# On 2026-08-18 three generations of go1_driver, planar_base_frame and
+# cmd_vel_safety_gate ended up running at once; the duplicate planar_base_frame
+# instances published the same TF and the supervisor reported TF_CONFLICT.
+# These patterns match the installed executables this runner owns, so a relaunch
+# fails closed instead of stacking a fourth generation. Livox and FAST-LIO are
+# deliberately absent: this runner requires them to be already running.
+readonly -a managed_node_patterns=(
+  "lib/go1_driver/go1_driver"
+  "lib/omx_navigation/planar_base_frame"
+  "lib/omx_navigation/cmd_vel_safety_gate"
+  "lib/omx_navigation/rviz_goal_bridge"
+  "lib/omx_navigation/localization_supervisor"
+  "lib/nav2_map_server/map_server"
+  "lib/nav2_lifecycle_manager/lifecycle_manager"
+  "lib/nav2_velocity_smoother/velocity_smoother"
+  "lib/rclcpp_components/component_container_isolated"
+  "lib/slam_toolbox/localization_slam_toolbox_node"
+  "lib/slam_toolbox/async_slam_toolbox_node"
+  "lib/pointcloud_to_laserscan/pointcloud_to_laserscan_node"
+)
+
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
@@ -22,6 +44,7 @@ Usage:
   $0 stage <repository> [workspace]
   $0 build [workspace]
   $0 preflight [workspace]
+  $0 cleanup
   $0 dry-run [workspace]
   $0 armed $armed_token [workspace]
 EOF
@@ -210,10 +233,79 @@ verify_live_inputs() {
   printf 'PASS: live MID-360, FAST-LIO, odometry, and body TF inputs\n'
 }
 
+# Match argv[0] -- the program actually being executed -- not the whole command
+# line. `pgrep -f` also matches any shell whose arguments merely mention the
+# path, which includes this script and the operator's own SSH command, and that
+# turns a cleanup into self-destruction.
+list_managed_nodes() {
+  local entry pid argv0 argv1 candidate pattern
+  local -a argv
+  for entry in /proc/[0-9]*; do
+    pid="${entry#/proc/}"
+    [[ "$pid" == "$$" || "$pid" == "${PPID:-0}" ]] && continue
+    [[ -r "$entry/cmdline" ]] || continue
+    mapfile -t -d '' argv <"$entry/cmdline" 2>/dev/null || continue
+    argv0="${argv[0]:-}"
+    argv1="${argv[1]:-}"
+    [[ -n "$argv0" ]] || continue
+    # A C++ node is its own argv[0]. A node behind a shebang -- every ROS
+    # console_script is -- runs as `<interpreter> <script>`, so argv[1] holds
+    # the real target. An argv[1] beginning with `-` is an interpreter flag such
+    # as `bash -c`, never a node path, and skipping it is what keeps a shell
+    # that merely quotes the path from being matched.
+    for candidate in "$argv0" "$argv1"; do
+      [[ -n "$candidate" && "$candidate" != -* ]] || continue
+      for pattern in "${managed_node_patterns[@]}"; do
+        if [[ "$candidate" == *"/$pattern" ]]; then
+          printf '%s\t%s\n' "$pid" "$candidate"
+          break 2
+        fi
+      done
+    done
+  done
+}
+
+require_no_stale_nodes() {
+  local running
+  running="$(list_managed_nodes)"
+  [[ -n "$running" ]] || return 0
+  printf 'ERROR: nodes from an earlier launch are still running:\n' >&2
+  printf '%s\n' "$running" >&2
+  printf 'Killing a launch orphans its children. Duplicate publishers caused the\n' >&2
+  printf '2026-08-18 TF_CONFLICT. Clear them first:\n  %s cleanup\n' "$0" >&2
+  exit 1
+}
+
+cleanup_managed_nodes() {
+  local running pid pattern signal
+  running="$(list_managed_nodes)"
+  if [[ -z "$running" ]]; then
+    printf 'PASS: no leftover nodes from an earlier launch\n'
+    return 0
+  fi
+  printf 'Terminating leftover nodes:\n%s\n' "$running"
+  for signal in INT TERM KILL; do
+    running="$(list_managed_nodes)"
+    [[ -n "$running" ]] || break
+    while IFS=$'\t' read -r pid pattern; do
+      [[ -n "$pid" ]] || continue
+      kill "-$signal" "$pid" 2>/dev/null || true
+    done <<<"$running"
+    sleep 3
+  done
+  running="$(list_managed_nodes)"
+  if [[ -n "$running" ]]; then
+    printf 'ERROR: these nodes survived SIGKILL:\n%s\n' "$running" >&2
+    exit 1
+  fi
+  printf 'PASS: leftover nodes cleared\n'
+}
+
 launch_navigation() {
   local armed="$1"
   local workspace="$2"
   preflight "$workspace"
+  require_no_stale_nodes
   verify_live_inputs
   if [[ "$armed" == "true" ]]; then
     exec ros2 launch omx_navigation go1_posegraph_navigation.launch.py \
@@ -243,6 +335,10 @@ main() {
     preflight)
       [[ $# -le 1 ]] || { usage; exit 2; }
       preflight "${1:-$default_workspace}"
+      ;;
+    cleanup)
+      [[ $# -eq 0 ]] || { usage; exit 2; }
+      cleanup_managed_nodes
       ;;
     dry-run)
       [[ $# -le 1 ]] || { usage; exit 2; }
