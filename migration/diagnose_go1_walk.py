@@ -51,6 +51,11 @@ OBSTACLE_CLEAR_M = 2.0
 # in the previous mode. Requiring a quarter of the window tolerates that while
 # still rejecting the handful of stray samples that a refusal produces.
 ADOPTION_FRACTION = 0.25
+# The Go1 locks itself into force stand and refuses every locomotion mode once
+# the pack runs down. Measured on 2026-09-10: at 66% it accepted idle stand and
+# rotation, at 7% it rejected mode 0 and mode 2 alike while still standing and
+# answering. Check this before blaming the stack.
+LOW_BATTERY_PERCENT = 20
 
 MODE_NAMES = {
     0: "idle stand",
@@ -101,6 +106,7 @@ class Phase:
         self.remote_header_seen = False
         self.remote_nonzero_seen = False
         self.obstacle: list[list[float]] = [[], [], [], []]
+        self.battery: list[int] = []
         self.samples = 0
 
     def observe(self, state) -> None:
@@ -111,6 +117,13 @@ class Phase:
             self.forward_speeds.append(float(state.velocity[0]))
         except (IndexError, TypeError):
             pass
+        bms = getattr(state, "bms", None)
+        soc = getattr(bms, "SOC", None) if bms is not None else None
+        if soc is not None:
+            try:
+                self.battery.append(int(soc))
+            except (TypeError, ValueError):
+                pass
         ranges = getattr(state, "rangeObstacle", None)
         if ranges is not None:
             for index in range(min(4, len(ranges))):
@@ -142,6 +155,10 @@ class Phase:
     @property
     def followed_command(self) -> bool:
         return self.adoption_fraction >= ADOPTION_FRACTION
+
+    @property
+    def battery_percent(self) -> int | None:
+        return min(self.battery) if self.battery else None
 
     @property
     def blocking_sensors(self) -> list[tuple[int, float, float]]:
@@ -199,6 +216,14 @@ class Phase:
                         "  <-- pinned close" if max(samples) < OBSTACLE_BLOCK_M else "",
                     )
                 )
+        if self.battery_percent is not None:
+            print(
+                "  battery        : %d%%%s"
+                % (
+                    self.battery_percent,
+                    "  <-- too low to walk" if self.battery_percent < LOW_BATTERY_PERCENT else "",
+                )
+            )
         print(
             "  wirelessRemote : header=%s  nonzero=%s  distinct frames=%d"
             % (
@@ -242,6 +267,17 @@ def verdict(idle: Phase, walk: Phase | None) -> int:
         print("NO REPLY: the robot never answered on the HighLevel port.")
         print("  Check the 192.168.123.0/24 link and that sport mode is up.")
         return 2
+
+    charge = next(
+        (p.battery_percent for p in phases if p.battery_percent is not None), None
+    )
+    if charge is not None and charge < LOW_BATTERY_PERCENT:
+        print("CAUSE FOUND: the battery is too low to walk (%d%%)." % charge)
+        print("  The Go1 holds force stand and refuses every locomotion mode when the")
+        print("  pack runs down, while still standing and answering HighLevel UDP.")
+        print("  Nothing in this stack can override that.")
+        print("  FIX: charge the robot, then re-run this probe.")
+        return 1
 
     rc_active = any(phase.remote_header_seen for phase in phases)
     rc_changing = any(len(phase.remote_frames) > 1 for phase in phases)
