@@ -251,8 +251,9 @@ verify_live_inputs() {
 # path, which includes this script and the operator's own SSH command, and that
 # turns a cleanup into self-destruction.
 list_managed_nodes() {
-  local entry pid argv0 argv1 candidate pattern
+  local entry pid argv0 argv1 candidate pattern index output
   local -a argv
+  local diagnostics_root="${DIAGNOSTICS_ROOT:-$default_diagnostics_root}"
   for entry in /proc/[0-9]*; do
     pid="${entry#/proc/}"
     [[ "$pid" == "$$" || "$pid" == "${PPID:-0}" ]] && continue
@@ -261,6 +262,26 @@ list_managed_nodes() {
     argv0="${argv[0]:-}"
     argv1="${argv[1]:-}"
     [[ -n "$argv0" ]] || continue
+    # The localization recorder runs as `ros2 bag record`, so argv[0] and argv[1]
+    # are the interpreter and the `ros2` CLI -- there is no node path for the
+    # patterns above to match, and it therefore survived every cleanup. On
+    # 2026-09-18 three recorders from three launches were still running and the
+    # node graph carried three nodes named rosbag2_recorder. Matching on the
+    # `--output` path keeps this to the recorder this runner owns, so an
+    # operator's own unrelated `ros2 bag record` is left alone.
+    if [[ "$argv1" == */bin/ros2 && "${argv[2]:-}" == bag && "${argv[3]:-}" == record ]]; then
+      output=""
+      for ((index = 4; index < ${#argv[@]}; index++)); do
+        if [[ "${argv[index]}" == "--output" ]]; then
+          output="${argv[index + 1]:-}"
+          break
+        fi
+      done
+      if [[ -n "$output" && "$output" == "$diagnostics_root"/* ]]; then
+        printf '%s\t%s\n' "$pid" "ros2 bag record $output"
+        continue
+      fi
+    fi
     # A C++ node is its own argv[0]. A node behind a shebang -- every ROS
     # console_script is -- runs as `<interpreter> <script>`, so argv[1] holds
     # the real target. An argv[1] beginning with `-` is an interpreter flag such
