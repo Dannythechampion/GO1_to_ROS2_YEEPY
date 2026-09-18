@@ -41,6 +41,13 @@ IDLE_MODE = 0
 WALK_MODE = 2
 TROT_GAIT = 1
 RC_HEADER = (0xFE, 0xEF)
+# A HighState that no reply ever filled stays all zeros, and `mode` 0 in it is
+# indistinguishable from a robot that adopted idle stand. Counting those blanks
+# as replies makes a powered-off robot report "followed our command: YES" and
+# the verdict "IDLE OK" -- measured on 2026-09-18 with the Go1 switched off.
+# Every real packet carries the 0xFE 0xEF head, a unit IMU quaternion, a battery
+# reading and foot forces, so a sample counts only when one of those is present.
+STATE_HEAD = (0xFE, 0xEF)
 # rangeObstacle reports the Go1's own proximity sensors. A reading pinned well
 # inside this bound while the robot is standing still is not a passer-by; it is
 # something bolted in front of the sensor, and the sport controller refuses
@@ -93,6 +100,33 @@ def remote_bytes(state) -> tuple[int, ...]:
         return ()
 
 
+def state_is_live(state) -> bool:
+    """True when this HighState was filled by a reply rather than left blank."""
+    if tuple(int(value) & 0xFF for value in getattr(state, "head", ()) or ())[:2] == STATE_HEAD:
+        return True
+    imu = getattr(state, "imu", None)
+    quaternion = getattr(imu, "quaternion", None) if imu is not None else None
+    if quaternion is not None:
+        try:
+            # A live IMU always reports a unit quaternion; a blank one is all zeros.
+            if sum(float(value) ** 2 for value in quaternion) > 0.25:
+                return True
+        except (TypeError, ValueError):
+            pass
+    try:
+        if any(int(value) for value in getattr(state, "footForce", ()) or ()):
+            return True
+    except (TypeError, ValueError):
+        pass
+    bms = getattr(state, "bms", None)
+    try:
+        if bms is not None and int(getattr(bms, "SOC", 0)) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return bool(any(remote_bytes(state)))
+
+
 class Phase:
     """Accumulate what the robot reported while one command was held."""
 
@@ -108,8 +142,12 @@ class Phase:
         self.obstacle: list[list[float]] = [[], [], [], []]
         self.battery: list[int] = []
         self.samples = 0
+        self.polls = 0
 
     def observe(self, state) -> None:
+        self.polls += 1
+        if not state_is_live(state):
+            return
         self.samples += 1
         self.modes.append(int(state.mode))
         self.body_heights.append(float(state.bodyHeight))
@@ -178,7 +216,10 @@ class Phase:
     def report(self) -> None:
         print(f"\n--- {self.label} ---")
         if not self.samples:
-            print("  no HighState replies at all -- the robot is not answering")
+            print(
+                "  no HighState replies at all (%d commands sent) -- the robot is not answering"
+                % self.polls
+            )
             return
         commanded = MODE_NAMES.get(self.commanded_mode, "?")
         print(f"  commanded mode : {self.commanded_mode} ({commanded}), {self.samples} replies")
@@ -259,13 +300,35 @@ def run_phase(udp, cmd, state, label, mode, seconds, rate, vx=0.0, yaw=0.0) -> P
     return phase
 
 
+def print_blocking_sensors(blocking: list[tuple[int, float, float]]) -> None:
+    """Describe proximity sensors that stayed pinned close for a whole phase."""
+    print("")
+    print("  The Go1's own proximity sensors were pinned close the whole time:")
+    for index, low, high in blocking:
+        print(
+            "    rangeObstacle[%d] held %.3f-%.3f m (clear reads %.1f m)"
+            % (index, low, high, OBSTACLE_CLEAR_M)
+        )
+    print("  A reading that never moves while the robot stands still is not a")
+    print("  passer-by. The sport controller refuses to walk into it, which is")
+    print("  why rotation in place is accepted and forward motion is not.")
+    print("  FIX: look at what sits within ~%.0f cm of the front sensors --" % (100 * OBSTACLE_BLOCK_M))
+    print("       the LiDAR mount, its bracket or cabling are the usual culprits.")
+    print("       Clear it, then re-run this probe.")
+    print("  To tell a fixed obstruction from the room: carry the robot to open")
+    print("  space and re-run in observation mode. Readings that stay pinned are")
+    print("  mounted on the robot; readings that open up were the room.")
+
+
 def verdict(idle: Phase, walk: Phase | None) -> int:
     print("\n================ VERDICT ================")
     phases = [phase for phase in (idle, walk) if phase is not None]
 
     if not any(phase.samples for phase in phases):
         print("NO REPLY: the robot never answered on the HighLevel port.")
-        print("  Check the 192.168.123.0/24 link and that sport mode is up.")
+        print("  Every HighState stayed blank, so nothing was received at all.")
+        print("  Check that the robot is powered on, that the 192.168.123.0/24")
+        print("  link is up, and that sport mode is running.")
         return 2
 
     charge = next(
@@ -295,6 +358,27 @@ def verdict(idle: Phase, walk: Phase | None) -> int:
     if not idle.followed_command:
         stuck = sorted(idle.mode_histogram.items(), key=lambda kv: -kv[1])
         stuck_mode = stuck[0][0] if stuck else -1
+        # A pinned proximity sensor is measured physical evidence, and a controller
+        # that will not leave a standing mode is exactly what it produces. Reporting
+        # only the "someone else owns the controller" hypothesis here sent the
+        # 2026-08-18 session hunting onboard programs while the real obstruction sat
+        # 10 cm in front of the head, so name the obstruction first when it is there.
+        blocking = idle.blocking_sensors
+        if blocking:
+            print("CAUSE FOUND: something is fixed in front of a Go1 proximity sensor.")
+            print(
+                "  We commanded mode=%d (idle stand) and the robot held mode=%d (%s)."
+                % (idle.commanded_mode, stuck_mode, MODE_NAMES.get(stuck_mode, "?"))
+            )
+            print("  The RC is silent and the battery is fine, so neither is holding it.")
+            print_blocking_sensors(blocking)
+            print("")
+            print("  Clear the obstruction before suspecting anything else. If the")
+            print("  refusal survives a clear sensor, then look for an onboard program:")
+            print("         ssh pi@192.168.123.161      # and the Nano boards .13 / .14 / .15")
+            print("         ps aux | grep -Ei 'ai|vision|autostart|sport|mqtt'")
+            print("  Also confirm the robot is in normal sport mode, not AI mode.")
+            return 1
         print("CAUSE FOUND: another program owns the sport controller.")
         print(
             "  We commanded mode=0 (idle stand) but the robot stayed at mode=%d (%s),"
@@ -320,22 +404,7 @@ def verdict(idle: Phase, walk: Phase | None) -> int:
         print("  listening, so this is a refusal of the velocity mode itself.")
         blocking = walk.blocking_sensors or idle.blocking_sensors
         if blocking:
-            print("")
-            print("  The Go1's own proximity sensors were pinned close the whole time:")
-            for index, low, high in blocking:
-                print(
-                    "    rangeObstacle[%d] held %.3f-%.3f m (clear reads %.1f m)"
-                    % (index, low, high, OBSTACLE_CLEAR_M)
-                )
-            print("  A reading that never moves while the robot stands still is not a")
-            print("  passer-by. The sport controller refuses to walk into it, which is")
-            print("  why rotation in place is accepted and forward motion is not.")
-            print("  FIX: look at what sits within ~%.0f cm of the front sensors --" % (100 * OBSTACLE_BLOCK_M))
-            print("       the LiDAR mount, its bracket or cabling are the usual culprits.")
-            print("       Clear it, then re-run this probe.")
-            print("  To tell a fixed obstruction from the room: carry the robot to open")
-            print("  space and re-run in observation mode. Readings that stay pinned are")
-            print("  mounted on the robot; readings that open up were the room.")
+            print_blocking_sensors(blocking)
         else:
             print("  No proximity sensor was pinned, so obstacle avoidance is not it.")
             print("  FIX: confirm the robot is in normal sport mode rather than AI mode,")
