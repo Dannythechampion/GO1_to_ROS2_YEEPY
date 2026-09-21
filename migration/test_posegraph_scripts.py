@@ -150,6 +150,10 @@ TOPICS
 esac
 """,
     )
+    if shutil.which("python3") is None and shutil.which("python") is not None:
+        # Windows development hosts ship `python` only; the verifier calls
+        # python3 exactly as the Jetson does.
+        _write_executable(bin_dir / "python3", '#!/usr/bin/env bash\nexec python "$@"\n')
     environment = os.environ.copy()
     environment.update({
         "PATH": str(bin_dir) + os.pathsep + environment["PATH"],
@@ -164,7 +168,7 @@ def _run_verifier(tmp_path: Path, mode: str, **overrides) -> subprocess.Complete
     bash = _bash()
     environment = _fake_ros_environment(tmp_path)
     environment.update({key: str(value) for key, value in overrides.items()})
-    return subprocess.run([bash, str(SCRIPT), mode], cwd=ROOT, env=environment, text=True, capture_output=True)
+    return subprocess.run([bash, str(SCRIPT), mode], cwd=ROOT, env=environment, text=True, encoding="utf-8", capture_output=True)
 
 
 def test_verifier_has_strict_syntax_and_exact_declared_topics():
@@ -274,11 +278,18 @@ def test_field_runner_has_fail_closed_jetson_contract():
 
 
 def test_field_runner_is_executable_in_a_fresh_linux_clone():
+    # The Jetson runs this suite from a deployed copy that is not a checkout;
+    # the git index, not the file system, is what a fresh clone gets its mode from.
+    inside = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"], cwd=ROOT, text=True, encoding="utf-8", capture_output=True,
+    )
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        pytest.skip("not a git checkout; the index mode cannot be read here")
     mode = subprocess.run(
         ["git", "ls-files", "--stage", str(FIELD.relative_to(ROOT))],
         cwd=ROOT,
         check=True,
-        text=True,
+        text=True, encoding="utf-8",
         capture_output=True,
     ).stdout.split()[0]
     assert mode == "100755"
@@ -290,7 +301,7 @@ def test_field_runner_rejects_bad_armed_token_before_preflight():
         result = subprocess.run(
             [bash, str(FIELD), "armed", "WRONG_TOKEN", str(Path(temp_dir) / "ws")],
             cwd=ROOT,
-            text=True,
+            text=True, encoding="utf-8",
             capture_output=True,
         )
         assert result.returncode != 0
@@ -322,7 +333,7 @@ exec "$@"
             [bash, "-c", 'source "$1"; verify_live_inputs', "field-test", str(FIELD)],
             cwd=ROOT,
             env=environment,
-            text=True,
+            text=True, encoding="utf-8",
             capture_output=True,
         )
         assert result.returncode == 0, result.stderr
