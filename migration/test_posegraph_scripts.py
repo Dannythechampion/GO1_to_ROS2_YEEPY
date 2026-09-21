@@ -145,7 +145,7 @@ TOPICS
     printf '%s\\n' "${FAKE_NODES:-/map_server}"
     ;;
   "run tf2_ros") printf 'Translation: 0.0\\n' ;;
-  "lifecycle get") printf 'active [3]\\n' ;;
+  "lifecycle get") printf '%s\\n' "${FAKE_LIFECYCLE_STATE:-active [3]}" ;;
   "param get") printf 'Boolean value is: %s\\n' "${FAKE_ARM:-False}" ;;
   *) printf 'unexpected ros2 invocation: %s\\n' "$*" >&2; exit 64 ;;
 esac
@@ -222,6 +222,16 @@ def test_ready_verifier_fails_closed_for_bad_runtime_values(overrides, expected)
         assert result.returncode != 0
         assert "FAIL:" in result.stderr
         assert expected in result.stderr
+
+
+def test_preflight_fails_when_map_server_never_activated():
+    """A lost lifecycle response leaves map_server configured, /map listed but never published."""
+    _bash()
+    with TemporaryDirectory() as temp_dir:
+        result = _run_verifier(Path(temp_dir), "preflight", FAKE_LIFECYCLE_STATE="inactive [2]")
+        assert result.returncode != 0
+        assert "/map_server" in result.stderr
+        assert "launch를 다시 시작" in result.stderr
 
 
 def test_launch_recording_plan_has_no_side_effect_when_disabled_and_one_session_when_enabled():

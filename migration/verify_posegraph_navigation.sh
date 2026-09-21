@@ -149,14 +149,14 @@ require_tf() {
 }
 
 require_active() {
-  local node="$1"
+  local node="$1" hint="${2:-}"
   if ! timeout 10 ros2 lifecycle get "$node" >"$tmp_output" 2>&1; then
     cat "$tmp_output" >&2
     fail "Nav2 lifecycle 조회가 실패했습니다: $node"
   fi
   if ! grep -Fq 'active [3]' "$tmp_output"; then
     cat "$tmp_output" >&2
-    fail "Nav2 lifecycle 노드가 active가 아닙니다: $node"
+    fail "Nav2 lifecycle 노드가 active가 아닙니다: $node${hint:+ ($hint)}"
   fi
   printf '통과: lifecycle %s\n' "$node"
 }
@@ -239,6 +239,13 @@ for topic in "${required_topics[@]}"; do
 done
 require_rate /scan
 require_rate /Odometry
+
+if [[ "$mode" == "preflight" ]]; then
+  # The supervisor cannot align a click without the map. A lifecycle bring-up
+  # that loses a change_state response (Fast DDS: "failed to send response")
+  # leaves map_server inactive for good while /map still shows in the topic list.
+  require_active /map_server '지도가 발행되지 않습니다. launch를 다시 시작하십시오'
+fi
 
 if [[ "$mode" == "ready" ]]; then
   if ! node_list="$(timeout 10 ros2 node list)"; then
