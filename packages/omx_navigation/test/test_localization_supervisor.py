@@ -855,6 +855,75 @@ def test_pre_epoch_slam_pose_delivered_late_does_not_complete_handshake(supervis
     assert node._slam_received_at is None
 
 
+def test_parked_lock_completes_on_an_answer_from_a_scan_acquired_before_the_push(supervisor_module, monkeypatch):
+    """slam_toolbox answers a push by matching the next scan it receives.
+
+    That scan was usually acquired before the push, and parked it is the only
+    answer (minimum_travel). Replaying 2026-09-18 parked, all five pushes were
+    lost this way and the supervisor went LOST with slam_toolbox localized.
+    """
+    from omx_navigation.localization_state import LocalizationState
+
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    assert node._slam_epoch == pytest.approx(0.20)
+    node.clock.seconds = 0.25
+    node._on_slam_pose(slam_message(0.03, 0.0, math.radians(3.0), stamp=0.16))
+
+    assert node._slam_pose_handshake is True
+    for now in (0.30, 0.70, 1.10, 1.50, 1.90, 2.30, 2.70, 3.10, 3.50):
+        node.clock.seconds = now
+        node._on_odom(odom_message(stamp=now))
+        node._on_tf(relevant_tf(source_stamp=now))
+        node._on_scan(scan_message(stamp=now))
+        node._on_ready_heartbeat()
+
+    assert node._machine.state is LocalizationState.READY
+    # It proves slam_toolbox took the push, not that the transform now shows
+    # it, so the correction window stays open until it runs out.
+    assert node._expectation is not None
+
+
+@pytest.mark.parametrize("stale_pose", ((0.8, 0.0, 0.0), (0.0, 0.0, math.radians(20.0))), ids=("position", "yaw"))
+def test_pre_push_slam_pose_away_from_the_push_is_not_its_answer(supervisor_module, monkeypatch, stale_pose):
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    node.clock.seconds = 0.25
+
+    node._on_slam_pose(slam_message(*stale_pose, stamp=0.16))
+    assert node._slam_pose_handshake is False
+
+    node._on_slam_pose(slam_message(stamp=0.18))
+    assert node._slam_pose_handshake is True
+
+
+def test_stale_answer_near_the_push_cannot_turn_the_real_correction_into_a_conflict(supervisor_module, monkeypatch):
+    """A pose slam_toolbox matched just before it saw the push can land near it.
+
+    Confirming the correction on it would make the real correction, arriving
+    next, a discontinuity after confirmation: TF_CONFLICT.
+    """
+    from omx_navigation.localization_state import ErrorCode
+
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    node.clock.seconds = 0.25
+    node._on_slam_pose(slam_message(0.40, 0.0, stamp=0.16))
+    node.clock.seconds = 0.30
+    node._on_odom(odom_message(stamp=0.30))
+    node._on_tf(relevant_tf(0.40, 0.0, source_stamp=0.30))
+    node._on_ready_heartbeat()
+    assert node._expectation is not None
+
+    node.clock.seconds = 0.40
+    node._on_odom(odom_message(stamp=0.40))
+    node._on_tf(relevant_tf(source_stamp=0.40))
+    node._on_slam_pose(slam_message(stamp=0.35))
+    node._on_ready_heartbeat()
+
+    assert node._tf_conflict is False
+    assert node._tf_corrections_explained == 1
+    assert node._last_transition.error is not ErrorCode.TF_CONFLICT
+    assert node._expectation is None
+
+
 def test_pre_epoch_scan_delivered_late_cannot_drive_current_quality(supervisor_module):
     node = supervisor_module.LocalizationSupervisor()
     node._slam_epoch = 10.0

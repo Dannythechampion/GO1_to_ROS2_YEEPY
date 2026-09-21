@@ -344,13 +344,15 @@ class LocalizationSupervisor(Node):
             if (
                 source_stamp is None
                 or self._slam_epoch is None
-                or not self._source_event_is_current(source_stamp, now, self._slam_epoch)
+                or not self._source_is_fresh(source_stamp, now)
             ):
                 raise ValueError("SLAM pose source stamp is invalid or stale")
             pose = message.pose.pose
             current = Pose2D(pose.position.x, pose.position.y, quaternion_to_yaw(
                 pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w
             ))
+            if source_stamp < self._slam_epoch and not self._answers_pending_push(current):
+                raise ValueError("SLAM pose predates the push and is not its answer")
             if self._grid is not None and self._grid.world_to_cell(current.x, current.y) is None:
                 self._slam_pose = None
                 self._slam_received_at = None
@@ -475,6 +477,25 @@ class LocalizationSupervisor(Node):
         translation, yaw = pose_difference(landed, expectation.pose)
         return translation <= _EXPECTED_CORRECTION_TRANSLATION and yaw <= _EXPECTED_CORRECTION_YAW
 
+    def _answers_pending_push(self, slam_pose: Pose2D) -> bool:
+        """Whether a SLAM pose stamped before our push is slam_toolbox's answer to it.
+
+        slam_toolbox applies a pushed pose to the next scan it *receives*, and
+        that scan was usually acquired before the push: LiDAR to /scan to
+        slam_toolbox's TF filter takes 50-100 ms. At rest it is also the only
+        answer, since minimum_travel stops further matching. Requiring the
+        answer's stamp to follow the push turned every lock into a coin toss:
+        on 2026-09-18 the second click only locked on its retry push, and
+        replaying that session with the robot parked lost all five pushes.
+        A pre-push pose is taken as the answer only while an initialization
+        push is pending and only if it lands on the pose we pushed.
+        """
+        expectation = self._expectation
+        if expectation is None or not expectation.confirm_with_slam:
+            return False
+        translation, yaw = pose_difference(slam_pose, expectation.pose)
+        return translation <= _EXPECTED_CORRECTION_TRANSLATION and yaw <= _EXPECTED_CORRECTION_YAW
+
     def _confirm_expected_correction(self) -> None:
         """End an initialization expectation once slam_toolbox has visibly applied it.
 
@@ -488,6 +509,14 @@ class LocalizationSupervisor(Node):
             or not self._slam_pose_handshake
             or self._slam_pose is None
             or self._current_base_pose is None
+            # A pose from a scan acquired before the push may still be one
+            # matched before slam_toolbox saw it. It can complete the
+            # handshake but not prove the correction was applied: confirming
+            # on it would turn the real correction, arriving next, into a
+            # TF_CONFLICT. The expectation then simply runs out.
+            or self._slam_source_stamp is None
+            or self._slam_epoch is None
+            or self._slam_source_stamp < self._slam_epoch
         ):
             return
         base_translation, base_yaw = pose_difference(self._current_base_pose, self._slam_pose)
