@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
@@ -35,7 +36,14 @@ from omx_navigation.runtime_shutdown import (
     NORMAL_SHUTDOWN_EXCEPTIONS,
     shutdown_context,
 )
-from omx_navigation.pose_tracking import compose_pose
+from omx_navigation.drift_monitor import (
+    DriftAction,
+    DriftCheck,
+    DriftDecision,
+    DriftMonitor,
+    DriftPolicy,
+)
+from omx_navigation.pose_tracking import compose_pose, pose_difference
 from omx_navigation.ros_conversions import (
     grid_map_from_values,
     laser_ranges_to_points,
@@ -46,6 +54,7 @@ from omx_navigation.scan_map_quality import (
     SearchWindow,
     build_distance_field,
     coarse_search,
+    refine_pose_locally,
     score_pose,
 )
 
@@ -58,9 +67,42 @@ _MESSAGES_KO = {
     ErrorCode.LOW_OVERLAP: "스캔과 지도의 겹침이 부족합니다.",
     ErrorCode.AMBIGUOUS: "정렬 결과가 모호합니다.",
     ErrorCode.ODOM_RESET: "오도메트리 재설정이 감지되었습니다.",
-    ErrorCode.TF_CONFLICT: "AMCL TF 발행자 충돌이 감지되었습니다.",
+    # Also raised with no AMCL running: any map->camera_init discontinuity that
+    # no pose we pushed explains. The old text named AMCL and sent operators
+    # looking for a second publisher that did not exist.
+    ErrorCode.TF_CONFLICT: "map→camera_init 변환이 설명되지 않는 불연속을 보였습니다(다른 TF 발행자 또는 SLAM 위치 급변).",
     ErrorCode.EXTRINSIC_UNCALIBRATED: "외부 파라미터 보정이 필요합니다.",
+    ErrorCode.POSE_DRIFT: "추적 자세가 지도와 어긋났고 자동 보정으로 해결되지 않았습니다. 초기 자세를 다시 지정하세요.",
 }
+
+# A map->camera_init jump that puts the base within this of a pose we just
+# pushed is our own correction arriving, not a conflict. Measured 2026-09-18:
+# slam_toolbox settled 0.34 m and 3.4 deg away from the pushed pose, because the
+# coarse search that produces it works on a 0.5 m grid.
+_EXPECTED_CORRECTION_TRANSLATION = 0.50
+_EXPECTED_CORRECTION_YAW = math.radians(10.0)
+# The corrected transform reproduces the pose slam_toolbox reports on
+# /slam_localization/pose exactly (measured 0.000 m / 0.00 deg), so agreement
+# between the two confirms the correction has landed.
+_SLAM_AGREEMENT_TRANSLATION = 0.05
+_SLAM_AGREEMENT_YAW = math.radians(1.0)
+_STATUS_FIELDS = (
+    "state", "error", "message_ko", "attempt", "overlap", "ambiguity_margin", "stamp",
+    "consistency_gap", "drift_offset_x", "drift_offset_y", "drift_offset_yaw_deg",
+    "drift_corrections", "tf_corrections_explained",
+)
+
+
+@dataclass(frozen=True)
+class _CorrectionExpectation:
+    """A pose we pushed to slam_toolbox whose arrival must not look like a conflict."""
+
+    pose: Pose2D
+    deadline: float
+    # Initialization pushes are confirmed by slam_toolbox's pose handshake and
+    # then end. A drift correction arrives while slam_toolbox is still
+    # publishing poses from before it, so it simply expires.
+    confirm_with_slam: bool
 
 
 def _coarse_search_with_field(grid, points, initial, window):
@@ -85,6 +127,18 @@ class LocalizationSupervisor(Node):
             yaw_step=float(self.declare_parameter("coarse_search_yaw_step", math.radians(15.0)).value),
         )
         self._machine = LocalizationStateMachine(LocalizationPolicy())
+        self._drift_check_period = float(self.declare_parameter("drift_check_period", 2.0).value)
+        self._correction_expect_window = float(self.declare_parameter("correction_expect_window", 5.0).value)
+        for name, value in (
+            ("drift_check_period", self._drift_check_period),
+            ("correction_expect_window", self._correction_expect_window),
+        ):
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+        self._drift_monitor = DriftMonitor(DriftPolicy(
+            gap_threshold=float(self.declare_parameter("drift_gap_threshold", 0.08).value),
+            auto_correct=bool(self.declare_parameter("drift_auto_correct", True).value),
+        ))
         self._camera_init_frame = str(self.declare_parameter("camera_init_frame", "camera_init").value)
         self._source_base_frame = str(self.declare_parameter("source_base_frame", "body").value)
         self._base_frame = str(self.declare_parameter("base_frame", "body_nav").value)
@@ -134,6 +188,12 @@ class LocalizationSupervisor(Node):
         self._odom_source_stamp = None
         self._odom_received_at = None
         self._odom_reset = False
+        self._expectation = None
+        self._tf_corrections_explained = 0
+        self._drift_future = None
+        self._drift_job = None
+        self._last_drift_check_at = None
+        self._last_drift_decision: DriftDecision | None = None
         self._last_transition = self._machine._transition()
         self._csv_file = None
         self._csv_writer = None
@@ -254,6 +314,9 @@ class LocalizationSupervisor(Node):
             self._initial_pose_epoch = None
             if self._search_future is not None:
                 self._search_future.cancel()
+            if self._drift_future is not None and self._drift_future.cancel():
+                self._drift_future = None
+                self._drift_job = None
         self._slam_pose = None
         self._slam_received_at = None
         self._slam_source_stamp = None
@@ -269,6 +332,8 @@ class LocalizationSupervisor(Node):
         self._quality_received_at = None
         self._quality_source_stamp = None
         self._odom_reset = False
+        self._expectation = None
+        self._reset_drift_tracking()
 
     def _on_slam_pose(self, message: PoseWithCovarianceStamped) -> None:
         if message.header.frame_id != "map":
@@ -297,6 +362,7 @@ class LocalizationSupervisor(Node):
             self._slam_received_at = now
             self._slam_source_stamp = source_stamp
             self._slam_pose_handshake = True
+            self._confirm_expected_correction()
             self._refresh_continuous_quality(now)
         except (TypeError, ValueError):
             self._slam_pose = None
@@ -350,21 +416,7 @@ class LocalizationSupervisor(Node):
                     self._map_camera_source_stamp = None
                     self._current_base_pose = None
                     continue
-                if self._last_map_camera_pose is not None:
-                    self._tf_position_jump = math.hypot(
-                        current.x - self._last_map_camera_pose.x,
-                        current.y - self._last_map_camera_pose.y,
-                    )
-                    self._tf_yaw_jump = abs(
-                        (current.yaw - self._last_map_camera_pose.yaw + math.pi)
-                        % (2.0 * math.pi) - math.pi
-                    )
-                    if (
-                        self._tf_position_jump > self._machine.policy.max_position_jump
-                        or self._tf_yaw_jump > self._machine.policy.max_yaw_jump
-                    ):
-                        self._tf_conflict = True
-                self._last_map_camera_pose = current
+                self._track_map_camera_jump(current, now)
                 self._map_camera_pose = current
                 self._map_camera_received_at = now
                 self._map_camera_source_stamp = source_stamp
@@ -383,7 +435,70 @@ class LocalizationSupervisor(Node):
                 self._camera_base_received_at = now
                 self._camera_base_source_stamp = source_stamp
         self._compose_current_base_pose()
+        self._confirm_expected_correction()
         self._refresh_continuous_quality(now)
+
+    def _track_map_camera_jump(self, current: Pose2D, now: float) -> None:
+        """Flag a map->camera_init discontinuity unless one of our pushes explains it."""
+        # Before the first push slam_toolbox is still settling from
+        # map_start_pose; its first scan match jumps 20 degrees or more. On
+        # 2026-09-18 that latched TF_CONFLICT at startup in three sessions
+        # before anyone had set a pose, and nothing consumes the transform yet.
+        if self._slam_epoch is None:
+            self._last_map_camera_pose = None
+            return
+        if self._last_map_camera_pose is not None:
+            position_jump, yaw_jump = pose_difference(current, self._last_map_camera_pose)
+            self._tf_position_jump = position_jump
+            self._tf_yaw_jump = yaw_jump
+            policy = self._machine.policy
+            if position_jump > policy.max_position_jump or yaw_jump > policy.max_yaw_jump:
+                if self._jump_lands_on_expected_pose(current, now):
+                    # Our own correction arriving. Transforms from before it can
+                    # still follow the reset, so a baseline taken from one of
+                    # them made every successful lock look like a conflict.
+                    self._tf_corrections_explained += 1
+                    self._tf_position_jump = 0.0
+                    self._tf_yaw_jump = 0.0
+                else:
+                    self._tf_conflict = True
+        self._last_map_camera_pose = current
+
+    def _jump_lands_on_expected_pose(self, map_camera: Pose2D, now: float) -> bool:
+        expectation = self._expectation
+        if expectation is None or now > expectation.deadline or self._camera_base_pose is None:
+            return False
+        try:
+            landed = compose_pose(map_camera, self._camera_base_pose)
+        except ValueError:
+            return False
+        translation, yaw = pose_difference(landed, expectation.pose)
+        return translation <= _EXPECTED_CORRECTION_TRANSLATION and yaw <= _EXPECTED_CORRECTION_YAW
+
+    def _confirm_expected_correction(self) -> None:
+        """End an initialization expectation once slam_toolbox has visibly applied it.
+
+        After this, a discontinuity can no longer be our correction arriving,
+        which keeps a jump shortly after lock failing closed.
+        """
+        expectation = self._expectation
+        if (
+            expectation is None
+            or not expectation.confirm_with_slam
+            or not self._slam_pose_handshake
+            or self._slam_pose is None
+            or self._current_base_pose is None
+        ):
+            return
+        base_translation, base_yaw = pose_difference(self._current_base_pose, self._slam_pose)
+        push_translation, push_yaw = pose_difference(self._slam_pose, expectation.pose)
+        if (
+            base_translation <= _SLAM_AGREEMENT_TRANSLATION
+            and base_yaw <= _SLAM_AGREEMENT_YAW
+            and push_translation <= _EXPECTED_CORRECTION_TRANSLATION
+            and push_yaw <= _EXPECTED_CORRECTION_YAW
+        ):
+            self._expectation = None
 
     def _try_start_search(self) -> None:
         if self._initial_pose is None or self._grid is None or self._points is None:
@@ -474,6 +589,9 @@ class LocalizationSupervisor(Node):
 
     def _evaluate_state(self, now: float) -> None:
         self._apply_search_result()
+        if self._expectation is not None and now > self._expectation.deadline:
+            self._expectation = None
+        self._apply_drift_result()
         self._last_transition = self._machine.observe(
             self._observation(
                 now,
@@ -484,6 +602,92 @@ class LocalizationSupervisor(Node):
             self._publish_refined_pose(self._refined_pose, self._initial_pose[1])
         elif self._last_transition.republish_initial_pose and self._initial_pose is not None:
             self._prepare_coarse_search_retry()
+        self._maybe_start_drift_check(now)
+
+    def _maybe_start_drift_check(self, now: float) -> None:
+        """Refine around the tracked pose in the background while it is in use."""
+        if (
+            self._machine.state not in (LocalizationState.READY, LocalizationState.DEGRADED)
+            or self._expectation is not None
+            or self._quality_error_latched
+            or self._grid is None
+            or self._distance_field is None
+            or self._points is None
+            or self._current_base_pose is None
+            or self._camera_base_pose is None
+            or self._quality_received_at is None
+            or (
+                self._last_drift_check_at is not None
+                and now - self._last_drift_check_at < self._drift_check_period
+            )
+            # A correction computed from a stale scan and pose would be pushed
+            # onto a robot that has since moved.
+            or not self._inputs_fresh(now)
+            or not self._tf_fresh(now)
+        ):
+            return
+        with self._search_lock:
+            if self._drift_future is not None or self._search_future is not None:
+                return
+            self._drift_job = (self._generation, now, self._grid, self._current_base_pose, self._camera_base_pose)
+            self._drift_future = self._search_executor.submit(
+                refine_pose_locally, self._grid, self._distance_field, self._points, self._current_base_pose
+            )
+        self._last_drift_check_at = now
+
+    def _apply_drift_result(self) -> None:
+        with self._search_lock:
+            if self._drift_future is None or not self._drift_future.done():
+                return
+            future, self._drift_future = self._drift_future, None
+            job, self._drift_job = self._drift_job, None
+        try:
+            refinement = future.result()
+        except Exception:
+            return
+        generation, stamp, grid, tracked, camera_base = job
+        # A click, a new lock or a correction since the job started makes it
+        # describe a pose that is no longer the one being tracked.
+        if generation != self._generation or grid is not self._grid or self._expectation is not None:
+            return
+        try:
+            decision = self._drift_monitor.observe(DriftCheck(
+                stamp, refinement.gap, tracked, refinement.best.pose, refinement.best.overlap, camera_base,
+            ))
+        except ValueError:
+            return
+        self._last_drift_decision = decision
+        if decision.action is DriftAction.CORRECT and decision.correction is not None:
+            self._publish_drift_correction(decision.correction, decision)
+        elif decision.action is DriftAction.ESCALATE:
+            self.get_logger().error(
+                f"Tracked pose has drifted from the map ({decision.reason}); "
+                f"score gap {decision.gap:.3f}, offset ({decision.offset[0]:+.2f} m, "
+                f"{decision.offset[1]:+.2f} m, {math.degrees(decision.offset[2]):+.1f} deg)"
+            )
+
+    def _publish_drift_correction(self, pose: Pose2D, decision: DriftDecision) -> None:
+        covariance = self._initial_pose[1] if self._initial_pose is not None else (0.0,) * 36
+        self._initialpose_publisher.publish(self._pose_message(pose, covariance))
+        self._expectation = _CorrectionExpectation(
+            pose, self._now() + self._correction_expect_window, confirm_with_slam=False
+        )
+        self.get_logger().warning(
+            f"Tracked pose drifted (score gap {decision.gap:.3f}); pushed correction to "
+            f"x={pose.x:.2f}, y={pose.y:.2f}, yaw={math.degrees(pose.yaw):.1f} deg "
+            f"(correction {self._drift_monitor.corrections})"
+        )
+
+    def _reset_drift_tracking(self) -> None:
+        """Forget drift evidence.
+
+        Never takes `_search_lock`: `_publish_refined_pose` runs with it held.
+        An in-flight job needs no cancelling here, because `_apply_drift_result`
+        drops any result whose generation, grid or expectation no longer match.
+        """
+        self._drift_monitor.reset()
+        self._last_drift_decision = None
+        self._last_drift_check_at = None
 
     def _prepare_coarse_search_retry(self) -> None:
         """Require a newer scan before retrying a failed coarse alignment."""
@@ -517,9 +721,10 @@ class LocalizationSupervisor(Node):
             yaw_jump=self._tf_yaw_jump,
             odom_reset=self._odom_reset,
             tf_conflict=self._has_amcl() or self._tf_conflict,
+            pose_drift=self._drift_monitor.escalated,
         )
 
-    def _publish_refined_pose(self, pose: Pose2D, covariance) -> None:
+    def _pose_message(self, pose: Pose2D, covariance) -> PoseWithCovarianceStamped:
         message = PoseWithCovarianceStamped()
         message.header.frame_id = "map"
         message.header.stamp = self.get_clock().now().to_msg()
@@ -531,7 +736,10 @@ class LocalizationSupervisor(Node):
         message.pose.covariance = [self._finite_or_zero(value) for value in covariance[:36]]
         if len(message.pose.covariance) < 36:
             message.pose.covariance.extend([0.0] * (36 - len(message.pose.covariance)))
-        self._initialpose_publisher.publish(message)
+        return message
+
+    def _publish_refined_pose(self, pose: Pose2D, covariance) -> None:
+        self._initialpose_publisher.publish(self._pose_message(pose, covariance))
         self._slam_epoch = self._now()
         self._slam_pose = None
         self._slam_received_at = None
@@ -541,17 +749,32 @@ class LocalizationSupervisor(Node):
         self._quality_received_at = None
         self._quality_source_stamp = None
         self._overlap = 0.0
+        self._expectation = _CorrectionExpectation(
+            pose, self._slam_epoch + self._correction_expect_window, confirm_with_slam=True
+        )
+        self._reset_drift_tracking()
 
     def _publish_status(self) -> None:
         transition = self._last_transition
+        decision = self._last_drift_decision
+        offset = decision.offset if decision is not None else (0.0, 0.0, 0.0)
         status = {
             "state": transition.state.value,
             "error": transition.error.value,
             "message_ko": _MESSAGES_KO[transition.error],
             "attempt": self._machine.attempts,
             "overlap": self._finite_or_zero(self._overlap),
+            # Best-vs-runner-up margin of the search that produced the current
+            # lock. It is not recomputed while tracking (see drift_monitor):
+            # tracking quality is `consistency_gap`, which is.
             "ambiguity_margin": self._finite_or_zero(self._ambiguity_margin),
             "stamp": self._now(),
+            "consistency_gap": self._finite_or_zero(decision.gap if decision is not None else 0.0),
+            "drift_offset_x": self._finite_or_zero(offset[0]),
+            "drift_offset_y": self._finite_or_zero(offset[1]),
+            "drift_offset_yaw_deg": self._finite_or_zero(math.degrees(offset[2])),
+            "drift_corrections": self._drift_monitor.corrections,
+            "tf_corrections_explained": self._tf_corrections_explained,
         }
         message = String()
         message.data = json.dumps(status, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
@@ -730,7 +953,7 @@ class LocalizationSupervisor(Node):
         path = Path(self._diagnostics_csv)
         path.parent.mkdir(parents=True, exist_ok=True)
         self._csv_file = path.open("a", newline="", encoding="utf-8")
-        self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=("state", "error", "message_ko", "attempt", "overlap", "ambiguity_margin", "stamp"))
+        self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=_STATUS_FIELDS)
         if self._csv_file.tell() == 0:
             self._csv_writer.writeheader()
             self._csv_file.flush()

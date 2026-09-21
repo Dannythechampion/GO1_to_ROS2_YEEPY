@@ -26,6 +26,7 @@ class ErrorCode(str, Enum):
     ODOM_RESET = "ODOM_RESET"
     TF_CONFLICT = "TF_CONFLICT"
     EXTRINSIC_UNCALIBRATED = "EXTRINSIC_UNCALIBRATED"
+    POSE_DRIFT = "POSE_DRIFT"
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,8 @@ class QualityObservation:
     yaw_jump: float
     odom_reset: bool
     tf_conflict: bool
+    # Tracking drift that automatic correction could not clear.
+    pose_drift: bool = False
 
     def __post_init__(self) -> None:
         if not _is_finite_number(self.now):
@@ -258,6 +261,8 @@ class LocalizationStateMachine:
             return ErrorCode.INPUT_MISSING
         if observation.overlap < self.policy.min_overlap:
             return ErrorCode.LOW_OVERLAP
+        if observation.pose_drift:
+            return ErrorCode.POSE_DRIFT
         if observation.ambiguity_margin < self.policy.min_ambiguity_margin:
             return ErrorCode.AMBIGUOUS
         if observation.position_jump > self.policy.max_position_jump:

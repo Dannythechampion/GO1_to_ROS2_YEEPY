@@ -15,6 +15,7 @@ from omx_navigation.scan_map_quality import (
     angle_distance,
     build_distance_field,
     coarse_search,
+    refine_pose_locally,
     score_pose,
 )
 
@@ -380,3 +381,102 @@ def test_continuous_monitoring_keeps_score_when_one_endpoint_leaves_the_map():
     assert monitored.overlap == pytest.approx(0.99)
     assert not math.isinf(monitored.mean_distance)
     assert monitored.points_used == disqualified.points_used == 100
+
+
+def fine_room_map() -> GridMap:
+    """An 8 x 6 m room at the field map's 0.05 m resolution, with an L wall and a pillar."""
+    width, height, resolution = 160, 120, 0.05
+    cells = [0] * (width * height)
+
+    def occupy(x, y):
+        cells[y * width + x] = 100
+
+    for x in range(width):
+        occupy(x, 0)
+        occupy(x, height - 1)
+    for y in range(height):
+        occupy(0, y)
+        occupy(width - 1, y)
+    for x in range(40, 90):
+        occupy(x, 80)
+    for y in range(40, 80):
+        occupy(40, y)
+    for x in range(115, 121):
+        for y in range(30, 36):
+            occupy(x, y)
+    return GridMap(width, height, resolution, 0.0, 0.0, 0.0, tuple(cells))
+
+
+def room_scan_seen_from(grid: GridMap, true_pose: Pose2D, count: int = 180) -> tuple[ScanPoint, ...]:
+    """Occupied cell centres of the room in the robot frame, thinned to `count`."""
+    c, s = math.cos(true_pose.yaw), math.sin(true_pose.yaw)
+    points = []
+    for index, value in enumerate(grid.cells):
+        if value < 50:
+            continue
+        x = (index % grid.width + 0.5) * grid.resolution - true_pose.x
+        y = (index // grid.width + 0.5) * grid.resolution - true_pose.y
+        points.append(ScanPoint(c * x + s * y, -s * x + c * y))
+    step = max(1, len(points) // count)
+    return tuple(points[::step])
+
+
+def test_local_refinement_recovers_a_small_heading_and_lateral_drift():
+    grid = fine_room_map()
+    field = build_distance_field(grid)
+    truth = Pose2D(3.0, 3.0, 0.2)
+    points = room_scan_seen_from(grid, truth)
+    drifted = Pose2D(truth.x + 0.15, truth.y - 0.10, truth.yaw - math.radians(4.0))
+
+    result = refine_pose_locally(grid, field, points, drifted)
+
+    assert result.gap > 0.2
+    assert result.best.pose.x == pytest.approx(truth.x, abs=0.03)
+    assert result.best.pose.y == pytest.approx(truth.y, abs=0.03)
+    assert result.best.pose.yaw == pytest.approx(truth.yaw, abs=math.radians(0.6))
+    assert result.initial == score_pose(grid, field, points, drifted, 0.25, disqualify_outside=False)
+    assert result.evaluations < 200
+
+
+def test_local_refinement_leaves_an_accurate_pose_alone():
+    grid = fine_room_map()
+    field = build_distance_field(grid)
+    truth = Pose2D(3.0, 3.0, 0.2)
+    result = refine_pose_locally(grid, field, room_scan_seen_from(grid, truth), truth)
+    assert result.gap == pytest.approx(0.0, abs=1e-9)
+    assert result.best.pose == truth
+
+
+def test_local_refinement_never_leaves_its_window():
+    grid = fine_room_map()
+    field = build_distance_field(grid)
+    truth = Pose2D(3.0, 3.0, 0.2)
+    far = Pose2D(truth.x + 1.0, truth.y, truth.yaw + math.radians(20.0))
+
+    result = refine_pose_locally(grid, field, room_scan_seen_from(grid, truth), far,
+                                 max_translation=0.35, max_yaw=math.radians(6.0))
+
+    assert math.hypot(result.best.pose.x - far.x, result.best.pose.y - far.y) <= 0.35 + 1e-9
+    assert angle_distance(result.best.pose.yaw, far.yaw) <= math.radians(6.0) + 1e-9
+    assert result.best.score >= result.initial.score
+
+
+def test_local_refinement_of_a_non_finite_pose_returns_it_scored():
+    grid = asymmetric_room_map()
+    field = build_distance_field(grid)
+    pose = Pose2D(float("nan"), 0.0, 0.0)
+    result = refine_pose_locally(grid, field, (ScanPoint(1.0, 0.0),), pose)
+    assert result.evaluations == 1
+    assert result.gap == 0.0
+
+
+@pytest.mark.parametrize("override", (
+    {"max_translation": 0.0}, {"max_yaw": float("nan")}, {"hit_distance": -1.0},
+    {"max_moves_per_level": 0}, {"schedule": ()}, {"schedule": ((0.1, 0.0),)},
+))
+def test_local_refinement_rejects_invalid_bounds(override):
+    grid = asymmetric_room_map()
+    field = build_distance_field(grid)
+    with pytest.raises(ValueError):
+        refine_pose_locally(grid, field, (ScanPoint(1.0, 0.0),), Pose2D(5.0, 5.0, 0.0), **override)
+

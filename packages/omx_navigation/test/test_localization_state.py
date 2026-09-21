@@ -162,3 +162,31 @@ def test_negative_observation_distance_is_rejected(field):
 def test_policy_rejects_boolean_and_non_numeric_float_values(field, value):
     with pytest.raises(ValueError, match=field):
         LocalizationPolicy(**{field: value})
+
+
+def test_escalated_tracking_drift_degrades_then_loses():
+    machine = ready_machine()
+    degraded = machine.observe(replace(good(4.0), pose_drift=True))
+    assert degraded.state is LocalizationState.DEGRADED
+    assert degraded.error is ErrorCode.POSE_DRIFT
+    assert degraded.publish_stop is True
+    lost = machine.observe(replace(good(6.1), pose_drift=True))
+    assert lost.state is LocalizationState.LOST
+    assert lost.error is ErrorCode.POSE_DRIFT
+
+
+def test_drift_that_clears_inside_the_grace_period_returns_to_ready():
+    machine = ready_machine()
+    machine.observe(replace(good(4.0), pose_drift=True))
+    assert machine.observe(good(5.0)).state is LocalizationState.READY
+
+
+def test_low_overlap_outranks_drift_in_the_reported_error():
+    machine = ready_machine()
+    transition = machine.observe(replace(good(4.0), overlap=0.10, pose_drift=True))
+    assert transition.error is ErrorCode.LOW_OVERLAP
+
+
+def test_positional_observations_default_to_no_drift():
+    assert QualityObservation.missing(1.0).pose_drift is False
+

@@ -418,6 +418,7 @@ def test_supervisor_wires_topics_refines_map_pose_and_emits_finite_json(supervis
     result = SearchResult(PoseScore(Pose2D(1.0, 2.0, 0.5), 0.8, 0.0, 0.8, 1), None, False)
     monkeypatch.setattr(module, "coarse_search", lambda *_args: result)
     node = module.LocalizationSupervisor()
+    use_immediate_search(node)  # the search must finish before the next event
     assert {sub.topic for sub in node.subscriptions} == {"/map", "/scan", "/Odometry", "/initialpose", "/slam_localization/pose", "/tf"}
     assert {pub.topic for pub in node.publishers} == {"/slam_localization/initialpose", "~/status", "~/ready"}
 
@@ -465,6 +466,7 @@ def test_supervisor_uses_humble_pose_topic_and_type(supervisor_module):
 def test_supervisor_rejects_stale_inputs_odom_time_rollback_and_amcl(supervisor_module):
     module = supervisor_module
     node = module.LocalizationSupervisor()
+    use_immediate_search(node)  # the search must finish before the next event
     node._on_map(map_message(occupied_world=((2.0, 2.0),)))
     node._on_scan(scan_message())
     node.clock.seconds = 1.0
@@ -499,6 +501,7 @@ def test_supervisor_reports_search_quality_failures(supervisor_module, monkeypat
     search = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), overlap, 0.0, overlap, 1), None, ambiguous)
     monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: search)
     node = supervisor_module.LocalizationSupervisor()
+    use_immediate_search(node)  # the search must finish before the next event
     node._on_map(map_message(occupied_world=((2.0, 2.0),)))
     node._on_scan(scan_message())
     node._on_initial_pose(pose_message())
@@ -563,7 +566,7 @@ def test_supervisor_rejects_non_map_initialpose_and_flushes_csv(supervisor_modul
             super().flush()
 
     node._csv_file = FlushingCsv()
-    node._csv_writer = module.csv.DictWriter(node._csv_file, fieldnames=("state", "error", "message_ko", "attempt", "overlap", "ambiguity_margin", "stamp"))
+    node._csv_writer = module.csv.DictWriter(node._csv_file, fieldnames=module._STATUS_FIELDS)
     monkeypatch.setitem(module._MESSAGES_KO, node._last_transition.error, '쉼표,따옴표"')
     node._publish_status()
     assert node._csv_file.flushed is True
@@ -579,6 +582,7 @@ def test_supervisor_waits_for_post_click_scan_and_fresh_slam_tf_before_ready(sup
     result = SearchResult(PoseScore(Pose2D(1.0, 2.0, 0.0), 0.8, 0.0, 0.8, 1), None, False)
     monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: search_calls.append(1) or result)
     node = supervisor_module.LocalizationSupervisor()
+    use_immediate_search(node)  # the search must finish before the next event
     node._on_map(map_message(occupied_world=((2.0, 2.0),)))
     node._on_scan(scan_message())
     node._on_initial_pose(pose_message())
@@ -647,6 +651,7 @@ def test_supervisor_keeps_slam_pose_as_one_shot_handshake(supervisor_module, mon
     result = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.8, 0.0, 0.8, 1), None, False)
     monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: result)
     node = supervisor_module.LocalizationSupervisor()
+    use_immediate_search(node)  # the search must finish before the next event
     node._on_map(map_message(occupied_world=((1.0, 0.0), (2.0, 0.0))))
     node._on_scan(scan_message())
     node._on_initial_pose(pose_message())
@@ -675,6 +680,7 @@ def test_initial_pose_captures_scan_sequence_so_later_map_does_not_reuse_pre_cli
     result = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.8, 0.0, 0.8, 1), None, False)
     monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: calls.append(1) or result)
     node = supervisor_module.LocalizationSupervisor()
+    use_immediate_search(node)  # the search must finish before the next event
     node._on_map(map_message())
     node._on_scan(scan_message())
     node._on_initial_pose(pose_message())
@@ -1064,6 +1070,7 @@ def test_outside_coarse_candidate_is_rejected_before_refined_publish(supervisor_
     outside = SearchResult(PoseScore(Pose2D(100.0, 100.0, 0.0), 0.9, 0.0, 0.9, 1), None, False)
     monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: outside)
     node = supervisor_module.LocalizationSupervisor()
+    use_immediate_search(node)  # the search must finish before the next event
     node._on_map(map_message())
     node._on_scan(scan_message())
     node._on_initial_pose(pose_message())
@@ -1083,6 +1090,7 @@ def test_outside_slam_pose_fails_closed(supervisor_module, monkeypatch):
     inside = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.9, 0.0, 0.9, 1), None, False)
     monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args: inside)
     node = supervisor_module.LocalizationSupervisor()
+    use_immediate_search(node)  # the search must finish before the next event
     node._on_map(map_message())
     node._on_scan(scan_message())
     node._on_initial_pose(pose_message())
@@ -1212,3 +1220,242 @@ def test_nonfinite_odometry_clears_freshness(supervisor_module):
     invalid = odom_message(x=float("nan"), stamp=1.0)
     node._on_odom(invalid)
     assert node._odom_received_at is None
+
+
+def map_camera_tf(x, y, yaw, *, source_stamp):
+    return SimpleNamespace(transforms=[
+        tf_edge("map", "camera_init", x, y, yaw, stamp=source_stamp + 0.5),
+        tf_edge("camera_init", "body_nav", stamp=source_stamp),
+    ])
+
+
+def pushed_to_slam(node):
+    return publisher(node, "/slam_localization/initialpose").messages
+
+
+# 2026-09-18 Hanyang 9F, first lock of the armed run: slam_toolbox's transform
+# before the correction, and where it settled relative to the pushed pose.
+PRE_CORRECTION = (0.183, 0.110, math.radians(20.6))
+SETTLED = (0.017, -0.339, math.radians(3.4))
+
+
+def lock_with_pre_correction_transform_after_the_push(supervisor_module, monkeypatch):
+    """Push (0, 0, 0) and deliver one stale-valued transform after the epoch."""
+    from omx_navigation.scan_map_quality import Pose2D, PoseScore, SearchResult
+
+    result = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.9, 0.0, 0.9, 1), None, False)
+    monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args, **_kwargs: result)
+    node = supervisor_module.LocalizationSupervisor()
+    use_immediate_search(node)
+    node._on_map(map_message(occupied_world=((1.0, 0.0), (1.0, -1.0))))
+    node._on_scan(scan_message())
+    node.clock.seconds = 0.05
+    node._on_initial_pose(pose_message())
+    node.clock.seconds = 0.10
+    node._on_scan(scan_message(stamp=0.10))
+    node.clock.seconds = 0.20
+    node._on_status_timer()
+    assert len(pushed_to_slam(node)) == 1
+    node.clock.seconds = 0.25
+    node._on_odom(odom_message(stamp=0.25))
+    node._on_tf(map_camera_tf(*PRE_CORRECTION, source_stamp=0.25))
+    return node
+
+
+def feed_settled_inputs_until(node, end):
+    now = 0.40
+    while now <= end + 1e-9:
+        node.clock.seconds = now
+        node._on_odom(odom_message(stamp=now))
+        node._on_tf(map_camera_tf(*SETTLED, source_stamp=now))
+        node._on_scan(scan_message(stamp=now))
+        node._on_ready_heartbeat()
+        now = round(now + 0.1, 6)
+
+
+@pytest.mark.parametrize("slam_pose_first", (True, False), ids=("slam_pose_first", "transform_first"))
+def test_our_own_lock_correction_is_not_a_tf_conflict(supervisor_module, monkeypatch, slam_pose_first):
+    """The 2026-09-18 false latch: a stale-valued transform became the baseline
+    after the reset, and the correction then looked like a 1.76 m conflict."""
+    from omx_navigation.localization_state import ErrorCode, LocalizationState
+
+    node = lock_with_pre_correction_transform_after_the_push(supervisor_module, monkeypatch)
+    node.clock.seconds = 0.30
+    if slam_pose_first:
+        node._on_slam_pose(slam_message(*SETTLED, stamp=0.30))
+        node._on_tf(map_camera_tf(*SETTLED, source_stamp=0.30))
+    else:
+        node._on_tf(map_camera_tf(*SETTLED, source_stamp=0.30))
+        node._on_slam_pose(slam_message(*SETTLED, stamp=0.30))
+    node._on_scan(scan_message(stamp=0.30))
+    node._on_ready_heartbeat()
+
+    assert node._tf_conflict is False
+    assert node._tf_corrections_explained == 1
+    assert node._expectation is None
+    feed_settled_inputs_until(node, 3.6)
+    assert node._machine.state is LocalizationState.READY
+    assert node._last_transition.error is ErrorCode.NONE
+    assert len(pushed_to_slam(node)) == 1
+
+
+def test_jump_that_misses_the_pushed_pose_is_still_a_conflict(supervisor_module, monkeypatch):
+    from omx_navigation.localization_state import ErrorCode, LocalizationState
+
+    node = lock_with_pre_correction_transform_after_the_push(supervisor_module, monkeypatch)
+    node.clock.seconds = 0.30
+    node._on_tf(map_camera_tf(2.0, 2.0, 0.0, source_stamp=0.30))
+    node._on_ready_heartbeat()
+
+    assert node._machine.state is LocalizationState.LOST
+    assert node._last_transition.error is ErrorCode.TF_CONFLICT
+
+
+def test_expectation_expires_so_a_late_jump_fails_closed(supervisor_module, monkeypatch):
+    from omx_navigation.localization_state import ErrorCode
+
+    node = lock_with_pre_correction_transform_after_the_push(supervisor_module, monkeypatch)
+    node.clock.seconds = 5.30
+    node._on_status_timer()
+    assert node._expectation is None
+    node._on_tf(map_camera_tf(*SETTLED, source_stamp=5.30))
+    node._on_ready_heartbeat()
+    assert node._last_transition.error is ErrorCode.TF_CONFLICT
+
+
+def test_startup_jump_before_any_pose_is_not_reported_as_a_conflict(supervisor_module):
+    """slam_toolbox's first match from map_start_pose jumps 20+ degrees; on
+    2026-09-18 that showed LOST/TF_CONFLICT before anyone had set a pose."""
+    from omx_navigation.localization_state import ErrorCode, LocalizationState
+
+    node = supervisor_module.LocalizationSupervisor()
+    node.clock.seconds = 0.10
+    node._on_tf(map_camera_tf(0.0, 0.0, 0.0, source_stamp=0.10))
+    node.clock.seconds = 0.15
+    node._on_tf(map_camera_tf(-0.12, 0.01, math.radians(22.8), source_stamp=0.15))
+    node._on_status_timer()
+
+    assert node._tf_conflict is False
+    assert node._machine.state is LocalizationState.WAITING_INPUT
+    assert node._last_transition.error is ErrorCode.INPUT_MISSING
+
+
+def stub_refinement(supervisor_module, monkeypatch, offsets):
+    """Make every drift check find a better pose at the next offset in `offsets`."""
+    from omx_navigation.scan_map_quality import LocalRefinement, Pose2D, PoseScore
+
+    calls = []
+
+    def refine(_grid, _field, _points, tracked, **_kwargs):
+        dx, dy, dyaw = offsets[min(len(calls), len(offsets) - 1)]
+        calls.append(tracked)
+        best = Pose2D(tracked.x + dx, tracked.y + dy, tracked.yaw + dyaw)
+        return LocalRefinement(
+            PoseScore(tracked, 0.65, 0.2, 0.61, 180),
+            PoseScore(best, 0.86, 0.05, 0.85, 180),
+            40,
+        )
+
+    monkeypatch.setattr(supervisor_module, "refine_pose_locally", refine)
+    return calls
+
+
+def keep_tracking(node, start, end, map_camera=(0.0, 0.0, 0.0), step=0.5):
+    now = start
+    while now <= end + 1e-9:
+        node.clock.seconds = now
+        node._on_odom(odom_message(stamp=now))
+        node._on_tf(map_camera_tf(*map_camera, source_stamp=now))
+        node._on_scan(scan_message(stamp=now))
+        node._on_status_timer()
+        now = round(now + step, 6)
+
+
+def test_consistent_drift_is_corrected_without_dropping_readiness(supervisor_module, monkeypatch):
+    from omx_navigation.localization_state import LocalizationState
+
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    advance_to_ready(node)
+    assert node._machine.state is LocalizationState.READY
+    # The single wall cell at (1, 0) still matches from the corrected pose.
+    calls = stub_refinement(supervisor_module, monkeypatch, [(0.40, 0.10, math.radians(4.0))])
+
+    # A check runs every 2 s and is applied on the next tick.
+    keep_tracking(node, 3.5, 10.0)
+
+    assert len(calls) >= 3
+    corrections = pushed_to_slam(node)[1:]
+    assert len(corrections) == 1
+    corrected = corrections[0].pose.pose
+    assert corrected.position.x == pytest.approx(0.40)
+    assert corrected.position.y == pytest.approx(0.10)
+    assert 2.0 * math.atan2(corrected.orientation.z, corrected.orientation.w) == pytest.approx(math.radians(4.0))
+    assert node._machine.state is LocalizationState.READY
+    assert publisher(node, "~/ready").messages[-1].data is True
+    status = json.loads(publisher(node, "~/status").messages[-1].data)
+    assert status["drift_corrections"] == 1
+    assert status["consistency_gap"] == pytest.approx(0.24)
+
+    # slam_toolbox applies it: map->camera_init moves by more than the 0.30 m
+    # jump limit, which must read as the correction, not a conflict.
+    keep_tracking(node, 10.5, 11.5, map_camera=(0.40, 0.10, math.radians(4.0)))
+    assert node._tf_conflict is False
+    assert node._tf_corrections_explained == 1
+    assert node._machine.state is LocalizationState.READY
+
+
+def test_drift_that_cannot_be_corrected_escalates_to_lost(supervisor_module, monkeypatch):
+    from omx_navigation.localization_state import ErrorCode, LocalizationState
+
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    advance_to_ready(node)
+    yaws = (0.0, 5.0, -3.0, 4.0, -2.0, 5.0, -4.0, 3.0, -5.0, 4.0)
+    stub_refinement(supervisor_module, monkeypatch, [(-0.2, 0.0, math.radians(yaw)) for yaw in yaws])
+
+    keep_tracking(node, 3.5, 21.5)
+
+    assert len(pushed_to_slam(node)) == 1
+    assert node._machine.state is LocalizationState.LOST
+    assert node._last_transition.error is ErrorCode.POSE_DRIFT
+    assert publisher(node, "~/ready").messages[-1].data is False
+
+
+def test_new_click_forgets_drift_evidence(supervisor_module, monkeypatch):
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    advance_to_ready(node)
+    stub_refinement(supervisor_module, monkeypatch, [(-0.2, 0.0, math.radians(4.0))])
+    keep_tracking(node, 3.5, 6.0)
+    assert node._last_drift_decision is not None and node._last_drift_decision.drifting
+
+    node._on_initial_pose(pose_message())
+
+    assert node._last_drift_decision is None
+    assert node._drift_monitor.corrections == 0
+    assert node._expectation is None
+
+
+def test_status_csv_carries_the_live_tracking_columns(supervisor_module, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        supervisor_module.LocalizationSupervisor,
+        "declare_parameter",
+        lambda self, name, default: SimpleNamespace(
+            value=str(tmp_path / "status.csv") if name == "diagnostics_csv" else default
+        ),
+    )
+    node = supervisor_module.LocalizationSupervisor()
+    node._publish_status()
+    node.destroy_node()
+    header = (tmp_path / "status.csv").read_text(encoding="utf-8").splitlines()[0].split(",")
+    assert header[:7] == ["state", "error", "message_ko", "attempt", "overlap", "ambiguity_margin", "stamp"]
+    assert {"consistency_gap", "drift_corrections", "tf_corrections_explained"} <= set(header)
+
+
+def test_no_drift_check_runs_on_stale_inputs(supervisor_module, monkeypatch):
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    advance_to_ready(node)
+    calls = stub_refinement(supervisor_module, monkeypatch, [(0.40, 0.10, math.radians(4.0))])
+    node._last_drift_check_at = None
+    # Odometry stops: the scan and pose on hand go stale.
+    node.clock.seconds = 4.5
+    node._on_status_timer()
+    assert calls == []

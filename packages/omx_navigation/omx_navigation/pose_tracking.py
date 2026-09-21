@@ -25,3 +25,23 @@ def compose_pose(parent_to_mid: Pose2D, mid_to_child: Pose2D) -> Pose2D:
         parent_to_mid.y + s * mid_to_child.x + c * mid_to_child.y,
         (parent_to_mid.yaw + mid_to_child.yaw + math.pi) % (2.0 * math.pi) - math.pi,
     )
+
+
+def invert_pose(pose: Pose2D) -> Pose2D:
+    """Return the inverse planar transform, so ``compose(p, invert(p))`` is identity."""
+    if not all(math.isfinite(value) for value in (pose.x, pose.y, pose.yaw)):
+        raise ValueError("planar transforms must be finite")
+    c, s = math.cos(pose.yaw), math.sin(pose.yaw)
+    return Pose2D(
+        -(c * pose.x + s * pose.y),
+        -(-s * pose.x + c * pose.y),
+        (-pose.yaw + math.pi) % (2.0 * math.pi) - math.pi,
+    )
+
+
+def pose_difference(first: Pose2D, second: Pose2D) -> tuple[float, float]:
+    """Translation distance and absolute wrapped yaw difference between two poses."""
+    return (
+        math.hypot(first.x - second.x, first.y - second.y),
+        abs((first.yaw - second.yaw + math.pi) % (2.0 * math.pi) - math.pi),
+    )

@@ -96,6 +96,28 @@ class SearchResult:
     ambiguous: bool
 
 
+@dataclass(frozen=True)
+class LocalRefinement:
+    """Monitoring score at a tracked pose and at the best pose close to it."""
+
+    initial: PoseScore
+    best: PoseScore
+    evaluations: int
+
+    @property
+    def gap(self) -> float:
+        return self.best.score - self.initial.score
+
+
+# Coarse-to-fine steps for `refine_pose_locally`: (translation m, yaw rad).
+REFINEMENT_SCHEDULE = (
+    (0.20, math.radians(4.0)),
+    (0.10, math.radians(2.0)),
+    (0.05, math.radians(1.0)),
+    (0.025, math.radians(0.5)),
+)
+
+
 def build_distance_field(grid: GridMap) -> tuple[float, ...]:
     """Return obstacle distance in metres for every grid cell."""
     distances = [math.inf] * len(grid.cells)
@@ -219,6 +241,81 @@ def coarse_search(
     runner_up = next((candidate for candidate in candidates[1:] if _is_distinct_pose(best.pose, candidate.pose)), None)
     ambiguous = runner_up is not None and best.score - runner_up.score < window.ambiguity_margin
     return SearchResult(best, runner_up, ambiguous)
+
+
+def refine_pose_locally(
+    grid: GridMap,
+    field: Sequence[float],
+    points: Sequence[ScanPoint],
+    initial: Pose2D,
+    *,
+    max_translation: float = 0.35,
+    max_yaw: float = math.radians(6.0),
+    hit_distance: float = 0.25,
+    schedule: Sequence[tuple[float, float]] = REFINEMENT_SCHEDULE,
+    max_moves_per_level: int = 8,
+) -> LocalRefinement:
+    """Hill-climb the monitoring score inside a small window around a tracked pose.
+
+    `coarse_search` answers "which of several distant poses is this?" and is the
+    right question once, at lock. While tracking in a corridor it is the wrong
+    one: replaying the 2026-09-18 run, its best-vs-runner-up margin sat under
+    the 0.05 guard for most of the minutes in which navigation was working,
+    because a pose one metre along the corridor always scores almost as well.
+
+    The tracking question is local: does a pose within a few tens of centimetres
+    and degrees explain the current scan clearly better than the tracked one?
+    A persistent yes means the tracked pose has drifted off the map. Scoring
+    matches continuous monitoring (an off-map beam is one unmatched beam), so
+    ``initial.score`` is exactly the score the supervisor already watches.
+
+    A pattern search moves to the best of the six axis neighbours until none
+    improves, then halves the step; it costs a few dozen `score_pose` calls
+    instead of the thousands a dense grid over the same window needs.
+    """
+    if not all(math.isfinite(value) and value > 0.0 for value in (max_translation, max_yaw, hit_distance)):
+        raise ValueError("refinement bounds must be finite and positive")
+    if not isinstance(max_moves_per_level, int) or isinstance(max_moves_per_level, bool) or max_moves_per_level < 1:
+        raise ValueError("max_moves_per_level must be a positive integer")
+    if not schedule or not all(
+        math.isfinite(step) and step > 0.0 and math.isfinite(yaw_step) and yaw_step > 0.0
+        for step, yaw_step in schedule
+    ):
+        raise ValueError("refinement schedule steps must be finite and positive")
+
+    def evaluate(pose: Pose2D) -> PoseScore:
+        return score_pose(grid, field, points, pose, hit_distance, disqualify_outside=False)
+
+    start = evaluate(initial)
+    evaluations = 1
+    if not all(math.isfinite(value) for value in (initial.x, initial.y, initial.yaw)):
+        return LocalRefinement(start, start, evaluations)
+    best = start
+    translation_limit = max_translation + 8.0 * math.ulp(max_translation)
+    yaw_limit = max_yaw + 8.0 * math.ulp(max_yaw)
+    for step, yaw_step in schedule:
+        for _ in range(max_moves_per_level):
+            improved = None
+            for dx, dy, dyaw in (
+                (step, 0.0, 0.0), (-step, 0.0, 0.0),
+                (0.0, step, 0.0), (0.0, -step, 0.0),
+                (0.0, 0.0, yaw_step), (0.0, 0.0, -yaw_step),
+            ):
+                candidate = Pose2D(best.pose.x + dx, best.pose.y + dy, best.pose.yaw + dyaw)
+                if (
+                    math.hypot(candidate.x - initial.x, candidate.y - initial.y) > translation_limit
+                    or angle_distance(candidate.yaw, initial.yaw) > yaw_limit
+                ):
+                    continue
+                scored = evaluate(candidate)
+                evaluations += 1
+                reference = best if improved is None else improved
+                if scored.score > reference.score + 1e-12:
+                    improved = scored
+            if improved is None:
+                break
+            best = improved
+    return LocalRefinement(start, best, evaluations)
 
 
 def angle_distance(first: float, second: float) -> float:
