@@ -1516,7 +1516,48 @@ def test_status_csv_carries_the_live_tracking_columns(supervisor_module, tmp_pat
     node.destroy_node()
     header = (tmp_path / "status.csv").read_text(encoding="utf-8").splitlines()[0].split(",")
     assert header[:7] == ["state", "error", "message_ko", "attempt", "overlap", "ambiguity_margin", "stamp"]
-    assert {"consistency_gap", "drift_corrections", "tf_corrections_explained"} <= set(header)
+    assert {"consistency_gap", "drift_corrections", "tf_corrections_explained", "missing_inputs"} <= set(header)
+
+
+def last_status(node):
+    return json.loads(publisher(node, "~/status").messages[-1].data)
+
+
+def test_status_names_what_input_missing_is_waiting_for(supervisor_module, monkeypatch):
+    """Map never published, slam_toolbox not answering, normal wait: the error alone is the same."""
+    from omx_navigation.scan_map_quality import Pose2D, PoseScore, SearchResult
+
+    result = SearchResult(PoseScore(Pose2D(0.0, 0.0, 0.0), 0.9, 0.0, 0.9, 1), None, False)
+    monkeypatch.setattr(supervisor_module, "coarse_search", lambda *_args, **_kwargs: result)
+    node = supervisor_module.LocalizationSupervisor()
+    use_immediate_search(node)
+    node._on_status_timer()
+    assert last_status(node)["missing_inputs"] == "map,scan,odometry,initial_pose"
+
+    node.clock.seconds = 0.05
+    node._on_odom(odom_message(stamp=0.05))
+    node._on_scan(scan_message(stamp=0.05))
+    node._on_initial_pose(pose_message())
+    node.clock.seconds = 0.10
+    node._on_odom(odom_message(stamp=0.10))
+    node._on_scan(scan_message(stamp=0.10))
+    node._on_status_timer()
+    assert last_status(node)["error"] == "INPUT_MISSING"
+    assert last_status(node)["missing_inputs"] == "map,alignment"
+
+    node._on_map(map_message(occupied_world=((1.0, 0.0),)))
+    node.clock.seconds = 0.15
+    node._on_scan(scan_message(stamp=0.15))
+    node._on_odom(odom_message(stamp=0.15))
+    node.clock.seconds = 0.20
+    node._on_status_timer()
+    assert node._slam_epoch is not None
+    assert last_status(node)["missing_inputs"] == "slam_answer,tf"
+
+    advance_to_ready(node)
+    node._on_status_timer()
+    assert last_status(node)["state"] == "READY"
+    assert last_status(node)["missing_inputs"] == ""
 
 
 def test_no_drift_check_runs_on_stale_inputs(supervisor_module, monkeypatch):

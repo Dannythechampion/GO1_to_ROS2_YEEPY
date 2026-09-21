@@ -89,7 +89,7 @@ _SLAM_AGREEMENT_YAW = math.radians(1.0)
 _STATUS_FIELDS = (
     "state", "error", "message_ko", "attempt", "overlap", "ambiguity_margin", "stamp",
     "consistency_gap", "drift_offset_x", "drift_offset_y", "drift_offset_yaw_deg",
-    "drift_corrections", "tf_corrections_explained",
+    "drift_corrections", "tf_corrections_explained", "missing_inputs",
 )
 
 
@@ -787,6 +787,7 @@ class LocalizationSupervisor(Node):
         transition = self._last_transition
         decision = self._last_drift_decision
         offset = decision.offset if decision is not None else (0.0, 0.0, 0.0)
+        now = self._now()
         status = {
             "state": transition.state.value,
             "error": transition.error.value,
@@ -797,13 +798,14 @@ class LocalizationSupervisor(Node):
             # lock. It is not recomputed while tracking (see drift_monitor):
             # tracking quality is `consistency_gap`, which is.
             "ambiguity_margin": self._finite_or_zero(self._ambiguity_margin),
-            "stamp": self._now(),
+            "stamp": now,
             "consistency_gap": self._finite_or_zero(decision.gap if decision is not None else 0.0),
             "drift_offset_x": self._finite_or_zero(offset[0]),
             "drift_offset_y": self._finite_or_zero(offset[1]),
             "drift_offset_yaw_deg": self._finite_or_zero(math.degrees(offset[2])),
             "drift_corrections": self._drift_monitor.corrections,
             "tf_corrections_explained": self._tf_corrections_explained,
+            "missing_inputs": self._missing_inputs(now),
         }
         message = String()
         message.data = json.dumps(status, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
@@ -825,19 +827,46 @@ class LocalizationSupervisor(Node):
         # be republished.  The scan is live data and therefore age-limited.
         return (
             self._grid is not None
-            and self._scan_received_at is not None
-            and self._scan_source_stamp is not None
-            and self._odom_received_at is not None
-            and self._odom_source_stamp is not None
-            and self._quality_received_at is not None
-            and self._quality_source_stamp is not None
-            and 0.0 <= now - self._scan_received_at <= self._input_max_age
-            and 0.0 <= now - self._odom_received_at <= self._input_max_age
-            and 0.0 <= now - self._quality_received_at <= self._input_max_age
-            and self._source_is_fresh(self._scan_source_stamp, now)
-            and self._source_is_fresh(self._odom_source_stamp, now)
-            and self._source_is_fresh(self._quality_source_stamp, now)
+            and self._live_input_fresh(self._scan_received_at, self._scan_source_stamp, now)
+            and self._live_input_fresh(self._odom_received_at, self._odom_source_stamp, now)
+            and self._live_input_fresh(self._quality_received_at, self._quality_source_stamp, now)
         )
+
+    def _live_input_fresh(self, received_at: float | None, source_stamp: float | None, now: float) -> bool:
+        return (
+            received_at is not None
+            and source_stamp is not None
+            and 0.0 <= now - received_at <= self._input_max_age
+            and self._source_is_fresh(source_stamp, now)
+        )
+
+    def _missing_inputs(self, now: float) -> str:
+        """Name what INPUT_MISSING is waiting for; the error code alone cannot.
+
+        Replaying 2026-09-18 closed loop, one run sat in ALIGNING/INPUT_MISSING
+        because map_server never activated and another because slam_toolbox's
+        answer was being rejected. The status line could not tell them apart,
+        nor either of them from the normal second before slam_toolbox answers.
+        """
+        missing = []
+        if self._grid is None:
+            missing.append("map")
+        if not self._live_input_fresh(self._scan_received_at, self._scan_source_stamp, now):
+            missing.append("scan")
+        if not self._live_input_fresh(self._odom_received_at, self._odom_source_stamp, now):
+            missing.append("odometry")
+        if self._initial_pose is None:
+            missing.append("initial_pose")
+        elif self._slam_epoch is None:
+            missing.append("alignment")
+        else:
+            if not self._slam_pose_handshake:
+                missing.append("slam_answer")
+            if not self._tf_fresh(now):
+                missing.append("tf")
+        if not missing and not self._live_input_fresh(self._quality_received_at, self._quality_source_stamp, now):
+            missing.append("scan_match")
+        return ",".join(missing)
 
     def _refresh_continuous_quality(self, now: float) -> None:
         """Score the latest scan at the current composed base pose."""
