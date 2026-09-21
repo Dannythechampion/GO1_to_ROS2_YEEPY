@@ -16,6 +16,32 @@
     holonomic: true
     invert_lateral: false
 
+    # Who is in control. The sport controller follows the handheld remote over
+    # any HighCmd; on 2026-09-18 the stack kept commanding a goal for minutes
+    # while the operator drove by remote. A stick past this deadband or any key
+    # counts as manual control, which holds until the remote has been idle for
+    # override_release_s. Afterwards nothing moves until cmd_vel has been zero
+    # (or silent) for rearm_zero_s, so a stale goal cannot resume by itself.
+    robot_state_topic: /go1/robot_state
+    manual_override_topic: /go1/manual_override
+    execution_fault_topic: /go1/execution_fault
+    remote_stick_deadband: 0.10
+    override_release_s: 1.0
+    link_timeout_s: 0.5
+    rearm_zero_s: 0.5
+
+    # Commanded vs executed, from FAST-LIO odometry, while armed. A refusal
+    # that lasts refusal_hold_s, or motion without a command that lasts
+    # uncommanded_hold_s, holds stand and tells navigation to drop its goal.
+    # Replayed on 09-18 this flagged the first stall 27 s before Nav2 did.
+    odom_topic: /Odometry
+    refusal_hold_s: 5.0
+    uncommanded_hold_s: 1.0
+
+    # Besides every reason change, log requested vs applied once a second
+    # while anything is moving or held.
+    log_period_s: 1.0
+
     # This must point at a wrapper rebuilt for the new Jetson's Python ABI.
     sdk_path: /mnt/t500/go1_sdk/unitree_legged_sdk/lib/python/arm64
     robot_ip: 192.168.123.161

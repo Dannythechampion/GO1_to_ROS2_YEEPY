@@ -17,6 +17,7 @@ def generate_launch_description():
             DeclareLaunchArgument("arm", default_value="false"),
             DeclareLaunchArgument("armed_confirmation", default_value=""),
             DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel"),
+            DeclareLaunchArgument("odom_topic", default_value="/Odometry"),
             Node(
                 package="go1_driver",
                 executable="go1_driver",
@@ -29,6 +30,7 @@ def generate_launch_description():
                             LaunchConfiguration("arm"), value_type=bool
                         ),
                         "cmd_vel_topic": LaunchConfiguration("cmd_vel_topic"),
+                        "odom_topic": LaunchConfiguration("odom_topic"),
                         "armed_confirmation": LaunchConfiguration(
                             "armed_confirmation"
                         ),

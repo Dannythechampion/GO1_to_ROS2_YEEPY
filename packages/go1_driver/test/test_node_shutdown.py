@@ -18,8 +18,13 @@ def test_driver_arming_requires_exact_field_confirmation(driver_module):
 def driver_module(monkeypatch):
     geometry = ModuleType("geometry_msgs.msg")
     geometry.Twist = object
+    nav = ModuleType("nav_msgs.msg")
+    nav.Odometry = object
     std = ModuleType("std_msgs.msg")
     std.String = object
+    std.Bool = object
+    qos = ModuleType("rclpy.qos")
+    qos.qos_profile_sensor_data = "sensor_data"
     rclpy = ModuleType("rclpy")
     rclpy.init = lambda **_kwargs: None
     rclpy.spin = lambda _node: None
@@ -30,9 +35,11 @@ def driver_module(monkeypatch):
 
     for name, module in {
         "geometry_msgs.msg": geometry,
+        "nav_msgs.msg": nav,
         "std_msgs.msg": std,
         "rclpy": rclpy,
         "rclpy.node": rclpy_node,
+        "rclpy.qos": qos,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
 

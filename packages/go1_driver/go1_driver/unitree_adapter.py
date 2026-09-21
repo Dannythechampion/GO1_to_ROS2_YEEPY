@@ -8,6 +8,19 @@ import sys
 import time
 
 from .command_filter import MotionCommand, WALK_MODE
+from .robot_state import RobotState, read_robot_state
+
+
+def _fingerprint(state) -> tuple:
+    """Values that change on every real packet (IMU noise, foot forces)."""
+    imu = getattr(state, "imu", None)
+    parts = []
+    for owner, name in ((imu, "quaternion"), (imu, "accelerometer"), (imu, "gyroscope"), (state, "footForce")):
+        try:
+            parts.append(tuple(float(value) for value in getattr(owner, name, ()) or ()))
+        except (TypeError, ValueError):
+            parts.append(())
+    return tuple(parts)
 
 
 class UnitreeHighLevel:
@@ -37,10 +50,24 @@ class UnitreeHighLevel:
         self._cmd = sdk.HighCmd()
         self._state = sdk.HighState()
         self._udp.InitCmdData(self._cmd)
+        self._last_fingerprint = None
+        self.last_reply_fresh = False
 
-    def send(self, command: MotionCommand) -> None:
-        self._udp.Recv()
+    def send(self, command: MotionCommand) -> RobotState:
+        """Send one command and return what the robot last reported."""
+        received = self._udp.Recv()
         self._udp.GetRecv(self._state)
+        snapshot = read_robot_state(self._state)
+        # The SDK's Recv returns the byte count of a new packet; bindings that
+        # return nothing fall back to noticing that the reply changed. GetRecv
+        # alone cannot tell: it keeps handing back the last packet forever.
+        if isinstance(received, int) and not isinstance(received, bool):
+            fresh = received > 0
+        else:
+            fingerprint = _fingerprint(self._state)
+            fresh = fingerprint != self._last_fingerprint
+            self._last_fingerprint = fingerprint
+        self.last_reply_fresh = fresh and snapshot.live
 
         cmd = self._cmd
         cmd.mode = command.mode
@@ -53,6 +80,7 @@ class UnitreeHighLevel:
         cmd.reserve = 0
         self._udp.SetSend(cmd)
         self._udp.Send()
+        return snapshot
 
     def stand(self, repeats: int = 30, period: float = 0.01) -> None:
         command = MotionCommand.stand("shutdown")
