@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -403,3 +404,66 @@ def test_field_runner_passes_coarse_search_radius_to_both_launch_paths():
     assert text.count("exec ros2 launch omx_navigation") == 2
     assert text.count("coarse_search_translation_radius:=") == 2
     subprocess.run([_bash(), "-n", str(FIELD)], check=True)
+
+
+def _embedded_python(script: Path, function: str) -> str:
+    text = script.read_text(encoding="utf-8")
+    body = re.search(rf"(?ms)^{re.escape(function)}\(\) {{\n.*?<<'PY'\n(.*?)^PY$", text)
+    assert body, f"{function} has no embedded Python"
+    return body.group(1)
+
+
+def _staged_workspace(root: Path) -> Path:
+    """A workspace laid out like --symlink-install leaves it, in sync with src."""
+    workspace = root / "ws"
+    for package, folders in (("omx_navigation", ("config", "launch", "rviz")), ("go1_driver", ("config", "launch"))):
+        source = workspace / "src" / package
+        (source / package).mkdir(parents=True)
+        (source / package / "__init__.py").write_text("", encoding="utf-8")
+        (source / package / "node.py").write_text("VALUE = 1\n", encoding="utf-8")
+        for folder in folders:
+            (source / folder).mkdir()
+            (source / folder / f"{folder}.txt").write_text(f"{package} {folder}\n", encoding="utf-8")
+            build = workspace / "build" / package / folder
+            build.mkdir(parents=True)
+            shutil.copy2(source / folder / f"{folder}.txt", build / f"{folder}.txt")
+            share = workspace / "install" / package / "share" / package / folder
+            share.mkdir(parents=True)
+            (share / f"{folder}.txt").write_text((build / f"{folder}.txt").read_text(encoding="utf-8"), encoding="utf-8")
+    return workspace
+
+
+def _run_build_check(workspace: Path) -> subprocess.CompletedProcess[str]:
+    code = _embedded_python(FIELD, "verify_build_is_current")
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        str(workspace / "src" / package) for package in ("omx_navigation", "go1_driver")
+    )
+    return subprocess.run(
+        [sys.executable, "-", str(workspace)], input=code, env=environment,
+        text=True, encoding="utf-8", capture_output=True,
+    )
+
+
+def test_preflight_accepts_a_workspace_built_from_its_sources():
+    with TemporaryDirectory() as temp_dir:
+        result = _run_build_check(_staged_workspace(Path(temp_dir)))
+        assert result.returncode == 0, result.stderr
+        assert "PASS" in result.stdout
+
+
+def test_preflight_refuses_a_config_edited_after_the_build():
+    with TemporaryDirectory() as temp_dir:
+        workspace = _staged_workspace(Path(temp_dir))
+        (workspace / "src" / "omx_navigation" / "config" / "config.txt").write_text("edited\n", encoding="utf-8")
+        (workspace / "src" / "go1_driver" / "launch" / "new.launch.py").write_text("x\n", encoding="utf-8")
+        result = _run_build_check(workspace)
+        assert result.returncode != 0
+        assert "omx_navigation/config/config.txt differs" in result.stderr
+        assert "go1_driver/launch/new.launch.py is not installed" in result.stderr
+
+
+def test_preflight_runs_the_build_check():
+    text = FIELD.read_text(encoding="utf-8")
+    preflight = re.search(r"(?ms)^preflight\(\) \{\n(.*?)^\}", text).group(1)
+    assert 'verify_build_is_current "$workspace"' in preflight

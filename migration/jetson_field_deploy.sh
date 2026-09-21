@@ -181,6 +181,51 @@ print("PASS: Unitree robot_interface import and constructors")
 PY
 }
 
+# With --symlink-install the installed launch, config and RViz files are copies
+# made at build time, while Python modules resolve to src. On 2026-09-18 a config
+# was edited in src for a test and the running stack kept using the old copy;
+# the reverse -- a module edited without the data files it needs -- is just as
+# silent. Refuse to run a workspace whose installed files no longer match src.
+verify_build_is_current() {
+  local workspace="$1"
+  python3 - "$workspace" <<'PY'
+import filecmp
+import importlib
+import sys
+from pathlib import Path
+
+workspace = Path(sys.argv[1])
+stale = []
+for package, folders in (("omx_navigation", ("config", "launch", "rviz")), ("go1_driver", ("config", "launch"))):
+    share = workspace / "install" / package / "share" / package
+    for folder in folders:
+        for source in sorted((workspace / "src" / package / folder).glob("*")):
+            if not source.is_file():
+                continue
+            installed = share / folder / source.name
+            if not installed.exists():
+                stale.append(f"{package}/{folder}/{source.name} is not installed")
+            elif not filecmp.cmp(source, installed.resolve(), shallow=False):
+                stale.append(f"{package}/{folder}/{source.name} differs from the installed copy")
+    try:
+        module = importlib.import_module(package)
+    except ImportError as error:
+        stale.append(f"{package} cannot be imported: {error}")
+        continue
+    live = Path(module.__file__).resolve().parent
+    for source in sorted((workspace / "src" / package / package).glob("*.py")):
+        running = live / source.name
+        if not running.exists() or not filecmp.cmp(source, running.resolve(), shallow=False):
+            stale.append(f"{package}/{source.name} is not what Python imports ({live})")
+if stale:
+    raise SystemExit(
+        "ERROR: the installed workspace does not match its sources; run `build` first:\n  "
+        + "\n  ".join(stale)
+    )
+print("PASS: installed modules, launch, config and RViz files match the staged sources")
+PY
+}
+
 verify_installed_artifacts() {
   local prefix graph_base suffix
   prefix="$(ros2 pkg prefix omx_navigation)" || fail "omx_navigation is not installed"
@@ -212,6 +257,7 @@ preflight() {
   done
   verify_unitree_wrapper
   verify_installed_artifacts
+  verify_build_is_current "$workspace"
 
   local diagnostics_root="${DIAGNOSTICS_ROOT:-$default_diagnostics_root}"
   mkdir -p "$diagnostics_root"
