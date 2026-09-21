@@ -146,8 +146,15 @@ RViz에서 대략적인 `2D Pose Estimate`를 지정하고
 - RViz 클릭이 `bt_navigator`에 직접도 들어가 목표가 두 번 전달됐습니다. 이제
   `rviz_goal_bridge`만 목표를 보내고, 도착·취소·무시가 RViz 마커로 보입니다.
 - `TF_CONFLICT`는 대부분 자체 초기 자세 보정이었습니다. 초기 자세는 한 번이면 됩니다.
+- slam_toolbox의 초기 자세 응답이 푸시 이전 scan 시각을 달고 오면 버려져, 정지 상태에서는
+  재시도를 반복하다 `LOST`가 될 수 있었습니다(09-18 두 번째 클릭이 재시도로 겨우 성공).
+  이제 한 번의 푸시로 READY가 됩니다.
 - READY 중 추적 드리프트(복도 끝 헤딩 3-4.5 deg)를 감시하고 보정합니다.
-- `bash migration/run_all_tests.sh`로 전체 테스트를 한 번에 실행합니다.
+- `bash migration/run_all_tests.sh`로 전체 테스트를 한 번에 실행합니다. Go1 배포·검증
+  스크립트는 로그인 셸의 다른 프로젝트 환경(`~/nav_ws`, `ROS_DOMAIN_ID=84`)을 무시하고
+  `GO1_ROS_DOMAIN_ID`(기본 100)를 씁니다.
+- 현장 bag을 노트북의 전체 스택(slam_toolbox, Nav2 포함)에 폐루프로 재생해 검증합니다:
+  `migration/replay_field_bag.py`, `migration/verify_control_chain_sim.py`.
 
 아래부터는 지도 파일, 매핑, 레거시 AMCL fallback과 상세 운영 절차를 포함한 기존
 문서입니다. 신규 posegraph 현장 운용은 위 quick start와

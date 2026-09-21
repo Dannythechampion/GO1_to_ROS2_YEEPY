@@ -225,6 +225,14 @@ goal은 **0.3 m 이내**로 제한합니다. goal cancel, ready loss, watchdog �
 - **자체 보정은 TF 충돌이 아닙니다.** 첫 초기 자세 전의 점프는 추적하지 않고, 푸시 직후
   푸시한 자세 근처로 떨어지는 점프는 보정으로 인정합니다. slam_toolbox 자세로 보정이
   확인된 뒤의 불연속은 그대로 `TF_CONFLICT`입니다. 초기 자세는 **한 번**만 지정하면 됩니다.
+- **slam_toolbox의 응답을 놓치지 않습니다.** slam_toolbox는 푸시 후 처음 *받은* scan으로
+  응답하는데, 그 scan은 보통 푸시 전에 찍힌 것입니다. 푸시한 자세에 떨어지는 응답이면
+  stamp가 앞서도 받아들입니다(정지 상태에서는 이 응답이 유일합니다). 이런 응답은 보정 확인
+  창을 일찍 닫지 않습니다.
+- status/CSV의 `missing_inputs`가 `INPUT_MISSING`의 원인을 적습니다: `map`, `scan`,
+  `odometry`, `initial_pose`, `alignment`(검색 전), `slam_answer`, `tf`, `scan_match`.
+  클릭 직후 `slam_answer,tf`는 정상이고, `map,alignment`가 계속되면 map_server가 active가
+  아닌 것입니다(`verify_posegraph_navigation.sh preflight`가 확인).
 - **추적 드리프트를 감시하고 고칩니다.** READY 동안 2초마다 추적 자세 주변을 국소 정제해
   `consistency_gap`을 계산합니다. 세 번 연속 0.08 이상이고 방향이 일치하면 보정 자세를
   slam_toolbox에 다시 넣고, 해결되지 않으면 `POSE_DRIFT`로 정지합니다.

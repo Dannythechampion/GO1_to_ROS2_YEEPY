@@ -376,3 +376,23 @@ python3 tools/replay_localization.py drift /mnt/t500/localization_logs/<session>
 `session_report.py`는 목표 타임라인, 리모컨 개입, 명령 대비 실제 실행, localization
 요약을 보여 줍니다. `replay_localization.py drift`는 드리프트 보정이 이후 scan을 실제로
 더 잘 맞췄는지 채점합니다.
+
+`run_all_tests.sh`, `jetson_field_deploy.sh`, `verify_posegraph_navigation.sh`는 호출한 셸의
+워크스페이스 경로를 지우고, 배포·검증 스크립트는 항상 Go1 도메인(`GO1_ROS_DOMAIN_ID`, 기본
+100)을 씁니다. Jetson의 `~/.bashrc`는 다른 프로젝트(`~/nav_ws`, `ROS_DOMAIN_ID=84`)를
+source하기 때문입니다.
+
+ROS 2 Humble이 있는 PC(WSL 포함)에서는 로봇 없이 전체 스택을 폐루프로 검증할 수 있습니다.
+
+```bash
+# 터미널 1: dry-run 스택
+ros2 launch omx_navigation go1_posegraph_navigation.launch.py rviz:=false arm:=false \
+  record_localization:=true diagnostics_root:=/tmp/replay_sessions
+# 터미널 2: 현장 입력(/scan, /Odometry, camera_init->body, 클릭)을 현재 시각으로 재생
+python3 migration/replay_field_bag.py <session>/rosbag --start 0 --end 700
+# 로봇과 Nav2를 흉내 낸 driver·goal bridge 제어 사슬 검사(22개)
+python3 migration/verify_control_chain_sim.py
+```
+
+재생 전 `ros2 lifecycle get /map_server`가 `active`인지 확인하십시오. 부하가 크면 lifecycle
+응답이 유실되어 map_server가 영영 활성화되지 않을 수 있습니다(그때는 launch를 다시 시작).

@@ -7,8 +7,9 @@ armed drive with Nav2 goals from RViz: session
 Every number below was measured from that session's rosbag, status CSV and
 console log. The fixes were validated by replaying the same recordings
 through the new code (`tools/replay_localization.py`,
-`tools/session_report.py`); the robot itself has not run them yet — see the
-last section.
+`tools/session_report.py`) and, closed loop with the real slam_toolbox and
+Nav2, through the launched stack (section 6); the robot itself has not run
+them yet — see the last section.
 
 ## Outcome
 
@@ -140,23 +141,104 @@ that crashes the system pytest. Stubs installed by one test module leaked
 into the next. Each package's `test/conftest.py` now drops every project
 module and stub first imported during a test; `test_module_isolation.py`
 fails without it. The exact Jetson failure could not be reproduced on the
-laptop (Python 3.14, pytest 9, no real ROS); `migration/run_all_tests.sh` is
-the one command that shows it on the Jetson.
+laptop: under Python 3.10, pytest 6.2.5 and real ROS Humble (WSL) even the
+09-18 code passes as one suite, both from the checkout and from an installed
+workspace. What differs on the Jetson is the login shell: `~/.bashrc` sources
+another project's `~/nav_ws` and exports `ROS_DOMAIN_ID=84`, and every Go1
+script inherited both. `jetson_field_deploy.sh`, the verifier and
+`run_all_tests.sh` now clear the inherited workspace paths before sourcing
+ROS, and the deploy script and verifier always use the Go1 domain
+(`GO1_ROS_DOMAIN_ID`, default 100), saying so when the calling shell had
+another. `migration/run_all_tests.sh` is the one command that shows whether
+the failures remain.
+
+## 6. Closed loop on the laptop, with the real slam_toolbox
+
+`migration/replay_field_bag.py` feeds a session's raw inputs -- `/scan`,
+`/Odometry`, FAST-LIO's `camera_init -> body` and the operator's clicks,
+re-stamped to now -- into the launched stack, so slam_toolbox, the
+supervisor, Nav2 and the driver (dry-run) run closed loop on field data.
+`migration/verify_control_chain_sim.py` drives the real driver and goal
+bridge against a simulated robot and Nav2 action server (22 checks: remote
+override, execution fault, re-arm on zero, preemption, arrival).
+
+Replaying the reference run this way found a lock failure the robot had
+only survived by luck:
+
+- **slam_toolbox's answer was rejected half the time.** slam_toolbox applies
+  a pushed pose to the next scan it *receives*, and that scan was usually
+  acquired before the push (LiDAR to `/scan` to its TF filter takes
+  50-100 ms), so the answer carries an earlier stamp. The supervisor
+  required the answer's stamp to follow the push. Parked, slam_toolbox sends
+  no other pose (`minimum_travel_distance`), so the supervisor waited for
+  nothing, re-pushed, and went `LOST`/`ALIGNMENT_TIMEOUT` after five pushes
+  with slam_toolbox correctly localized. On 09-18 the first click's answer
+  happened to be stamped after the push (READY 6.1 s after the click: ~2.8 s
+  of search on the Jetson, 3 s of verification); the second click's was
+  not, and READY came only after the retry, 9.9 s after the click.
+  **Fix**: an answer stamped before the push counts while that push is
+  pending and only if it lands on the pushed pose (0.5 m / 10 deg); it
+  completes the handshake but cannot end the correction window early, so a
+  pose slam_toolbox matched just before it saw the push cannot turn the real
+  correction into a `TF_CONFLICT`. Replayed: both clicks locked on their
+  first push (READY 4.0 s and 3.9 s after the click; the laptop searches in
+  ~1 s), no `TF_CONFLICT`, overlap 0.83 on average while READY, consistency
+  gap at most 0.032.
+- **A lifecycle bring-up can lose a response and hang.** Under load Fast DDS
+  sometimes drops map_server's `change_state` reply ("failed to send response
+  ... client will not receive response"); the lifecycle manager then waits
+  forever, `/map` stays in the topic list but is never published, and every
+  click ends in `ALIGNMENT_TIMEOUT`. `verify_posegraph_navigation.sh
+  preflight` now requires `/map_server` to be active and says to relaunch.
+- **`INPUT_MISSING` did not say what was missing.** Both failures above, and
+  the normal second before slam_toolbox answers, showed the same
+  `ALIGNING/INPUT_MISSING`. Status and CSV now carry `missing_inputs`, e.g.
+  `map,alignment` (map never arrived), `slam_answer,tf` (pushed, waiting for
+  slam_toolbox), empty when nothing is. (It also shows the field recording's
+  own two 2.3 s `/scan` dropouts at t+38 and t+44, before the first click.)
+
+With those fixed, the first 700 s of the session replayed closed loop:
+READY without a break from the second lock to the end, no `TF_CONFLICT`,
+`POSE_DRIFT` or `DEGRADED`; four drift corrections pushed at the corridor
+end and on the way back, each accepted by slam_toolbox, and their transform
+jumps recognised as the supervisor's own. Scan-to-map overlap while READY,
+same bag windows:
+
+| bag window | 09-18 on the robot (old code) | replayed (new code) |
+|---|---|---|
+| t+80-300, lock to corridor end | mean 0.85, min 0.73 | mean 0.85, min 0.72 |
+| t+300-400, corridor end | mean 0.64, min 0.48, 88% below 0.7 | mean 0.79, min 0.61, 11% below 0.7 |
+| t+400-700, driven back | mean 0.63, min 0.45, 99% below 0.7 | mean 0.87, min 0.62, 2% below 0.7 |
+
+The good minutes are unchanged; the five minutes the robot spent READY on a
+drifted pose are gone. Consistency gap while READY: median 0.027, p90 0.087.
+
+Goals clicked into the same replay reach Nav2 once each: `/goal_pose` has
+the bridge (and the recorder) as its only subscribers, three clicks give
+three `Begin navigating`, a goal is `CANCELED: localization not ready` when a
+new initial pose resets localization, and a new click `PREEMPTED` the
+active goal.
 
 ## Not verified on the robot yet
 
 Run these first next session, in this order:
 
-1. `bash migration/run_all_tests.sh` on the Jetson -- the whole suite in one run.
+1. `bash migration/run_all_tests.sh` on the Jetson -- the whole suite in one run,
+   now without the login shell's `~/nav_ws` on the path. The deploy script
+   prints a NOTE when it overrides the shell's `ROS_DOMAIN_ID=84`.
 2. `jetson_field_deploy.sh stage/build/preflight`; preflight now refuses a
-   workspace whose installed files differ from src.
+   workspace whose installed files differ from src. After launch,
+   `verify_posegraph_navigation.sh preflight` must show `/map_server` active
+   before the first click.
 3. Dry-run: `/go1/robot_state` reports `robot: null`; one RViz click produces
    `SENT`/`ACCEPTED` once on `/navigation/goal_status` and a yellow marker.
 4. Armed, robot standing, remote in hand: move a stick. Expect
    `/go1/manual_override` true, the goal `CANCELED: manual override`, stand
    held. Release: nothing moves until a new goal. **This is the scenario of
    09-18.**
-5. One `/initialpose` push: READY without `TF_CONFLICT`; `tf_corrections_explained` 1.
+5. One click, robot parked: READY about 6 s later (search, then 3 s of
+   verification) without `TF_CONFLICT`, one `LocalizePoseCallback` in
+   slam_toolbox's log (a second one is a retry), `missing_inputs` empty.
 6. A goal and arrival: green `ARRIVED` marker.
 7. Drive to the corridor end and back; watch `consistency_gap` and
    `drift_corrections` in the status CSV. If a correction misbehaves,
