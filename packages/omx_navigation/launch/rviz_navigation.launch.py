@@ -103,17 +103,22 @@ def generate_launch_description() -> LaunchDescription:
             SetRemap(src="/scan", dst=scan_topic),
             SetRemap(src="odom", dst=odom_topic),
             SetRemap(src="/odom", dst=odom_topic),
+            # nav2_bringup's bt_navigator subscribes to goal_pose itself; only
+            # rviz_goal_bridge (outside this group) may start a goal.
+            SetRemap(src="goal_pose", dst="/bt_navigator/goal_pose_disabled"),
+            SetRemap(src="/goal_pose", dst="/bt_navigator/goal_pose_disabled"),
             slam_launch,
             localization_launch,
             navigation_launch,
-            Node(
-                package="omx_navigation",
-                executable="rviz_goal_bridge",
-                name="rviz_goal_bridge",
-                output="screen",
-                parameters=[{"use_sim_time": use_sim_time}],
-            ),
         ]
+    )
+
+    goal_bridge = Node(
+        package="omx_navigation",
+        executable="rviz_goal_bridge",
+        name="rviz_goal_bridge",
+        output="screen",
+        parameters=[{"use_sim_time": use_sim_time}],
     )
 
     rviz_node = Node(
@@ -163,6 +168,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("odom_frame", default_value="odom"),
             DeclareLaunchArgument("base_frame", default_value="base_link"),
             navigation_group,
+            goal_bridge,
             rviz_node,
         ]
     )

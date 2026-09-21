@@ -232,13 +232,14 @@ def _validate_launch_inputs(context, *_args, **_kwargs):
 
 
 def _supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, diagnostics_csv,
-                       search_translation_radius):
+                       search_translation_radius, drift_auto_correct=True):
     """Create the supervisor with either a session CSV or no filesystem output."""
     return Node(
         package="omx_navigation", executable="localization_supervisor", name="localization_supervisor", output="screen",
         parameters=[{"camera_init_frame": odom_frame, "source_base_frame": source_base_frame, "base_frame": base_frame,
                      "diagnostics_csv": diagnostics_csv,
-                     "coarse_search_translation_radius": search_translation_radius}],
+                     "coarse_search_translation_radius": search_translation_radius,
+                     "drift_auto_correct": drift_auto_correct}],
         remappings=[("/scan", scan_topic), ("/Odometry", odom_topic)],
     )
 
@@ -254,6 +255,10 @@ def prepare_recording_session(record_localization: bool, record_cloud: bool, dia
     topics = (
         "/scan", "/Odometry", "/tf", "/tf_static", "/initialpose", "/slam_localization/pose",
         "/localization_supervisor/status", "/localization_supervisor/ready", "/cmd_vel_nav", "/cmd_vel",
+        # What the operator asked for and what the robot itself reported: the
+        # 09-18 analysis had to reconstruct both from console logs.
+        "/goal_pose", "/navigation/goal_status", "/slam_localization/initialpose",
+        "/go1/cmd_vel_applied", "/go1/robot_state", "/go1/manual_override", "/go1/execution_fault",
     )
     if record_cloud:
         topics += ("/cloud_registered_body",)
@@ -276,6 +281,9 @@ def _setup_diagnostics(context, *_args, **_kwargs):
     )
     if not 0.0 < search_translation_radius < 100.0:
         raise ValueError("coarse_search_translation_radius must be finite and positive")
+    drift_auto_correct = parse_launch_boolean(
+        LaunchConfiguration("drift_auto_correct").perform(context), "drift_auto_correct"
+    )
     recording = prepare_recording_session(
         record_localization,
         record_cloud,
@@ -283,14 +291,15 @@ def _setup_diagnostics(context, *_args, **_kwargs):
     )
     if recording is None:
         return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, "",
-                                   search_translation_radius)]
+                                   search_translation_radius, drift_auto_correct)]
     session_dir, topics = recording
     bag = ExecuteProcess(
         cmd=["ros2", "bag", "record", "--output", str(session_dir / "rosbag"), *topics],
         output="screen",
     )
     return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic,
-                               str(session_dir / "localization_status.csv"), search_translation_radius), bag]
+                               str(session_dir / "localization_status.csv"), search_translation_radius,
+                               drift_auto_correct), bag]
 
 
 def generate_launch_description() -> "LaunchDescription":
@@ -388,7 +397,10 @@ def generate_launch_description() -> "LaunchDescription":
         "smoother_server": [("tf", "/tf"), ("tf_static", "/tf_static")],
         "planner_server": [("tf", "/tf"), ("tf_static", "/tf_static")],
         "behavior_server": [("tf", "/tf"), ("tf_static", "/tf_static"), ("cmd_vel", "/nav2_controller_cmd_vel")],
-        "bt_navigator": [("tf", "/tf"), ("tf_static", "/tf_static")],
+        # Humble's bt_navigator subscribes to goal_pose itself. Left in place,
+        # every RViz click reached Nav2 twice and bypassed rviz_goal_bridge's
+        # readiness gate (2026-09-18). Only the bridge may start a goal.
+        "bt_navigator": [("tf", "/tf"), ("tf_static", "/tf_static"), ("goal_pose", "/bt_navigator/goal_pose_disabled")],
         "waypoint_follower": [("tf", "/tf"), ("tf_static", "/tf_static")],
         "velocity_smoother": [
             ("tf", "/tf"), ("tf_static", "/tf_static"),
@@ -444,6 +456,7 @@ def generate_launch_description() -> "LaunchDescription":
             "arm": LaunchConfiguration("arm"),
             "armed_confirmation": LaunchConfiguration("armed_confirmation"),
             "cmd_vel_topic": "/cmd_vel",
+            "odom_topic": odom_topic,
         }.items(),
     )
 
@@ -468,6 +481,9 @@ def generate_launch_description() -> "LaunchDescription":
         # `ros2 launch` from silently reproducing that failure.
         DeclareLaunchArgument("coarse_search_translation_radius", default_value="1.0"),
         DeclareLaunchArgument("diagnostics_root", default_value="/mnt/t500/localization_logs"),
+        # Push a verified correction to slam_toolbox when tracking drifts off
+        # the map (see drift_monitor.py). false: drift becomes POSE_DRIFT/LOST.
+        DeclareLaunchArgument("drift_auto_correct", default_value="true"),
         DeclareLaunchArgument("record_localization", default_value="false"),
         DeclareLaunchArgument("record_cloud", default_value="false"),
         DeclareLaunchArgument("rviz", default_value="true"),

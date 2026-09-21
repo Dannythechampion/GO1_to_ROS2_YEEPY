@@ -162,6 +162,18 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /local_costmap/costmap_updates
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Navigation Goal
+      Namespaces:
+        navigation_goal: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /navigation/goal_marker
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 35; 35; 35

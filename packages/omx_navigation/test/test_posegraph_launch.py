@@ -279,3 +279,35 @@ def test_posegraph_isolates_slam_map_and_metadata_topics():
         if _keyword_value(call, "src") in expected
     }
     assert actual == expected
+
+
+def test_only_the_goal_bridge_can_start_a_nav2_goal():
+    """2026-09-18: bt_navigator took RViz clicks directly, so every goal
+    arrived twice and the bridge's readiness gate stopped nothing."""
+    remaps = _assignment_value("nav2_remaps")
+    assert ("goal_pose", "/bt_navigator/goal_pose_disabled") in remaps["bt_navigator"]
+    for name, pairs in remaps.items():
+        if name != "bt_navigator":
+            assert all(source != "goal_pose" for source, _target in pairs)
+    bridge = next(call for call in _calls("Node") if _literal_keyword_or_none(call, "executable") == "rviz_goal_bridge")
+    assert all(item.arg != "remappings" for item in bridge.keywords)
+
+
+def test_session_bag_records_operator_intent_and_robot_reports():
+    topics = _assignment_value("topics")
+    for topic in (
+        "/goal_pose", "/navigation/goal_status", "/slam_localization/initialpose",
+        "/go1/cmd_vel_applied", "/go1/robot_state", "/go1/manual_override", "/go1/execution_fault",
+    ):
+        assert topic in topics
+
+
+def test_driver_gets_odometry_and_supervisor_gets_the_drift_switch():
+    text = LAUNCH.read_text(encoding="utf-8")
+    assert '"odom_topic": odom_topic,' in text
+    argument = next(
+        call for call in _calls("DeclareLaunchArgument")
+        if ast.literal_eval(call.args[0]) == "drift_auto_correct"
+    )
+    assert _keyword_value(argument, "default_value") == "true"
+    assert '"drift_auto_correct": drift_auto_correct' in text
