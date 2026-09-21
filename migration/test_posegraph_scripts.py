@@ -467,3 +467,52 @@ def test_preflight_runs_the_build_check():
     text = FIELD.read_text(encoding="utf-8")
     preflight = re.search(r"(?ms)^preflight\(\) \{\n(.*?)^\}", text).group(1)
     assert 'verify_build_is_current "$workspace"' in preflight
+
+
+def _bash_function(script: Path, name: str) -> str:
+    match = re.search(rf"(?ms)^{re.escape(name)}\(\) \{{\n.*?^\}}\n", script.read_text(encoding="utf-8"))
+    assert match, f"{name} is missing"
+    return match.group(0)
+
+
+def test_deploy_ignores_the_login_shells_other_project():
+    """The Jetson login shell exports the other project's workspace and domain 84."""
+    bash = _bash()
+    code = _bash_function(FIELD, "reset_ros_environment") + (
+        "reset_ros_environment\n"
+        'printf "domain=%s python=%s ament=%s\\n" "$ROS_DOMAIN_ID" "${PYTHONPATH:-}" "${AMENT_PREFIX_PATH:-}"\n'
+    )
+    environment = os.environ.copy()
+    environment.update({
+        "ROS_DOMAIN_ID": "84",
+        "PYTHONPATH": "/home/unicon/nav_ws/install/gateway_pk/lib/python3.10/site-packages",
+        "AMENT_PREFIX_PATH": "/home/unicon/nav_ws/install/gateway_pk",
+    })
+    environment.pop("GO1_ROS_DOMAIN_ID", None)
+    result = subprocess.run([bash, "-c", code], env=environment, text=True, encoding="utf-8", capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "domain=100 python= ament="
+    assert "ignoring ROS_DOMAIN_ID=84" in result.stderr
+
+    environment["GO1_ROS_DOMAIN_ID"] = "42"
+    result = subprocess.run([bash, "-c", code], env=environment, text=True, encoding="utf-8", capture_output=True)
+    assert result.stdout.startswith("domain=42 ")
+
+
+def test_deploy_resets_the_environment_before_every_ros_source():
+    text = FIELD.read_text(encoding="utf-8")
+    for function in ("source_ros_workspace", "build_workspace"):
+        body = _bash_function(FIELD, function)
+        assert body.index("reset_ros_environment") < body.index("source_file")
+    assert 'export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-100}"' not in text
+
+
+def test_verifier_checks_the_go1_domain_not_the_calling_shells():
+    _bash()
+    with TemporaryDirectory() as temp_dir:
+        result = _run_verifier(Path(temp_dir) / "shared", "preflight", ROS_DOMAIN_ID="84")
+        assert result.returncode == 0, result.stderr
+        assert "ROS_DOMAIN_ID=100" in result.stdout
+        assert "ROS_DOMAIN_ID=84" in result.stderr
+        chosen = _run_verifier(Path(temp_dir) / "chosen", "preflight", ROS_DOMAIN_ID="84", GO1_ROS_DOMAIN_ID="42")
+        assert "ROS_DOMAIN_ID=42" in chosen.stdout

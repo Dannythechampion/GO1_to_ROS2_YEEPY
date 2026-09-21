@@ -8,7 +8,14 @@ if [[ "$mode" != "preflight" && "$mode" != "ready" ]]; then
   exit 2
 fi
 
-export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-100}"
+# The Jetson's login shell carries another project's workspace and its
+# ROS_DOMAIN_ID=84; look at the Go1's own domain regardless (GO1_ROS_DOMAIN_ID).
+go1_domain="${GO1_ROS_DOMAIN_ID:-100}"
+if [[ -n "${ROS_DOMAIN_ID:-}" && "$ROS_DOMAIN_ID" != "$go1_domain" ]]; then
+  printf 'NOTE: 호출 셸의 ROS_DOMAIN_ID=%s 대신 Go1 도메인 %s을 사용합니다 (GO1_ROS_DOMAIN_ID)\n' "$ROS_DOMAIN_ID" "$go1_domain" >&2
+fi
+export ROS_DOMAIN_ID="$go1_domain"
+unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH ROS_PACKAGE_PATH
 ros_setup_file="${ROS_SETUP_FILE:-/opt/ros/humble/setup.bash}"
 go1_ros2_ws="${GO1_ROS2_WS:-/mnt/t500/go1_ros2_ws}"
 required_topics=(

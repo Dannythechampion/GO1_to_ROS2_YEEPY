@@ -76,9 +76,25 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "required command is unavailable: $1"
 }
 
+# The Go1 Jetson is shared. The login user's ~/.bashrc sources another
+# project's workspace (~/nav_ws) and exports that project's ROS_DOMAIN_ID=84,
+# and bash reads ~/.bashrc even for commands run over ssh. Inheriting it put the
+# whole Go1 stack -- driver included -- on the domain where the other project's
+# wheel_cmd and keyboard nodes run. Start from ROS alone, on the Go1's domain,
+# whatever the calling shell carried; GO1_ROS_DOMAIN_ID chooses another one.
+reset_ros_environment() {
+  unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH ROS_PACKAGE_PATH
+  local domain="${GO1_ROS_DOMAIN_ID:-100}"
+  if [[ -n "${ROS_DOMAIN_ID:-}" && "$ROS_DOMAIN_ID" != "$domain" ]]; then
+    printf 'NOTE: ignoring ROS_DOMAIN_ID=%s from the calling shell; the Go1 stack uses %s (GO1_ROS_DOMAIN_ID)\n' \
+      "$ROS_DOMAIN_ID" "$domain" >&2
+  fi
+  export ROS_DOMAIN_ID="$domain"
+}
+
 source_ros_workspace() {
   local workspace="$1"
-  export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-100}"
+  reset_ros_environment
   source_file "${ROS_SETUP_FILE:-/opt/ros/humble/setup.bash}"
   [[ "${ROS_DISTRO:-}" == "humble" ]] || fail "ROS_DISTRO must be humble"
   source_file "$workspace/install/setup.bash"
@@ -125,6 +141,7 @@ stage_sources() {
 build_workspace() {
   [[ $# -le 1 ]] || { usage; exit 2; }
   local workspace="${1:-$default_workspace}"
+  reset_ros_environment
   source_file "${ROS_SETUP_FILE:-/opt/ros/humble/setup.bash}"
   [[ "${ROS_DISTRO:-}" == "humble" ]] || fail "ROS_DISTRO must be humble"
   require_command rosdep

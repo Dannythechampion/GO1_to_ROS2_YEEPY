@@ -8,6 +8,9 @@
 set -euo pipefail
 
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# The Jetson's login shell sources another project's workspace; test against
+# ROS alone, never whatever the calling shell carried.
+unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH PYTHONPATH ROS_PACKAGE_PATH
 if [[ -r "${ROS_SETUP_FILE:-/opt/ros/humble/setup.bash}" ]]; then
   # With ROS importable the stub isolation is exercised for real.
   set +u
