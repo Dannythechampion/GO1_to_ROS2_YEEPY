@@ -352,3 +352,27 @@ ros2.repos
 
 최종 완료는 다른 Ubuntu 22.04 Jetson에서 같은 Git 커밋을 clone하고 위 순서로
 다시 빌드할 수 있을 때 인정한다.
+
+## 16. 전체 테스트와 세션 분석
+
+전체 테스트는 **한 번에** 통과해야 합니다. 2026-09-18 Jetson에서는 파일별로는 통과하고
+전체로는 22개가 실패했습니다(테스트 간 stub 누수). 이제 각 패키지 `test/conftest.py`가
+격리합니다. Jetson에서는 이 명령 하나로 확인합니다.
+
+```bash
+bash migration/run_all_tests.sh
+```
+
+`jetson_field_deploy.sh preflight`는 설치된 모듈·launch·config·RViz 파일이 src와 다르면
+실행을 거부합니다. src만 고치고 `build`를 빠뜨린 경우입니다.
+
+주행 후에는 ROS 없이 노트북이나 Jetson에서 bag을 직접 분석합니다.
+
+```bash
+python3 tools/session_report.py /mnt/t500/localization_logs/<session>/rosbag/rosbag_0.db3
+python3 tools/replay_localization.py drift /mnt/t500/localization_logs/<session>/rosbag/rosbag_0.db3
+```
+
+`session_report.py`는 목표 타임라인, 리모컨 개입, 명령 대비 실제 실행, localization
+요약을 보여 줍니다. `replay_localization.py drift`는 드리프트 보정이 이후 scan을 실제로
+더 잘 맞췄는지 채점합니다.

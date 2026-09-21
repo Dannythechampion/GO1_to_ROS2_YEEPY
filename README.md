@@ -135,6 +135,20 @@ RViz에서 대략적인 `2D Pose Estimate`를 지정하고
 - 안전 스탠드 또는 통제 공간에서 0.3 m goal, cancel, localization loss, watchdog,
   `Ctrl-C` 반복 stand와 물리 e-stop
 
+### 2026-09-18 현장 주행 분석 후 수정
+
+첫 armed 주행 기록을 bag으로 재생해 원인을 확정하고 고쳤습니다. 측정값과 다음 현장
+확인 순서는 [`migration/FIELD_SESSION_2026-09-18.md`](migration/FIELD_SESSION_2026-09-18.md)에 있습니다.
+
+- 세 번의 `Failed to make progress`는 운영자가 리모컨으로 조종하는 동안 Nav2가 목표를
+  계속 명령한 충돌이었습니다. driver가 HighState를 읽어 리모컨 개입과 명령 미실행을
+  감지하고, 해제 후에도 옛 목표로 재개하지 않습니다.
+- RViz 클릭이 `bt_navigator`에 직접도 들어가 목표가 두 번 전달됐습니다. 이제
+  `rviz_goal_bridge`만 목표를 보내고, 도착·취소·무시가 RViz 마커로 보입니다.
+- `TF_CONFLICT`는 대부분 자체 초기 자세 보정이었습니다. 초기 자세는 한 번이면 됩니다.
+- READY 중 추적 드리프트(복도 끝 헤딩 3-4.5 deg)를 감시하고 보정합니다.
+- `bash migration/run_all_tests.sh`로 전체 테스트를 한 번에 실행합니다.
+
 아래부터는 지도 파일, 매핑, 레거시 AMCL fallback과 상세 운영 절차를 포함한 기존
 문서입니다. 신규 posegraph 현장 운용은 위 quick start와
 [`packages/omx_navigation/README.md`](packages/omx_navigation/README.md)를 우선하십시오.
@@ -1415,5 +1429,5 @@ READY/NONE을 확인한 후 첫 goal은 현재 위치에서 **0.3 m 이내**로 
 `/slam_localization/pose`는 보정 뒤 한 번 오는 handshake 토픽입니다. 이후 연속 품질은
 최신 scan과 `map -> camera_init`, `camera_init -> body_nav` TF로 감시됩니다. 오류가
 `INPUT_MISSING`, `LOW_OVERLAP`, `AMBIGUOUS`, `ODOM_RESET`, `TF_CONFLICT`,
-`POSE_OUTSIDE_MAP`, `SLAM_JUMP` 또는 `EXTRINSIC_UNCALIBRATED`이면 원인을 복구하기
+`POSE_OUTSIDE_MAP`, `POSE_DRIFT` 또는 `EXTRINSIC_UNCALIBRATED`이면 원인을 복구하기
 전까지 이동하지 마십시오.

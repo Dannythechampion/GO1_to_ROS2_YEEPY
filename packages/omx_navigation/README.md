@@ -207,6 +207,30 @@ goal은 **0.3 m 이내**로 제한합니다. goal cancel, ready loss, watchdog �
 `Ctrl-C` 반복 stand, 물리 e-stop을 각각 확인하기 전에는 시험 반경을 늘리지 마십시오.
 
 `INPUT_MISSING`, `LOW_OVERLAP`, `AMBIGUOUS`, `ODOM_RESET`, `TF_CONFLICT`,
-`POSE_OUTSIDE_MAP`, `SLAM_JUMP`, `EXTRINSIC_UNCALIBRATED` 중 하나라도 표시되면
+`POSE_OUTSIDE_MAP`, `POSE_DRIFT`, `EXTRINSIC_UNCALIBRATED` 중 하나라도 표시되면
 속도 gate가 닫힌 상태에서 원인을 먼저 복구하십시오. 기존 지도와 실시간 scan이 맞지
 않으면 armed 실행 대신 지도를 다시 작성해야 합니다.
+
+## 목표 경로와 localization 감시 (2026-09-18 현장 분석 반영)
+
+근거와 측정값은 `migration/FIELD_SESSION_2026-09-18.md`에 있습니다.
+
+- **목표 경로는 `rviz_goal_bridge` 하나뿐입니다.** Humble `bt_navigator`도 `goal_pose`를
+  직접 구독해서 클릭이 Nav2에 두 번 들어갔고, 브리지의 READY 검사가 무력했습니다. 두
+  navigation launch 모두 `bt_navigator`의 `goal_pose`를 막았습니다.
+- **새 클릭은 진행 중 목표를 대체합니다**(무시하지 않음). localization 손실,
+  `/go1/manual_override`, `/go1/execution_fault`가 들어오면 목표를 취소하고 새 목표를 거부합니다.
+- **모든 목표 상태가 보입니다.** `/navigation/goal_status`(JSON)와 RViz `Navigation Goal`
+  마커: 노랑 진행, 초록 `ARRIVED`, 빨강 `IGNORED:`/`CANCELED:` + 이유, 회색 `PREEMPTED`.
+- **자체 보정은 TF 충돌이 아닙니다.** 첫 초기 자세 전의 점프는 추적하지 않고, 푸시 직후
+  푸시한 자세 근처로 떨어지는 점프는 보정으로 인정합니다. slam_toolbox 자세로 보정이
+  확인된 뒤의 불연속은 그대로 `TF_CONFLICT`입니다. 초기 자세는 **한 번**만 지정하면 됩니다.
+- **추적 드리프트를 감시하고 고칩니다.** READY 동안 2초마다 추적 자세 주변을 국소 정제해
+  `consistency_gap`을 계산합니다. 세 번 연속 0.08 이상이고 방향이 일치하면 보정 자세를
+  slam_toolbox에 다시 넣고, 해결되지 않으면 `POSE_DRIFT`로 정지합니다.
+  `drift_auto_correct:=false`로 자동 보정을 끌 수 있습니다.
+- status/CSV의 `ambiguity_margin`은 **lock 시점 값**입니다. 주행 중 품질은
+  `consistency_gap`, `drift_offset_*`, `drift_corrections`, `tf_corrections_explained`로 봅니다.
+- 세션 bag에 `/goal_pose`, `/navigation/goal_status`, `/slam_localization/initialpose`,
+  `/go1/*` 토픽이 추가로 기록됩니다. 분석은 `tools/session_report.py`와
+  `tools/replay_localization.py`(ROS 없이 실행)로 합니다.

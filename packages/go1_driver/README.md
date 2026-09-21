@@ -50,3 +50,26 @@ The configured `sdk_path` is under `/mnt/t500/go1_sdk`. It must contain the
 archived Unitree SDK v3.8.6 rebuilt for Python 3.10; do not mix v3.5.1 files.
 It must contain a matching
 `robot_interface.cpython-<ABI>-aarch64-linux-gnu.so`.
+
+## Who is in control
+
+The Go1's sport controller follows the handheld remote over any HighCmd. On
+2026-09-18 the stack kept commanding a Nav2 goal for minutes while the
+operator drove the robot by remote, and could not tell (see
+`migration/FIELD_SESSION_2026-09-18.md`). While armed the driver now reads
+every HighState reply and publishes:
+
+| topic | type | meaning |
+|---|---|---|
+| `/go1/robot_state` | `std_msgs/String` (JSON, 10 Hz) | link, mode, velocity, `rangeObstacle`, battery, remote frame, requested vs applied command, execution verdict |
+| `/go1/manual_override` | `std_msgs/Bool` (10 Hz) | a key is pressed or a stick is past `remote_stick_deadband`; holds until the remote has been idle for `override_release_s` |
+| `/go1/execution_fault` | `std_msgs/Bool` (10 Hz) | the robot refused commanded motion for `refusal_hold_s`, or moved without a command for `uncommanded_hold_s` (judged by net FAST-LIO odometry on `odom_topic`) |
+
+Either one holds stand, and `rviz_goal_bridge` cancels the Nav2 goal on it.
+Afterwards nothing moves until `/cmd_vel` has been zero or silent for
+`rearm_zero_s`, so a goal set before a takeover cannot resume on its own. A
+powered remote with centred sticks is not an override.
+
+Besides every change of command reason, the log records requested vs applied
+command, the robot's own mode and velocity, the remote state and the executed
+share once a second while anything is moving or held.
