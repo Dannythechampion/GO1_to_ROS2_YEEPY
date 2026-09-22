@@ -60,56 +60,46 @@ Unitree Go1에 Livox MID-360을 달고, Jetson AGX Orin(Ubuntu 22.04, ROS 2 Humb
 
 ### 2.1 데이터 흐름
 
-```mermaid
-flowchart LR
-    subgraph sense["센서 · 오도메트리"]
-        LIDAR["Livox MID-360<br/>/livox/lidar · /livox/imu"]
-        FAST["FAST-LIO2<br/>/Odometry · /cloud_registered_body"]
-        PLANAR["planar_base_frame<br/>camera_init → body_nav"]
-        SCAN["pointcloud_to_laserscan<br/>/scan"]
-    end
-    subgraph localize["위치 추정"]
-        MAPSRV["map_server<br/>/map (주행 지도)"]
-        SLAM["slam_toolbox<br/>localization 모드"]
-        SUP["localization_supervisor"]
-    end
-    subgraph navigate["내비게이션"]
-        RVIZ["RViz<br/>2D Pose Estimate · 2D Goal Pose"]
-        BRIDGE["rviz_goal_bridge"]
-        NAV2["Nav2<br/>bt_navigator · planner · controller"]
-        SMOOTH["velocity_smoother"]
-        GATE["cmd_vel_safety_gate"]
-    end
-    subgraph act["구동"]
-        DRIVER["go1_driver"]
-        GO1["Unitree Go1"]
-    end
+**위치 추정 — 로봇이 지도 위 어디에 있는가**
 
-    LIDAR --> FAST
-    FAST -->|"camera_init → body"| PLANAR
-    FAST -->|"/cloud_registered_body"| SCAN
-    SCAN --> SLAM
-    SCAN --> SUP
-    SCAN --> NAV2
-    MAPSRV --> SUP
-    MAPSRV --> NAV2
-    RVIZ -->|"/initialpose"| SUP
-    SUP -->|"/slam_localization/initialpose"| SLAM
-    SLAM -->|"/slam_localization/pose<br/>map → camera_init"| SUP
-    SUP -->|"READY heartbeat"| BRIDGE
-    SUP -->|"READY heartbeat"| GATE
-    RVIZ -->|"/goal_pose"| BRIDGE
-    BRIDGE -->|"NavigateToPose"| NAV2
-    NAV2 -->|"/nav2_controller_cmd_vel"| SMOOTH
-    SMOOTH -->|"/cmd_vel_nav"| GATE
-    GATE -->|"/cmd_vel"| DRIVER
-    DRIVER -->|"HighCmd (UDP)"| GO1
-    GO1 -->|"HighState (UDP)"| DRIVER
-    DRIVER -->|"manual_override · execution_fault"| BRIDGE
+```mermaid
+flowchart TD
+    LIDAR["Livox MID-360"] -->|"점군 · IMU"| FAST["FAST-LIO2"]
+    FAST -->|"camera_init → body"| PLANAR["planar_base_frame"]
+    FAST -->|"/cloud_registered_body"| SCAN["pointcloud_to_laserscan"]
+    SCAN -->|"/scan"| SLAM["slam_toolbox<br/>(localization 모드)"]
+    SCAN -->|"/scan"| SUP["localization_supervisor"]
+    MAPSRV["map_server"] -->|"/map"| SUP
+    RVIZ["RViz<br/>2D Pose Estimate"] -->|"/initialpose"| SUP
+    SUP -->|"검증한 초기 자세"| SLAM
+    SLAM -->|"응답 · map → camera_init"| SUP
+    SUP -->|"READY (10 Hz)"| OUT["명령 경로<br/>(아래 그림)"]
 ```
 
-그림에서 생략한 연결: FAST-LIO2의 `/Odometry`는 supervisor(오도메트리 리셋 감지),
-Nav2, driver(명령 대비 실제 이동 비교)도 받습니다.
+**명령 경로 — 클릭 한 번이 걸음이 되기까지**
+
+```mermaid
+flowchart TD
+    RVIZ["RViz<br/>2D Goal Pose"] -->|"/goal_pose"| BRIDGE["rviz_goal_bridge"]
+    BRIDGE -->|"NavigateToPose"| NAV2["Nav2<br/>NavFn · DWB"]
+    NAV2 -->|"/nav2_controller_cmd_vel"| SMOOTH["velocity_smoother"]
+    SMOOTH -->|"/cmd_vel_nav"| GATE["cmd_vel_safety_gate"]
+    GATE -->|"/cmd_vel"| DRIVER["go1_driver"]
+    DRIVER -->|"HighCmd"| GO1["Unitree Go1"]
+    GO1 -->|"HighState"| DRIVER
+    SUP["localization_supervisor"] -->|"READY"| BRIDGE
+    SUP -->|"READY"| GATE
+    DRIVER -->|"리모컨 개입 · 명령 미실행"| BRIDGE
+```
+
+그림에서 생략한 연결:
+
+- supervisor와 slam_toolbox 사이의 토픽은 `/slam_localization/initialpose`(보냄)와
+  `/slam_localization/pose`(응답)입니다.
+- `/scan`과 `/map`은 Nav2의 costmap에도 들어갑니다.
+- FAST-LIO2의 `/Odometry`는 supervisor(오도메트리 리셋 감지), Nav2, driver(명령 대비 실제
+  이동 비교)도 받습니다.
+- driver의 리모컨 개입·명령 미실행 신호는 `/go1/manual_override`, `/go1/execution_fault`입니다.
 
 ### 2.2 TF 트리
 
