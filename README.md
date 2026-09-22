@@ -239,10 +239,9 @@ slam_toolbox로 보냅니다(Jetson에서 탐색에 약 3초).
 stateDiagram-v2
     [*] --> WAITING_INPUT
     WAITING_INPUT --> ALIGNING: 초기 자세 클릭
-    ALIGNING --> VERIFYING: 정합 통과 + slam_toolbox 응답
-    ALIGNING --> ALIGNING: 재시도 (최대 3회)
+    ALIGNING --> VERIFYING: 정합 통과
     ALIGNING --> LOST: 20초 안에 실패
-    VERIFYING --> READY: 3초 동안 품질 유지
+    VERIFYING --> READY: 3초 유지
     VERIFYING --> ALIGNING: 품질 저하
     READY --> DEGRADED: 품질 오류
     DEGRADED --> READY: 2초 안에 회복
@@ -251,8 +250,9 @@ stateDiagram-v2
     LOST --> ALIGNING: 새 초기 자세 클릭
 ```
 
-`ready=true`는 READY일 때만 나갑니다. 다른 모든 상태에서는 속도 게이트가 닫히고 목표가
-거부·취소됩니다.
+ALIGNING은 정합이 통과하고 slam_toolbox가 답할 때까지 약 6.7초마다 최대 3번 다시
+시도합니다(모두 합쳐 20초). `ready=true`는 READY일 때만 나갑니다. 다른 모든 상태에서는
+속도 게이트가 닫히고 목표가 거부·취소됩니다.
 
 **(5) READY 동안의 감시.**
 
