@@ -28,6 +28,7 @@ PACKAGE_README = ROOT / "packages" / "omx_navigation" / "README.md"
 DRIVER_README = ROOT / "packages" / "go1_driver" / "README.md"
 MIGRATION_README = ROOT / "migration" / "README.md"
 END_TO_END_README = ROOT / "docs" / "GO1_NAV2_END_TO_END.md"
+LEGACY_RUNBOOK = ROOT / "docs" / "LEGACY_AMCL_RUNBOOK.md"
 BASE_TOPICS = (
     "/scan", "/Odometry", "/map", "/slam_localization/pose",
     "/localization_supervisor/status", "/localization_supervisor/ready",
@@ -369,7 +370,7 @@ def test_old_runbooks_cannot_bypass_the_canonical_armed_runner():
     canonical = (
         "jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY"
     )
-    for document in (MIGRATION_README, END_TO_END_README, DRIVER_README):
+    for document in (MIGRATION_README, END_TO_END_README, DRIVER_README, LEGACY_RUNBOOK):
         text = document.read_text(encoding="utf-8")
         assert canonical in text
         assert "ros2 launch go1_driver go1_driver.launch.py arm:=true" not in text
@@ -383,25 +384,31 @@ def test_old_runbooks_cannot_bypass_the_canonical_armed_runner():
     assert "현재 pose-graph launch의 `arm` 값은 반드시 `false`" not in root_text
 
 
-def test_verified_branch_readme_explains_main_delta_and_field_path():
+def test_root_readme_explains_the_architecture_algorithms_and_field_path():
+    """The front page is where a newcomer learns how the stack works and how to run it safely."""
     text = ROOT_README.read_text(encoding="utf-8")
-    top = "\n".join(text.splitlines()[:300])
-    required = (
-        "codex/verified-posegraph-navigation",
-        "origin/main",
-        "localization_supervisor",
-        "cmd_vel_safety_gate",
-        "242 passed, 13 skipped",
-        "229 passed, 0 errors, 0 failures, 0 skipped",
+    for value in (
+        # structure: data flow, TF ownership and the localization state machine
+        "```mermaid", "flowchart", "stateDiagram-v2", "map → camera_init", "camera_init → body_nav",
+        # every component the stack runs, and what it is built on
+        "FAST-LIO2", "planar_base_frame", "pointcloud_to_laserscan", "slam_toolbox",
+        "localization_supervisor", "rviz_goal_bridge", "cmd_vel_safety_gate", "go1_driver",
+        "NavFn", "DWB", "velocity_smoother",
+        # the operator-facing status contract
+        "consistency_gap", "missing_inputs",
+        # hardware and the one field path
+        "Jetson AGX Orin",
         "jetson_field_deploy.sh dry-run",
         "jetson_field_deploy.sh armed GO1_ARMED_AND_ESTOP_READY",
-        "Jetson AGX Orin",
-        "고정 출발점",
-        "dual goal mission",
-    )
-    for value in required:
-        assert value in top
-    assert "| 구분 | `origin/main` | 이 브랜치 |" in top
+        # where the evidence and the previous procedures live
+        "migration/FIELD_SESSION_2026-09-18.md", "docs/LEGACY_AMCL_RUNBOOK.md",
+    ):
+        assert value in text, value
+    # It describes main, not one branch's delta against it.
+    assert "브랜치 전용 README" not in text
+    assert LEGACY_RUNBOOK.is_file()
+
+
 def test_field_runner_passes_coarse_search_radius_to_both_launch_paths():
     """Both dry-run and armed launches must narrow the initial-pose search window.
 

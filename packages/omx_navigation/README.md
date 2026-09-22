@@ -12,14 +12,18 @@ LiDAR가 아직 영구 고정되지 않았기 때문에 최종 `base_link -> lid
 만들지 않습니다. 현재 FAST-LIO가 제공하는 프레임을 임시로 사용합니다.
 
 ```text
-map -> camera_init -> body
+map -> camera_init -> body        FAST-LIO2의 6-DoF 자세
+                   -> body_nav    planar_base_frame: x, y, yaw만
 ```
 
+- `map -> camera_init`: slam_toolbox localization (유일한 발행자)
 - `camera_init`: Nav2 odom 프레임
-- `body`: Nav2 base 프레임과 임시 LaserScan 프레임
+- `body_nav`: Nav2 base 프레임과 LaserScan 프레임 (롤·피치·높이 제거)
 - `/Odometry`: FAST-LIO odometry
 - `/cloud_registered_body`: LaserScan 변환 입력
-- `/scan`: AMCL과 costmap 입력
+- `/scan`: slam_toolbox, `localization_supervisor`, costmap 입력
+
+전체 구조와 각 알고리즘 설명은 [루트 README](../../README.md)에 있습니다.
 
 LiDAR를 고정한 뒤에는 실제 장착 위치를 측정해 고정 TF와 FAST-LIO
 extrinsic을 다시 설정해야 합니다.
@@ -93,29 +97,35 @@ ros2 launch fast_lio mapping.launch.py \
 FAST-LIO 자체 RViz와 PCD 저장은 이 시험에서 사용하지 않습니다. 저부하 프로필은
 `map_en: false`, `dense_publish_en: false`, `pcd_save_en: false`로 설정되어 있습니다.
 
-### 3. 기존 지도 AMCL, Nav2, 저부하 RViz
+### 3. pose-graph localization, Nav2, 저부하 RViz
 
 ```bash
 export ROS_DOMAIN_ID=100
 source /opt/ros/humble/setup.bash
 source /mnt/t500/go1_ros2_ws/install/setup.bash
-ros2 launch omx_navigation go1_existing_map.launch.py arm:=false
+ros2 launch omx_navigation go1_posegraph_navigation.launch.py arm:=false
 ```
 
 통합 launch는 다음을 시작합니다.
 
+- `camera_init -> body_nav` 평면 프레임 (`planar_base_frame`)
 - `/cloud_registered_body`를 `/scan`으로 변환
-- 기존 지도 map server
-- AMCL
-- Nav2 planner, controller, behavior 및 velocity smoother
-- Go1 드라이버의 무구동 모드
-- 15 FPS 저부하 RViz
+- 기존 지도 map server와 저장 posegraph를 불러온 SLAM Toolbox localization
+- `localization_supervisor` (초기 정합, READY 판정, 드리프트 감시)
+- Nav2 planner, controller, smoother, behavior, bt_navigator, velocity smoother
+- `rviz_goal_bridge`와 `cmd_vel_safety_gate`
+- 15 FPS 저부하 RViz, 그리고 `start_go1_driver:=true`일 때 Go1 드라이버
+
+현장에서는 이 launch를 직접 쓰지 말고 `jetson_field_deploy.sh dry-run`을 씁니다
+(아래 "Jetson 현장 실행"). 레거시 AMCL fallback은
+`ros2 launch omx_navigation go1_existing_map.launch.py arm:=false`로 진단용으로만 남아
+있습니다.
 
 ## RViz 시험
 
 1. 기존 지도와 붉은색 `/scan`이 보이는지 확인합니다.
-2. `2D Pose Estimate`로 지도상의 실제 위치와 방향을 지정합니다.
-3. `/scan`이 기존 지도 벽과 겹치는지 확인합니다.
+2. `2D Pose Estimate`로 지도상의 실제 위치와 방향을 한 번 대략 지정합니다(1 m, 90° 안).
+3. supervisor가 `READY`가 되고(약 6초) `/scan`이 기존 지도 벽과 겹치는지 확인합니다.
 4. `2D Goal Pose`로 가까운 목표를 지정합니다.
 5. Global Plan과 Local Plan이 생성되는지 확인합니다.
 6. 목표를 취소하고 속도 명령이 0으로 돌아오는지 확인합니다.
