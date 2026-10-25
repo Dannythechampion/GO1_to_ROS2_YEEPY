@@ -66,12 +66,17 @@ class DockDetection:
     points: int
 
 
-def detect_dock(points, policy: ReflectorPolicy | None = None) -> DockDetection | None:
-    """Return the dock pose, or None when the pair is not cleanly visible.
+def find_marker_pair(points, policy: ReflectorPolicy | None = None):
+    """Locate exactly two tape markers, or return None.
 
-    `points` is any iterable of (x, y, z, reflectivity). Returning None rather
-    than a best guess matters: the controller turns a missing detection into a
-    stop, and a wrong dock pose next to a chair is worse than no dock pose.
+    Shared by every dock shape: the strips may sit side by side on a backrest
+    or face each other across a corridor, and only the expected separation
+    changes. Returns `(first, second, point_count)` with each marker as an
+    `(x, y)` centroid, ordered by bearing.
+
+    Returning None rather than a best guess matters throughout: the controller
+    turns a missing detection into a stop, and a wrong dock pose beside a chair
+    is worse than no dock pose at all.
     """
     policy = policy or ReflectorPolicy()
     bright = []
@@ -99,8 +104,8 @@ def detect_dock(points, policy: ReflectorPolicy | None = None) -> DockDetection 
 
     strips = [c for c in clusters if len(c) >= policy.min_points_per_strip]
     if len(strips) != 2:
-        # One strip means half the dock is occluded; three or more means
-        # something else in the scene is also returning at tape intensity.
+        # One marker means the other is occluded; three or more means something
+        # else in the scene is also returning at tape intensity.
         return None
 
     first = _centroid(strips[0])
@@ -108,6 +113,17 @@ def detect_dock(points, policy: ReflectorPolicy | None = None) -> DockDetection 
     separation = math.hypot(second[0] - first[0], second[1] - first[1])
     if abs(separation - policy.strip_separation) > policy.separation_tolerance:
         return None
+    return first, second, len(strips[0]) + len(strips[1])
+
+
+def detect_dock(points, policy: ReflectorPolicy | None = None) -> DockDetection | None:
+    """Dock pose for two strips mounted side by side on a facing surface."""
+    policy = policy or ReflectorPolicy()
+    found = find_marker_pair(points, policy)
+    if found is None:
+        return None
+    first, second, count = found
+    separation = math.hypot(second[0] - first[0], second[1] - first[1])
 
     mid_x = (first[0] + second[0]) / 2.0
     mid_y = (first[1] + second[1]) / 2.0
@@ -117,9 +133,7 @@ def detect_dock(points, policy: ReflectorPolicy | None = None) -> DockDetection 
     normal = along + math.pi / 2.0
     if math.cos(normal) * mid_x + math.sin(normal) * mid_y > 0.0:
         normal += math.pi
-    return DockDetection(
-        mid_x, mid_y, _wrap(normal), separation, len(strips[0]) + len(strips[1])
-    )
+    return DockDetection(mid_x, mid_y, _wrap(normal), separation, count)
 
 
 def _centroid(cluster):

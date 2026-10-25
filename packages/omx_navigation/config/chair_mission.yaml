@@ -1,0 +1,28 @@
+# The one scenario: go to the chair, dock on the corridor markers, grasp, come back.
+#
+# Poses are in the `map` frame, the frame slam_toolbox localises in, so they
+# survive restarts as long as the posegraph does. `yaw` is radians.
+#
+# These are placeholders. Record the real ones by driving the robot to each
+# spot and capturing its pose -- `record_waypoint()` writes this file back --
+# and re-record whenever the chair or the wall markers move.
+#
+# `chair` is where Nav2 should stop, not where the robot ends up. Nav2 is only
+# asked to land within xy_goal_tolerance (0.35 m) and leave the wall markers
+# in range; the dock step closes the rest.
+
+waypoints:
+  start:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  chair:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+
+sequence:
+  - navigate: chair
+  - dock
+  - grasp
+  - navigate: start
