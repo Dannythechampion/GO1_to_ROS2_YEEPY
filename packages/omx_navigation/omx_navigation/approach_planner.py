@@ -83,19 +83,25 @@ class StandoffPolicy:
     """Where the base must stand for the arm to work.
 
     `arm_base_offset_x` and `arm_base_height` describe where the arm is bolted
-    to the Go1, measured in `body_nav`. They are **not** known yet and have no
-    sensible default: `body_nav` is the planarized FAST-LIO frame with z forced
-    to 0 at whatever height the sensor started at, so both have to be measured
-    on the assembled robot rather than guessed.
+    to the Go1, measured in `body_nav` -- that is, relative to the MID-360,
+    because `body_nav` is the planarized FAST-LIO frame and its origin sits at
+    the sensor. The defaults are the 2026-10-25 build: the arm is on the Go1's
+    own mounting point, 0.15 m forward of the LiDAR and 0.19 m below it (the
+    LiDAR having been raised 13 cm onto the printed riser). **Re-measure these
+    if the mount changes**; nothing else in the stack models the arm's
+    position.
+
+    Note that `body_nav` has z forced to 0 at whatever height the sensor
+    started at, so these are sensor-relative, not floor-relative.
 
     `approach_tolerance` is what the target-relative approach stage promises to
     deliver, not Nav2's `xy_goal_tolerance`. Nav2's job is only to get close
     enough that the target is in the detector's field of view.
     """
 
-    arm_base_offset_x: float
-    arm_base_height: float
-    approach_tolerance: float
+    arm_base_offset_x: float = 0.15
+    arm_base_height: float = -0.19
+    approach_tolerance: float = 0.05
     # Clearance between the tool and the target at the moment of the grasp.
     grasp_margin: float = 0.03
     arm: ArmReach = field(default_factory=ArmReach)
@@ -126,6 +132,20 @@ class StandoffPolicy:
             - self.approach_tolerance
             - self.grasp_margin
         )
+
+    def reachable_height_range(self) -> tuple[float, float]:
+        """Heights in `body_nav` the arm can work at, at any standoff.
+
+        The envelope is a sphere around the shoulder, so a target far enough
+        above or below it is out of reach however the base is placed. With the
+        2026-10-25 mount the shoulder sits at -0.1305 m in `body_nav` and the
+        usable radius is about 0.285 m, which puts the floor out of reach: the
+        sensor stands well over 0.285 m above it. Targets have to be on a
+        raised surface, or the arm has to move.
+        """
+        shoulder = self.shoulder_height()
+        usable = self.arm.usable_reach
+        return (shoulder - usable, shoulder + usable)
 
     def standoff_distance(self, target_height: float) -> float:
         """Distance from `body_nav` to the target the base should aim for."""

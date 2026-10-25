@@ -120,6 +120,29 @@ def test_approach_yaw_reports_when_nothing_is_free():
     assert choose_approach_yaw(0.0, 0.0, 0.5, lambda x, y: False) is None
 
 
+def test_mounted_arm_gives_a_workable_standoff():
+    """The 2026-10-25 build: arm 0.15 m ahead of the LiDAR and 0.19 m below it."""
+    mounted = StandoffPolicy()
+    assert mounted.shoulder_height() == pytest.approx(-0.1305)
+    assert mounted.standoff_distance(mounted.shoulder_height()) == pytest.approx(0.355, abs=0.001)
+
+
+def test_floor_is_out_of_reach_from_the_current_mount():
+    """Targets have to be on a raised surface, or the arm has to move.
+
+    The shoulder sits 0.1305 m below the sensor and the usable radius is about
+    0.285 m, so nothing below -0.4157 m in body_nav can be reached at any
+    standoff. The sensor stands roughly 0.5-0.6 m above the floor, which puts
+    the floor 0.08-0.18 m outside that. This is a property of the mount, not a
+    tuning choice, so it is pinned here rather than discovered on the robot.
+    """
+    low, high = StandoffPolicy().reachable_height_range()
+    assert low == pytest.approx(-0.4157, abs=0.001)
+    assert high == pytest.approx(0.1547, abs=0.001)
+    for sensor_height_above_floor in (0.50, 0.55, 0.60):
+        assert -sensor_height_above_floor < low
+
+
 def test_policy_rejects_impossible_values():
     with pytest.raises(ValueError):
         policy(approach_tolerance=-0.01)
