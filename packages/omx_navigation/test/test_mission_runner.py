@@ -85,13 +85,39 @@ def test_failed_grasp_stops_the_mission():
 
 
 def test_losing_the_markers_stops_the_mission():
-    """A missing detection is a stop, never a coast."""
+    """A missing detection is a stop, never a coast -- and, past the
+    detection timeout, the end of the run."""
     item = runner()
     item.start(0.0)
     item.on_navigation_result(True, 1.0)
     action = item.update(1.1, None)
+    assert action.kind is ActionKind.DRIVE
+    assert (action.vx, action.vy) == (0.0, 0.0)
+    action = item.update(2.0, None)
     assert action.kind is ActionKind.ABORT
     assert "no detection" in action.reason
+
+
+def test_an_old_scan_is_judged_by_its_own_stamp():
+    item = runner()
+    item.start(0.0)
+    item.on_navigation_result(True, 1.0)
+    action = item.update(2.0, fix(mid_x=0.30), fix_stamp=1.0)
+    assert action.kind is ActionKind.ABORT
+    assert "detection stale" in action.reason
+
+
+def test_grasp_carries_what_docking_left_over():
+    item = runner()
+    item.start(0.0)
+    item.on_navigation_result(True, 1.0)
+    t = 1.0
+    action = None
+    while item.state is MissionState.DOCKING:
+        t += 0.1
+        action = item.update(t, fix(mid_x=0.01))
+    assert action.kind is ActionKind.GRASP
+    assert action.residual == pytest.approx((0.01, 0.0, 0.0))
 
 
 @pytest.mark.parametrize(
@@ -142,3 +168,135 @@ def test_reset_allows_another_run():
     assert item.state is MissionState.ABORTED
     assert item.start(2.0).kind is ActionKind.NAVIGATE
     assert item.state is MissionState.NAVIGATING
+
+
+# --- docking on the chair's latched front edge -------------------------------
+
+import math  # noqa: E402
+
+from omx_navigation.chair_front import (  # noqa: E402
+    ChairFrontPolicy,
+    OdomPose,
+    StoppingModel,
+    measure_front,
+)
+from omx_navigation.mission_runner import ChairDockPolicy  # noqa: E402
+
+from test_chair_front import scene  # noqa: E402
+
+
+def stopping(**overrides):
+    values = {"latency": 0.3, "overshoot": 0.005, "min_clearance": 0.01}
+    values.update(overrides)
+    return StoppingModel(**values)
+
+
+def chair_runner(gap=0.06, target="chair", **overrides):
+    policy = ChairDockPolicy(
+        stopping=stopping(**overrides), standoff_gap=gap, target=target,
+        front=ChairFrontPolicy(min_frames=3),
+    )
+    return MissionRunner(mission_from_dict(SCENARIO), chair_policy=policy)
+
+
+def at_chair(item, edge=1.0):
+    """Navigate, then latch with the chair edge `edge` ahead of a still robot."""
+    item.start(0.0)
+    action = item.on_navigation_result(True, 1.0)
+    assert item.state is MissionState.LATCHING
+    pose = OdomPose(0.0, 0.0, 0.0)
+    t = 1.0
+    while item.state is MissionState.LATCHING:
+        t += 0.1
+        action = item.update(t, chair=measure_front(scene(distance=edge)), pose=pose)
+        assert (action.vx, action.vy) == (0.0, 0.0)
+    return action, t
+
+
+def test_a_standoff_the_stop_cannot_honour_is_refused_at_construction():
+    """With 0.3 s of latency the 2026-10-26 band (0.035 m) does not fit."""
+    with pytest.raises(ValueError, match="standoff_gap"):
+        chair_runner(gap=0.035)
+
+
+def test_docking_waits_for_a_latched_edge_before_moving():
+    item = chair_runner()
+    action, _ = at_chair(item)
+    assert action.reason == "chair front latched"
+    assert item.state is MissionState.DOCKING
+    assert item.latched_front.x == pytest.approx(1.0, abs=0.01)
+
+
+def test_an_edge_that_never_latches_ends_the_run():
+    item = chair_runner()
+    item.start(0.0)
+    item.on_navigation_result(True, 1.0)
+    pose = OdomPose(0.0, 0.0, 0.0)
+    action = item.update(2.0, chair=None, pose=pose)
+    assert action.kind is ActionKind.DRIVE
+    action = item.update(7.0, chair=None, pose=pose)
+    assert action.kind is ActionKind.ABORT
+    assert action.reason == "chair front not latched"
+
+
+def drive(item, t, pose, cycles=400, dt=0.1, slide=0.0):
+    """Integrate the commanded velocity; `slide` adds a stop that runs long."""
+    closest = math.inf
+    action = None
+    for _ in range(cycles):
+        t += dt
+        action = item.update(t, pose=pose)
+        if action.kind is not ActionKind.DRIVE:
+            break
+        x = pose.x + action.vx * dt + (slide if action.vx > 0 else 0.0)
+        pose = OdomPose(x, pose.y + action.vy * dt, pose.yaw)
+        front = item.latched_front
+        closest = min(closest, front.nose_clearance(pose, 0.32, 0.15))
+    return action, pose, closest
+
+
+def test_the_chair_dock_stops_at_the_standoff_and_hands_over_the_residual():
+    item = chair_runner(gap=0.06)
+    _, t = at_chair(item, edge=1.0)
+    action, pose, closest = drive(item, t, OdomPose(0.0, 0.0, 0.0))
+    assert action.kind is ActionKind.GRASP
+    # Nose 0.06 from an edge 1.0 ahead: body_nav ends near 0.62.
+    assert pose.x == pytest.approx(0.62, abs=0.02)
+    assert closest >= 0.01
+    assert action.residual is not None
+    assert math.hypot(action.residual[0], action.residual[1]) <= 0.02
+
+
+def test_a_robot_that_overshoots_is_stopped_by_the_envelope_not_the_chair():
+    """Every forward step slides 5 mm further than commanded."""
+    item = chair_runner(gap=0.06)
+    _, t = at_chair(item, edge=1.0)
+    action, pose, closest = drive(item, t, OdomPose(0.0, 0.0, 0.0), slide=0.005)
+    assert closest >= 0.0
+
+
+def test_crossing_min_clearance_aborts():
+    item = chair_runner(gap=0.06)
+    _, t = at_chair(item, edge=1.0)
+    action = item.update(t + 0.1, pose=OdomPose(0.675, 0.0, 0.0))
+    assert action.kind is ActionKind.ABORT
+    assert action.reason == "chair clearance breached"
+
+
+def test_docking_without_a_pose_aborts():
+    item = chair_runner()
+    _, t = at_chair(item)
+    action = item.update(t + 0.1)
+    assert action.kind is ActionKind.ABORT
+    assert action.reason == "odometry pose missing"
+
+
+def test_tape_target_is_still_bounded_by_the_latched_edge():
+    """Markers placed wrong would drive into the chair; the edge stops it."""
+    item = chair_runner(gap=0.06, target="tape")
+    _, t = at_chair(item, edge=1.0)
+    # Nose 0.03 from the edge, and the markers claim another 0.30 m to go.
+    action = item.update(t + 0.1, fix(mid_x=0.30), pose=OdomPose(0.65, 0.0, 0.0))
+    assert action.kind is ActionKind.DRIVE
+    assert action.reason == "limited by stopping distance"
+    assert action.vx < 0.08

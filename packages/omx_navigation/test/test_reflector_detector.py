@@ -110,3 +110,27 @@ def test_policy_rejects_impossible_values():
 
 def _gap(first, second):
     return (first - second + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def test_a_stray_point_between_strip_points_does_not_split_the_strip():
+    """Clusters join by distance, not by order of bearing."""
+    cloud = dock_cloud()
+    # A lone bright return further out, at a bearing inside one strip.
+    cloud.append((1.60, 0.15 * 1.60 / 0.82, 0.10, 240.0))
+    found = detect_dock(cloud)
+    assert found is not None
+    assert found.separation == pytest.approx(0.30, abs=0.01)
+
+
+def test_bearing_window_keeps_bright_things_outside_it_out_of_the_pair():
+    policy = ReflectorPolicy(bearing_min=0.0, bearing_max=math.radians(45.0))
+    behind = strip(-1.0, 0.0)
+    assert detect_dock(dock_cloud() + behind) is None
+    assert detect_dock(dock_cloud() + behind, policy) is not None
+
+
+def test_bearing_window_must_be_ordered():
+    with pytest.raises(ValueError):
+        ReflectorPolicy(bearing_min=1.0, bearing_max=0.5)
+    with pytest.raises(ValueError):
+        ReflectorPolicy(bearing_max=4.0)

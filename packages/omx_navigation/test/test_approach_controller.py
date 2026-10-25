@@ -123,9 +123,26 @@ def test_safety_inputs_abort_with_zero_velocity(kwargs, reason):
     assert (command.vx, command.vy) == (0.0, 0.0)
 
 
+def test_a_dropped_scan_holds_still_instead_of_aborting():
+    """One scan without a clean pair is a pause; the robot does not coast."""
+    item = started()
+    command = item.update(0.1, Detection(0.1, 0.60, 0.0))
+    assert command.vx > 0.0
+    command = item.update(0.2, None)
+    assert command.state is ApproachState.APPROACHING
+    assert command.reason == "waiting for detection"
+    assert (command.vx, command.vy) == (0.0, 0.0)
+    assert item.update(0.3, Detection(0.3, 0.60, 0.0)).vx > 0.0
+
+
 def test_missing_and_stale_detections_abort():
     item = started()
-    assert item.update(0.1, None).reason == "no detection"
+    timeout = ApproachPolicy().detection_timeout
+    assert item.update(0.1, None).reason == "waiting for detection"
+    assert item.update(timeout + 0.01, None).reason == "no detection"
+    item = started()
+    item.update(0.1, Detection(0.1, 0.60, 0.0))
+    assert item.update(0.1 + timeout + 0.01, None).reason == "no detection"
     item = started()
     stale = ApproachPolicy().detection_timeout + 0.01
     assert item.update(stale, Detection(0.0, 0.60, 0.0)).reason == "detection stale"

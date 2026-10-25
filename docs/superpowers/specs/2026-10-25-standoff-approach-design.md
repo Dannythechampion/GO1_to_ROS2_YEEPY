@@ -406,3 +406,90 @@ IDLE ─ start ─> NAVIGATING ─ Nav2 성공 ─> DOCKING ─ 수렴 ─> GRAS
 - 마커 간격 `strip_separation`은 복도 폭(기본 2.00 m, 허용 ±0.30) — 실측 필요.
 - ROS 노드 배선(미션 로드, Nav2 액션, `/cmd_vel_nav` 발행, 팔 신호).
 - 로봇에서 검증된 것은 **아무것도 없다.**
+
+## 10. 의자 앞선 래치와 정지거리 (2026-10-26)
+
+벽 마커는 **위치를 재는 문제**를 풀지만 **부딪히지 않는 문제**는 풀지 않는다.
+팔이 코끝보다 0.035 m 앞까지만 닿는다는 것은 조립에서 나온 값이라, 테이프를
+어디에 붙이든 그대로다(5.4b). 남는 질문은 "이 여유 안에서 Go1이 멈추는가"다.
+
+### 10.1 순서
+
+```
+NAVIGATING (Nav2 + final_alignment) ─> LATCHING ─> DOCKING ─> GRASPING
+```
+
+- **NAVIGATING**: `agent/final-alignment`를 병합했다. Nav2는 0.35 m에서 끊고
+  `FinalAligner`가 회전 → 비회전 이동 → 스캔 확인으로 지도 목표에 맞춘다.
+  지도 기준이므로 cm 단위는 아니다.
+- **LATCHING**: 정지한 채 의자 앞선을 여러 스캔으로 재서(`measure_front`)
+  FAST-LIO 오도메트리(`camera_init`)에 고정한다(`FrontLatch`). 각 스캔은 그
+  스캔의 자세로 odom에 옮긴 뒤 평균하므로 다리 위 몸체 흔들림이 섞이지 않는다.
+  법선 방향 흔들림이 `max_spread`(1 cm)를 넘으면 래치하지 않는다.
+- **DOCKING**: 목표는 `target`으로 고른다.
+  - `"chair"`: 래치한 앞선에서 `nose_x + standoff_gap` 뒤의 점.
+  - `"tape"`: 벽 마커 중점(5.4c). 마커가 잘못 붙어 있어도 아래 한계가 막는다.
+  - 어느 쪽이든 **모든 명령의 의자 방향 성분을 정지거리로 자른다**.
+- **GRASPING**: `Action.residual`에 남은 (x, y, yaw) 오차를 실어 팔에 넘긴다.
+  베이스는 이 값을 쫓지 않는다.
+
+### 10.2 왜 가까이서 재지 않는가
+
+MID-360 시야 하단은 −7°라서 거리 d에서 LiDAR 아래 0.12·d까지만 보인다. 정지
+위치(좌석 앞끝까지 약 0.33 m)에서는 0.04 m 아래까지이고, 10-26 녹화에서 의자
+윗면은 약 −0.04 m였다. 같은 방향은 팔과 바구니가 가린다. **가장 정밀해야 할
+순간에 앞선이 시야 경계에 걸린다.** 1 m 거리에서는 0.12 m 아래까지 보인다.
+의자는 움직이지 않으므로 거기서 재서 고정하고, 이후 남은 거리는 래치한 앞선과
+FAST-LIO 자기 위치로 계산한다. FAST-LIO는 1 m 이내 이동에서 mm 단위로 움직였고,
+지도 위치는 10-25에 수십 cm를 헤맸다.
+
+### 10.3 정지거리 모델
+
+`StoppingModel(latency, overshoot, min_clearance)` — 정지 명령 후 `latency`초
+동안 속도를 유지하고 `overshoot`만큼 더 미끄러진다고 본다. 의자 방향 속도는
+
+```
+v_max = (clearance − min_clearance − overshoot) / latency
+```
+
+로 제한한다. 옆으로 미끄러지기와 후진은 자르지 않는다. 잘린 명령이 드라이버
+deadband(0.025 m/s) 아래면 드라이버가 0으로 만들어 **짧게 서는 쪽으로** 실패한다.
+
+**세 값 모두 기본값이 없다.** 측정 전에 추정치로 의자 옆을 움직이는 것은 없는
+것보다 나쁘다. `MissionRunner`는 생성 시
+
+```
+standoff_gap − approach_tolerance ≥ min_clearance + latency·linear_deadband + overshoot
+```
+
+을 확인하고 어기면 거부한다. 예: latency 0.3 s, overshoot 5 mm, min_clearance
+1 cm이면 standoff_gap ≥ 0.0425 m이다. 이는 지금 조립의 0.035 m 여유보다 크다.
+**정지 시험 결과가 이 정도면 소프트웨어로는 해결되지 않고 팔을 앞으로 옮겨야
+한다**(5.4b의 약 6.5 cm).
+
+### 10.4 테이프 검출 보강
+
+- 군집을 방위각 순서 연결에서 **평면 거리 단일 연결**로 바꿨다. 다른 거리의
+  밝은 점 하나가 끼면 띠 하나가 둘로 쪼개지던 문제.
+- `bearing_min/max` 창. 복도 마커는 |방위각| 30–150°만 본다. 앞(팔, 의자)과
+  뒤의 반사체가 세 번째 군집이 되어 매 스캔을 거부하던 문제.
+- `taught_policy(policy, fix)`: 올바른 자리에서 읽은 마커 값을 목표로 쓴다.
+  테이프 엇갈림(2 m에 5 cm면 1.4°)과 위치 오차를 함께 흡수한다.
+- `ApproachController`: 검출이 한 스캔 빠지면 정지해서 기다리고,
+  `detection_timeout` 동안 새 검출이 없을 때만 중단한다. 감지 시각은 스캔
+  시각(`fix_stamp`)으로 판정한다.
+- `forward_clearance`: 코끝(0.32 m) 안쪽 점은 로봇 자신의 팔과 바구니이므로
+  제외한다. 가까이서는 좌석이 시야 밖으로 빠질 수 있어 래치의 보조 확인일 뿐이다.
+
+### 10.5 먼저 해야 할 측정
+
+1. **정지 시험**: 의자 없이 벽 앞에서 0.025 / 0.05 / 0.08 m/s → 0. 벽까지
+   거리를 LiDAR로 기록해 `latency`, `overshoot` 분포를 얻는다.
+2. **앞선 측정 편향**: 1 m에서 `measure_front` 값과 줄자 값의 차 → `range_bias`.
+   좌석 앞끝과 다리가 들어오는 높이로 `band_lo/hi`를 정한다.
+3. **FAST-LIO 복도 방향 누적 오차**: 1 m 직진 시 추정 이동량과 실제 차.
+4. 테이프를 쓰면 반사값과 거리별 점 개수로 `reflectivity_threshold`,
+   `min_points_per_strip`을 정한다.
+
+로봇에서 검증된 것은 **아직 아무것도 없다.** ROS 노드 배선(점군 → 검출,
+TF → `OdomPose`, `/cmd_vel_align` 또는 `/cmd_vel_nav` 발행, 팔 신호)도 남아 있다.

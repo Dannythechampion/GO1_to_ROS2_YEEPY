@@ -119,6 +119,8 @@ class ApproachController:
         self._started_at: float | None = None
         self._settled = 0
         self._desired: tuple[float, float] = (0.0, 0.0)
+        self._last_seen: float | None = None
+        self._last_error: tuple[float, float] | None = None
 
     @property
     def state(self) -> ApproachState:
@@ -135,6 +137,13 @@ class ApproachController:
         self._started_at = now
         self._settled = 0
         self._desired = (float(desired_x), float(desired_y))
+        self._last_seen = now
+        self._last_error = None
+
+    @property
+    def last_error(self) -> tuple[float, float] | None:
+        """Target minus desired, in body_nav, from the last fresh detection."""
+        return self._last_error
 
     def update(
         self,
@@ -167,6 +176,13 @@ class ApproachController:
         if self._started_at is not None and now - self._started_at > policy.approach_timeout:
             return self._abort("approach timeout")
         if detection is None:
+            # One scan without a clean pair is a pause, not a failure: stand
+            # still and wait, and give up only once nothing fresh has arrived
+            # for detection_timeout. Driving on the old error instead would
+            # carry the robot on blind.
+            if self._last_seen is not None and now - self._last_seen <= policy.detection_timeout:
+                self._settled = 0
+                return ApproachCommand(0.0, 0.0, ApproachState.APPROACHING, "waiting for detection")
             return self._abort("no detection")
         if not all(_is_finite_number(value) for value in (detection.stamp, detection.x, detection.y)):
             raise ValueError("detection values must be finite numbers")
@@ -177,8 +193,10 @@ class ApproachController:
             if math.hypot(detection.x, detection.y) < policy.keep_out_distance:
                 return self._abort("keep-out breached")
 
+        self._last_seen = detection.stamp
         error_x = detection.x - self._desired[0]
         error_y = detection.y - self._desired[1]
+        self._last_error = (error_x, error_y)
         error = math.hypot(error_x, error_y)
 
         if error <= policy.approach_tolerance:

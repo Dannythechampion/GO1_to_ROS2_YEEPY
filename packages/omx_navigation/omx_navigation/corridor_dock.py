@@ -34,7 +34,7 @@ remove and not the base's.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from omx_navigation.reflector_detector import ReflectorPolicy, find_marker_pair
 
@@ -54,6 +54,12 @@ def _corridor_markers() -> ReflectorPolicy:
         # Wall to wall rather than two strips on one surface.
         strip_separation=2.00,
         separation_tolerance=0.30,
+        # Only the walls. Ahead is the arm, the basket and the chair; behind
+        # is the rest of the corridor. Anything bright there would otherwise
+        # be a third cluster and veto the pair on every scan. 30 deg is where
+        # a marker on a wall 1 m away leaves the 2 m range anyway.
+        bearing_min=math.radians(30.0),
+        bearing_max=math.radians(150.0),
     )
 
 
@@ -68,9 +74,12 @@ class CorridorDockPolicy:
     # Largest yaw the arm is expected to absorb. Beyond it the detection is
     # reported but flagged, because the base will not turn to fix it.
     max_absorbable_yaw: float = math.radians(10.0)
+    # Yaw the pair reads when the robot is parked right. Tape never goes up
+    # exactly opposite; 5 cm of stagger across a 2 m corridor is 1.4 deg.
+    yaw_bias: float = 0.0
 
     def __post_init__(self) -> None:
-        for name in ("stop_offset_x", "stop_offset_y"):
+        for name in ("stop_offset_x", "stop_offset_y", "yaw_bias"):
             if not _is_finite_number(getattr(self, name)):
                 raise ValueError(f"{name} must be a finite number")
         if not _is_finite_number(self.max_absorbable_yaw) or self.max_absorbable_yaw <= 0.0:
@@ -88,7 +97,20 @@ class CorridorFix:
     points: int
 
     def yaw_within(self, policy: CorridorDockPolicy) -> bool:
-        return abs(self.yaw_error) <= policy.max_absorbable_yaw
+        return abs(_wrap(self.yaw_error - policy.yaw_bias)) <= policy.max_absorbable_yaw
+
+
+def taught_policy(policy: CorridorDockPolicy, fix: CorridorFix) -> CorridorDockPolicy:
+    """The policy that drives back to where `fix` was read.
+
+    Park the robot where the arm reaches the object, read the markers there,
+    and that reading becomes the target. Assuming the midpoint sits exactly
+    at (0, 0) would ask the tape to be placed to a centimetre; teaching it
+    absorbs whatever stagger and offset the tape went up with.
+    """
+    return replace(
+        policy, stop_offset_x=fix.mid_x, stop_offset_y=fix.mid_y, yaw_bias=fix.yaw_error
+    )
 
 
 def corridor_fix(points, policy: CorridorDockPolicy | None = None) -> CorridorFix | None:
@@ -116,7 +138,7 @@ def corridor_fix(points, policy: CorridorDockPolicy | None = None) -> CorridorFi
 
 
 def forward_clearance(points, half_width: float = 0.20, band_lo: float = -0.15,
-                      band_hi: float = 0.25) -> float:
+                      band_hi: float = 0.25, ignore_within: float = 0.32) -> float:
     """Distance to the nearest return in a straight channel ahead of the robot.
 
     The keep-out that guards the backrest dock cannot work here: it measures
@@ -126,16 +148,25 @@ def forward_clearance(points, half_width: float = 0.20, band_lo: float = -0.15,
     the robot's nose is 0.32 m ahead of the LiDAR, so the caller aborts when
     this falls to the nose plus its margin.
 
-    Returns infinity when the channel is clear, which is a safe reading: it
-    cannot be mistaken for an obstacle.
+    Returns infinity when the channel is clear. That is not proof of a clear
+    path close in: at the 0.33 m the seat edge sits when parked, the -7 deg
+    bottom of the field sees only 0.04 m under the sensor, so the seat can
+    drop out of view. The latched front in `chair_front` is what guards that
+    stretch; this is a live cross-check on top of it.
+
+    Returns within `ignore_within` -- the nose, 0.32 m ahead of the LiDAR --
+    are the robot's own arm and basket and are skipped; counting them would
+    read as an obstacle on every scan.
     """
     if not _is_finite_number(half_width) or half_width <= 0.0:
         raise ValueError("half_width must be finite and positive")
     if band_lo >= band_hi:
         raise ValueError("band_lo must be below band_hi")
+    if not _is_finite_number(ignore_within) or ignore_within < 0.0:
+        raise ValueError("ignore_within must be finite and non-negative")
     nearest = math.inf
     for x, y, z, _reflectivity in points:
-        if x <= 0.0 or abs(y) > half_width:
+        if x <= ignore_within or abs(y) > half_width:
             continue
         if not (band_lo <= z <= band_hi):
             continue

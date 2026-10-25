@@ -127,3 +127,28 @@ def test_policy_rejects_impossible_values():
         forward_clearance([], half_width=0.0)
     with pytest.raises(ValueError):
         forward_clearance([], band_lo=0.5, band_hi=0.1)
+
+
+def test_bright_things_ahead_and_behind_do_not_veto_the_wall_pair():
+    """The arm, the chair and the corridor ends sit outside the side window."""
+    ahead = [(0.6, (i / 29 - 0.5) * 0.2, 0.05, 240.0) for i in range(30)]
+    behind = [(-1.5, (i / 29 - 0.5) * 0.2, 0.05, 240.0) for i in range(30)]
+    assert corridor_fix(corridor() + ahead + behind) is not None
+
+
+def test_taught_policy_drives_back_to_where_the_fix_was_read():
+    from omx_navigation.corridor_dock import taught_policy
+
+    taught = corridor_fix(corridor(ahead=0.04, lateral=0.03, yaw=math.radians(2)))
+    policy = taught_policy(CorridorDockPolicy(), taught)
+    assert policy.stop_offset_x == pytest.approx(taught.mid_x)
+    assert policy.stop_offset_y == pytest.approx(taught.mid_y)
+    assert policy.yaw_bias == pytest.approx(taught.yaw_error)
+    assert taught.yaw_within(policy)
+
+
+def test_forward_clearance_skips_the_robots_own_arm():
+    cloud = [(0.20, 0.0, 0.0, 90.0), (0.30, 0.05, 0.0, 90.0)]   # arm and basket
+    assert forward_clearance(cloud) == math.inf
+    assert forward_clearance(cloud + [(0.42, 0.0, 0.0, 30.0)]) == pytest.approx(0.42)
+    assert forward_clearance(cloud, ignore_within=0.0) == pytest.approx(0.20)

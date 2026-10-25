@@ -40,6 +40,11 @@ class ReflectorPolicy:
     # before the pair is rejected as something else that happens to be shiny.
     strip_separation: float = 0.30
     separation_tolerance: float = 0.05
+    # Window on |bearing|, in radians. Bright returns outside it are never
+    # considered, so a shiny thing behind or beside the dock cannot become a
+    # third cluster and veto the pair. The default keeps every direction.
+    bearing_min: float = 0.0
+    bearing_max: float = math.pi
 
     def __post_init__(self) -> None:
         for name in ("reflectivity_threshold", "range_min", "range_max",
@@ -51,6 +56,9 @@ class ReflectorPolicy:
             raise ValueError("band_lo must be below band_hi")
         if self.range_min >= self.range_max:
             raise ValueError("range_min must be below range_max")
+        if not (_is_finite_number(self.bearing_min) and _is_finite_number(self.bearing_max)
+                and 0.0 <= self.bearing_min < self.bearing_max <= math.pi):
+            raise ValueError("bearing window must satisfy 0 <= bearing_min < bearing_max <= pi")
         if not isinstance(self.min_points_per_strip, int) or isinstance(self.min_points_per_strip, bool) or self.min_points_per_strip < 3:
             raise ValueError("min_points_per_strip must be an integer of at least 3")
 
@@ -88,26 +96,22 @@ def find_marker_pair(points, policy: ReflectorPolicy | None = None):
         distance = math.hypot(x, y)
         if not (policy.range_min <= distance <= policy.range_max):
             continue
-        bright.append((math.atan2(y, x), x, y))
+        bearing = math.atan2(y, x)
+        if not (policy.bearing_min <= abs(bearing) <= policy.bearing_max):
+            continue
+        bright.append((bearing, x, y))
     if len(bright) < 2 * policy.min_points_per_strip:
         return None
 
-    bright.sort()
-    clusters = []
-    current = [bright[0]]
-    for previous, item in zip(bright, bright[1:]):
-        if math.hypot(item[1] - previous[1], item[2] - previous[2]) > policy.cluster_gap:
-            clusters.append(current)
-            current = []
-        current.append(item)
-    clusters.append(current)
-
+    clusters = _cluster(bright, policy.cluster_gap)
     strips = [c for c in clusters if len(c) >= policy.min_points_per_strip]
     if len(strips) != 2:
         # One marker means the other is occluded; three or more means something
         # else in the scene is also returning at tape intensity.
         return None
 
+    # Order by bearing, as callers expect.
+    strips.sort(key=lambda c: math.atan2(_centroid(c)[1], _centroid(c)[0]))
     first = _centroid(strips[0])
     second = _centroid(strips[1])
     separation = math.hypot(second[0] - first[0], second[1] - first[1])
@@ -134,6 +138,39 @@ def detect_dock(points, policy: ReflectorPolicy | None = None) -> DockDetection 
     if math.cos(normal) * mid_x + math.sin(normal) * mid_y > 0.0:
         normal += math.pi
     return DockDetection(mid_x, mid_y, _wrap(normal), separation, count)
+
+
+def _cluster(items, gap):
+    """Single-linkage clusters: points within `gap` of each other join up.
+
+    Distance in the plane, not order of bearing. Chaining neighbours in
+    bearing order split a strip whenever one stray bright point at another
+    range fell between two of its points, and the halves then read as two
+    strips or none.
+    """
+    parent = list(range(len(items)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    grid = {}
+    for index, (_bearing, x, y) in enumerate(items):
+        grid.setdefault((math.floor(x / gap), math.floor(y / gap)), []).append(index)
+    for (cx, cy), members in grid.items():
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for j in grid.get((cx + dx, cy + dy), ()):
+                    for i in members:
+                        if i < j and math.hypot(items[i][1] - items[j][1],
+                                                items[i][2] - items[j][2]) <= gap:
+                            parent[find(i)] = find(j)
+    groups = {}
+    for index in range(len(items)):
+        groups.setdefault(find(index), []).append(items[index])
+    return list(groups.values())
 
 
 def _centroid(cluster):
