@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from omx_navigation.cmd_vel_gate_core import VelocityCommand, VelocityGate
+from omx_navigation.cmd_vel_gate_core import PrioritySource, VelocityCommand, VelocityGate
 
 
 def ready_gate(now: float = 1.0) -> VelocityGate:
@@ -144,3 +144,27 @@ def test_gate_rejects_non_numeric_or_nonfinite_timeouts(value):
         VelocityGate(ready_timeout=value)
     with pytest.raises(ValueError):
         VelocityGate(command_timeout=value)
+
+
+def test_priority_source_silences_the_regular_source_only_while_fresh():
+    priority = PrioritySource(hold=0.30)
+    assert priority.allows_regular(1.0) is True
+
+    priority.priority_command(1.0)
+
+    assert priority.allows_regular(1.29) is False
+    assert priority.allows_regular(1.30) is True
+
+
+def test_priority_source_forgets_freshness_when_time_moves_backwards():
+    priority = PrioritySource(hold=0.30)
+    priority.priority_command(5.0)
+
+    assert priority.allows_regular(4.0) is True
+    assert priority.allows_regular(4.1) is True
+
+
+@pytest.mark.parametrize("hold", (0.0, -1.0, math.inf, math.nan, True))
+def test_priority_source_rejects_invalid_hold(hold):
+    with pytest.raises(ValueError, match="hold"):
+        PrioritySource(hold=hold)
