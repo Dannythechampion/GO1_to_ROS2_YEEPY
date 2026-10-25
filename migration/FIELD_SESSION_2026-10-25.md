@@ -111,12 +111,32 @@ inside and outside, and the controller keeps re-approaching.
 
 `drift_corrections = 0` is **correct behaviour, not a bug**.
 `DriftPolicy.gap_threshold` is 0.08 and `consistency_gap` never exceeded 0.041,
-so no correction was ever due. The open problem is that the quantity gating a
-correction (`consistency_gap`) does not track the quantity that decides arrival
-(offset radius against `xy_goal_tolerance`): at the 0.340 m excursion the gap
-was 0.0166. A radius-based trigger would have fired at all four excursions.
-That change is **not** in this commit — it needs a threshold justified by
-measurement, and a drive to validate it.
+so no correction was ever due.
+
+The obvious reply is to trigger a correction on the offset radius instead, so
+that the 0.340 m excursion counts even though its gap was 0.0166. **That was
+tried and the data rejects it.** Against the 2026-09-18 replay fixture, in the
+window the regression tests treat as good tracking (t < 230 s), the offset
+radius reaches p75 0.202, p90 0.309, max 0.350 m — and in the drifted window
+after it, p50 0.257, p90 0.329, max 0.350 m. The two distributions are nearly
+identical, so the radius carries almost no information about whether the
+tracked pose is wrong. The score gap does separate them cleanly: good p95
+0.042 against drifted p50 0.169, which is what `gap_threshold` 0.08 was fitted
+to. Any radius threshold high enough to stay quiet during good tracking
+(>= 0.35) would never have fired on 2026-10-25 either, whose maximum was
+0.340 m.
+
+The reason is already in `drift_monitor`'s own notes: along a corridor the
+along-axis translation is not observable, so a large implied offset is expected
+rather than evidence of drift (it records a median of 0.22 m while parked).
+Correcting on it would inject noise into the one direction the scan cannot see.
+
+So the conclusion is the opposite of a tighter correction: **0.20 m
+`xy_goal_tolerance` sits below the observability floor of this sensor and
+environment**, and no amount of correction can reach a precision the geometry
+does not support. Raising the tolerance above the measured offset spread is
+the change the data supports. It is **not** in this commit because it trades
+stopping precision and should be decided deliberately.
 
 Yaw was never the failing condition: the localization yaw disagreement peaked
 at 2.0 deg against an 8.6 deg tolerance.

@@ -51,6 +51,25 @@ def test_posegraph_localization_enlarges_the_matching_stack():
     assert params["stack_size_to_use"] >= 40000000
 
 
+def test_posegraph_progress_checker_counts_rotation_as_progress():
+    """An in-place turn at the goal must not read as a stalled robot.
+
+    SimpleGoalChecker runs stateful, so once the position tolerance is met it
+    latches and only yaw is checked -- the robot then turns on the spot and
+    translates nothing. SimpleProgressChecker measures translation alone, so
+    that turn looks like no progress and the goal aborts once
+    movement_time_allowance runs out; three goals ended that way with
+    "Failed to make progress" on 2026-09-18. PoseProgressChecker accepts
+    rotation as progress.
+    """
+    controller = load_nav2()["controller_server"]["ros__parameters"]
+    progress = controller["progress_checker"]
+    assert progress["plugin"] == "nav2_controller::PoseProgressChecker"
+    assert progress["required_movement_angle"] > 0.0
+    goal = controller["general_goal_checker"]
+    assert goal["stateful"] is True
+
+
 def test_posegraph_nav2_has_no_amcl_and_uses_safe_footprint():
     config = load_nav2()
     assert "amcl" not in config
