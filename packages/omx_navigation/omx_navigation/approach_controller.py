@@ -51,16 +51,28 @@ class ApproachCommand:
 @dataclass(frozen=True)
 class ApproachPolicy:
     # What this stage promises to deliver. `approach_planner` budgets the
-    # standoff distance against this number, so loosening it costs reach.
-    approach_tolerance: float = 0.05
+    # standoff distance against this number, so loosening it costs reach --
+    # and against the chair it costs collision clearance too. With the arm
+    # fixed and the object on the seat's front edge the whole feasible band is
+    # 0.035 m, so 0.05 leaves nothing and 0.02 leaves 0.045 m.
+    approach_tolerance: float = 0.02
     # Slower than navigation: this is a blind-ish final move next to an object.
     v_approach: float = 0.08
-    kp: float = 0.6
+    # 1.5 rather than 0.6 so the deadband floor (linear_deadband / kp) stays
+    # under the 0.02 tolerance above; at 0.6 it is 0.042 and the policy would
+    # refuse to build.
+    kp: float = 1.5
     # Must match go1_driver's linear_deadband. Commands under it become exactly
     # zero at the driver, and with zero yaw the driver switches to STAND.
     linear_deadband: float = 0.025
     detection_timeout: float = 0.5
     approach_timeout: float = 30.0
+    # Hard floor on how close the detected dock may come, independent of the
+    # control law -- the net under the loop rather than part of it. There is no
+    # default because the number belongs to the dock, not to this module: the
+    # node wires it from `DockGeometry.minimum_tape_distance()`, which for the
+    # 2026-10-26 chair is 0.82 m (nose at 0.32 plus a 0.50 m seat).
+    keep_out_distance: float | None = None
     # Consecutive in-tolerance updates before declaring arrival. One sample is
     # what let the goal checker flip in and out of tolerance on 2026-10-25.
     settle_checks: int = 3
@@ -75,6 +87,10 @@ class ApproachPolicy:
                 raise ValueError(f"{name} must be finite and positive")
         if not isinstance(self.settle_checks, int) or isinstance(self.settle_checks, bool) or self.settle_checks < 1:
             raise ValueError("settle_checks must be a positive integer")
+        if self.keep_out_distance is not None and (
+            not _is_finite_number(self.keep_out_distance) or self.keep_out_distance <= 0.0
+        ):
+            raise ValueError("keep_out_distance must be finite and positive when set")
         # The controller slows as the error shrinks, so the command falls under
         # the driver's deadband once the error drops below linear_deadband/kp.
         # If that happens before the error reaches approach_tolerance, the
@@ -157,6 +173,9 @@ class ApproachController:
         age = now - detection.stamp
         if age < 0.0 or age > policy.detection_timeout:
             return self._abort("detection stale")
+        if policy.keep_out_distance is not None:
+            if math.hypot(detection.x, detection.y) < policy.keep_out_distance:
+                return self._abort("keep-out breached")
 
         error_x = detection.x - self._desired[0]
         error_y = detection.y - self._desired[1]

@@ -97,11 +97,17 @@ class StandoffPolicy:
     `approach_tolerance` is what the target-relative approach stage promises to
     deliver, not Nav2's `xy_goal_tolerance`. Nav2's job is only to get close
     enough that the target is in the detector's field of view.
+
+    It defaults to 0.02 because the chair leaves no room for more. With the arm
+    fixed where it is and the object on the seat's front edge, the collision
+    limit and the reach limit are only 0.035 m apart, and the stopping error is
+    spent against both: at 0.05 the band is negative and no distance works, at
+    0.02 it is 0.045 m wide. See `dock_standoff`.
     """
 
     arm_base_offset_x: float = 0.15
     arm_base_height: float = -0.19
-    approach_tolerance: float = 0.05
+    approach_tolerance: float = 0.02
     # Clearance between the tool and the target at the moment of the grasp.
     grasp_margin: float = 0.03
     arm: ArmReach = field(default_factory=ArmReach)
@@ -210,19 +216,24 @@ def dock_standoff(
         raise ValueError("object_from_backrest must be finite and non-negative")
     if object_from_backrest > geometry.seat_depth:
         raise ValueError("the object cannot sit further out than the seat is deep")
-    reach_limit = policy.standoff_distance(target_height)
-    tape_max = reach_limit + object_from_backrest
-    tape_min = geometry.minimum_tape_distance()
+    # The approach stage stops within `approach_tolerance` of what it aims at,
+    # and on the collision side that error is spent coming *closer*, so the
+    # nominal distance has to sit a tolerance further out than the bare limit.
+    # `standoff_distance` already budgets the same tolerance on the reach side.
+    tape_min = geometry.minimum_tape_distance() + policy.approach_tolerance
+    tape_max = policy.standoff_distance(target_height) + object_from_backrest
     if tape_min > tape_max:
         raise ValueError(
-            "collision and reach cannot both be satisfied: the tape must stay "
-            f"at least {tape_min:.3f} m away to clear the seat, but the arm "
-            f"only reaches it out to {tape_max:.3f} m. Move the arm forward by "
-            f"{tape_min - tape_max:.3f} m, or put the object that much nearer "
-            "the seat's front edge."
+            "collision and reach cannot both be satisfied: the tape must sit at "
+            f"least {tape_min:.3f} m away for the nose to clear the seat with "
+            f"{policy.approach_tolerance:.3f} m of stopping error, but the arm "
+            f"only reaches it out to {tape_max:.3f} m. Tighten "
+            f"approach_tolerance by {(tape_min - tape_max) / 2.0:.3f} m, move "
+            "the arm forward, or put the object nearer the seat's front edge."
         )
-    # Stand as close as collision allows: that leaves the most arm margin.
-    return tape_min
+    # Centre of the feasible band: the error is as likely to go one way as the
+    # other, and both ends of this band are hard limits.
+    return (tape_min + tape_max) / 2.0
 
 
 def standoff_pose(target_x: float, target_y: float, approach_yaw: float, distance: float):
