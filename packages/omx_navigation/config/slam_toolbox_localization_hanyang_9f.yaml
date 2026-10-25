@@ -3,6 +3,18 @@ slam_toolbox:
     use_sim_time: false
     solver_plugin: solver_plugins::CeresSolver
     ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    # Without this the node runs on the default 8 MB stack and segfaults while
+    # matching against a deserialized posegraph. On 2026-10-25 the localization
+    # node died with exit code -11 twice: once seconds after loading the map
+    # (session 092530Z) and once 410 s into the first armed drive (session
+    # 102846Z), both with healthy /scan input. slam_toolbox's own reference
+    # config sets the same value -- see
+    # /opt/ros/humble/share/slam_toolbox/config/mapper_params_localization.yaml
+    # ("program needs a larger stack size to serialize large maps"). Our mapping
+    # config carried it; this one did not, and RewrittenYaml only rewrites
+    # map_file_name, odom_frame, base_frame and scan_topic, so nothing supplied
+    # it at launch.
+    stack_size_to_use: 40000000
     mode: localization
     # RewrittenYaml replaces this installed-map default with posegraph:= at launch.
     map_file_name: /mnt/t500/go1_ros2_project/maps/hanyang_9f/20260728_204825/slam_toolbox/hanyang_9f
