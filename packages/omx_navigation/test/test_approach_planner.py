@@ -143,6 +143,33 @@ def test_floor_is_out_of_reach_from_the_current_mount():
         assert -sensor_height_above_floor < low
 
 
+LIDAR_ABOVE_ROBOT_TOP = 0.13
+
+
+def test_target_on_a_chair_is_reachable_up_to_a_quarter_metre_above_the_robot():
+    """The planned case: an object on a chair, a little above the standing Go1.
+
+    The LiDAR sits directly on the 13 cm riser on the Go1's top, so a target
+    `d` above that top is at `d - 0.13` in body_nav. The arm covers that from
+    the top of the robot up to roughly a quarter metre above it, and the
+    standoff shrinks as the target rises because the spherical envelope spends
+    its radius on height. Past that the arm cannot reach at any standoff, which
+    is a property of the mount, not a tuning choice.
+    """
+    mounted = StandoffPolicy()
+    low, high = mounted.reachable_height_range()
+    for above_top in (0.0, 0.05, 0.10, 0.20, 0.25):
+        height = above_top - LIDAR_ABOVE_ROBOT_TOP
+        assert low <= height <= high
+        assert mounted.standoff_distance(height) > 0.0
+    # Standoff shrinks monotonically as the target climbs.
+    assert mounted.standoff_distance(0.0 - LIDAR_ABOVE_ROBOT_TOP) > mounted.standoff_distance(
+        0.25 - LIDAR_ABOVE_ROBOT_TOP
+    )
+    # And the arm runs out before a third of a metre above the robot's top.
+    assert 0.30 - LIDAR_ABOVE_ROBOT_TOP > high
+
+
 def test_policy_rejects_impossible_values():
     with pytest.raises(ValueError):
         policy(approach_tolerance=-0.01)
