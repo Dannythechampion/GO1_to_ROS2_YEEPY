@@ -34,7 +34,16 @@ controller_server:
     # "Failed to make progress"; PoseProgressChecker accepts rotation as
     # progress, which is what the robot is actually doing there.
     progress_checker: {plugin: nav2_controller::PoseProgressChecker, required_movement_radius: 0.15, required_movement_angle: 0.15, movement_time_allowance: 20.0}
-    general_goal_checker: {plugin: nav2_controller::SimpleGoalChecker, stateful: true, xy_goal_tolerance: 0.20, yaw_goal_tolerance: 0.15}
+    # 0.20 sat below what this sensor and environment can observe. Across two
+    # armed sessions the refined-vs-tracked pose offset reached p90 0.309 m
+    # (2026-09-18, during tracking the regression fixture treats as good) and
+    # p90 0.200 m / max 0.340 m (2026-10-25), because along a corridor the
+    # along-axis translation is not observable. Asking to stop inside 0.20 m
+    # therefore flipped SimpleGoalChecker in and out of tolerance and the robot
+    # hunted around both goals. Raised to 0.30 as a first step; this is being
+    # walked up deliberately rather than set to the full p90, because the
+    # project needs the base placed well enough for the arm to reach.
+    general_goal_checker: {plugin: nav2_controller::SimpleGoalChecker, stateful: true, xy_goal_tolerance: 0.30, yaw_goal_tolerance: 0.15}
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: false
@@ -59,7 +68,11 @@ controller_server:
       linear_granularity: 0.05
       angular_granularity: 0.05
       transform_tolerance: 0.5
-      xy_goal_tolerance: 0.20
+      # Keep in step with general_goal_checker: RotateToGoal uses this radius to
+      # decide when to stop translating and start aligning heading, so leaving
+      # it at 0.20 would start the final turn inside a window the goal checker
+      # no longer requires.
+      xy_goal_tolerance: 0.30
       trans_stopped_velocity: 0.03
       short_circuit_trajectory_evaluation: true
       stateful: true

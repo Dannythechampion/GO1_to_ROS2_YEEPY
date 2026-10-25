@@ -70,6 +70,23 @@ def test_posegraph_progress_checker_counts_rotation_as_progress():
     assert goal["stateful"] is True
 
 
+def test_posegraph_arrival_tolerance_clears_the_observable_floor():
+    """The arrival window must be wider than the pose offset the scan allows.
+
+    Along a corridor the along-axis translation is not observable, so the
+    refined-vs-tracked offset spreads: p90 0.309 m over the 2026-09-18 window
+    the drift fixture treats as good tracking, and p90 0.200 m with a 0.340 m
+    maximum over the 2026-10-25 armed drive. At 0.20 m the goal checker flipped
+    in and out of tolerance and the robot hunted around both goals without
+    arriving. DWB's own copy steers when RotateToGoal starts the final turn and
+    has to agree with the checker.
+    """
+    controller = load_nav2()["controller_server"]["ros__parameters"]
+    goal = controller["general_goal_checker"]
+    assert goal["xy_goal_tolerance"] >= 0.30
+    assert controller["FollowPath"]["xy_goal_tolerance"] == goal["xy_goal_tolerance"]
+
+
 def test_posegraph_nav2_has_no_amcl_and_uses_safe_footprint():
     config = load_nav2()
     assert "amcl" not in config
