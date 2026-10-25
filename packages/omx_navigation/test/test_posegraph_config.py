@@ -83,7 +83,7 @@ def test_posegraph_arrival_tolerance_clears_the_observable_floor():
     """
     controller = load_nav2()["controller_server"]["ros__parameters"]
     goal = controller["general_goal_checker"]
-    assert goal["xy_goal_tolerance"] >= 0.30
+    assert goal["xy_goal_tolerance"] >= 0.35
     assert controller["FollowPath"]["xy_goal_tolerance"] == goal["xy_goal_tolerance"]
 
 
