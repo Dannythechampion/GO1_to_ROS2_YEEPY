@@ -158,6 +158,73 @@ class StandoffPolicy:
         return self.arm_base_offset_x + budget
 
 
+@dataclass(frozen=True)
+class DockGeometry:
+    """The chair and the robot's own extent, along `body_nav` x.
+
+    The reflective tape goes on the backrest, but the chair's nearest part is
+    the seat's front edge, `seat_depth` closer. The robot's nose runs ahead of
+    the LiDAR, so the base has to stop well before the tape.
+
+    Defaults are the 2026-10-26 setup: the robot's nose is 0.32 m ahead of the
+    LiDAR and the seat is 0.50 m deep.
+    """
+
+    robot_front_offset: float = 0.32
+    seat_depth: float = 0.50
+    clearance: float = 0.03
+
+    def __post_init__(self) -> None:
+        for name in ("robot_front_offset", "seat_depth", "clearance"):
+            value = getattr(self, name)
+            if not _is_finite_number(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative")
+
+    def minimum_tape_distance(self) -> float:
+        """Closest the backrest may come before the nose reaches the seat."""
+        return self.robot_front_offset + self.seat_depth + self.clearance
+
+
+def dock_standoff(
+    policy: StandoffPolicy,
+    geometry: DockGeometry,
+    target_height: float,
+    object_from_backrest: float,
+) -> float:
+    """Distance the approach stage should hold **to the tape**, not the object.
+
+    Two constraints meet here and they pull in opposite directions. Collision
+    pushes the base back: the tape must stay at least
+    `minimum_tape_distance()` away or the robot's nose hits the seat. Reach
+    pulls it forward: the object sits `object_from_backrest` nearer than the
+    tape and has to land inside `standoff_distance()`.
+
+    Raises when no distance satisfies both, which is a statement about the
+    build rather than about tuning: with the arm 0.15 m ahead of the LiDAR and
+    the nose at 0.32 m, the arm reaches only about 3.5 cm past the robot's own
+    front, so any real clearance makes the window empty. Moving the arm
+    forward is what buys room -- a centimetre of mount is a centimetre of
+    reach.
+    """
+    if not _is_finite_number(object_from_backrest) or object_from_backrest < 0.0:
+        raise ValueError("object_from_backrest must be finite and non-negative")
+    if object_from_backrest > geometry.seat_depth:
+        raise ValueError("the object cannot sit further out than the seat is deep")
+    reach_limit = policy.standoff_distance(target_height)
+    tape_max = reach_limit + object_from_backrest
+    tape_min = geometry.minimum_tape_distance()
+    if tape_min > tape_max:
+        raise ValueError(
+            "collision and reach cannot both be satisfied: the tape must stay "
+            f"at least {tape_min:.3f} m away to clear the seat, but the arm "
+            f"only reaches it out to {tape_max:.3f} m. Move the arm forward by "
+            f"{tape_min - tape_max:.3f} m, or put the object that much nearer "
+            "the seat's front edge."
+        )
+    # Stand as close as collision allows: that leaves the most arm margin.
+    return tape_min
+
+
 def standoff_pose(target_x: float, target_y: float, approach_yaw: float, distance: float):
     """Base pose at `distance` from the target, facing it along `approach_yaw`.
 

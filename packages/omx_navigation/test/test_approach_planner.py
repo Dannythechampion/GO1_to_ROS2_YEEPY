@@ -3,6 +3,8 @@ import math
 import pytest
 
 from omx_navigation.approach_planner import (
+    DockGeometry,
+    dock_standoff,
     ArmReach,
     StandoffPolicy,
     choose_approach_yaw,
@@ -168,6 +170,58 @@ def test_target_on_a_chair_is_reachable_up_to_a_quarter_metre_above_the_robot():
     )
     # And the arm runs out before a third of a metre above the robot's top.
     assert 0.30 - LIDAR_ABOVE_ROBOT_TOP > high
+
+
+def test_minimum_tape_distance_keeps_the_nose_off_the_seat():
+    geometry = DockGeometry(clearance=0.0)
+    assert geometry.minimum_tape_distance() == pytest.approx(0.82)
+    assert DockGeometry(clearance=0.05).minimum_tape_distance() == pytest.approx(0.87)
+
+
+def test_the_current_build_has_almost_no_room_between_reach_and_collision():
+    """Pinning the problem: the arm reaches 3.5 cm past the robot's own nose.
+
+    The arm base is 0.15 m ahead of the LiDAR and the nose is at 0.32 m, so
+    most of a 0.38 m arm is spent clearing the robot's own body. With the seat
+    0.50 m deep the tape has to stay 0.82 m out, which puts an object on the
+    seat's front edge at exactly 0.32 m -- reachable only with the nose flush
+    against the chair. Any real clearance empties the window.
+    """
+    mounted, geometry = StandoffPolicy(), DockGeometry(clearance=0.0)
+    height = mounted.shoulder_height()
+    assert mounted.standoff_distance(height) == pytest.approx(0.355, abs=0.001)
+    # Flush against the chair, object right at the seat edge: just barely works.
+    assert dock_standoff(mounted, geometry, height, 0.50) == pytest.approx(0.82)
+    # Five centimetres of clearance does not.
+    with pytest.raises(ValueError, match="collision and reach"):
+        dock_standoff(mounted, DockGeometry(clearance=0.05), height, 0.50)
+
+
+def test_an_object_set_back_on_the_seat_is_out_of_reach():
+    mounted, geometry = StandoffPolicy(), DockGeometry(clearance=0.0)
+    height = mounted.shoulder_height()
+    with pytest.raises(ValueError, match="collision and reach"):
+        dock_standoff(mounted, geometry, height, 0.45)
+
+
+def test_the_failure_says_how_far_the_arm_has_to_move():
+    mounted = StandoffPolicy()
+    with pytest.raises(ValueError, match=r"Move the arm forward by 0\.0"):
+        dock_standoff(mounted, DockGeometry(clearance=0.05), mounted.shoulder_height(), 0.50)
+
+
+def test_moving_the_arm_forward_opens_the_window():
+    """A centimetre of mount is a centimetre of reach."""
+    moved = StandoffPolicy(arm_base_offset_x=0.215)
+    height = moved.shoulder_height()
+    # Five centimetres of clearance and the object five back from the edge.
+    assert dock_standoff(moved, DockGeometry(clearance=0.05), height, 0.45) > 0.0
+
+
+def test_object_further_out_than_the_seat_is_rejected():
+    mounted = StandoffPolicy()
+    with pytest.raises(ValueError, match="seat is deep"):
+        dock_standoff(mounted, DockGeometry(), mounted.shoulder_height(), 0.80)
 
 
 def test_policy_rejects_impossible_values():
