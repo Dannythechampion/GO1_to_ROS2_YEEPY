@@ -73,13 +73,63 @@ def test_gate_topic_parameters_have_safe_defaults_and_allow_overrides(monkeypatc
     node = wrapper.CmdVelSafetyGate()
     assert {item.topic for item in node.publishers} == {"/cmd_vel"}
     assert {item.topic for item in node.subscriptions} == {
-        "/cmd_vel_nav", "/localization_supervisor/ready"
+        "/cmd_vel_nav", "/cmd_vel_align", "/localization_supervisor/ready"
     }
 
     GateNodeStub.overrides = {"input_topic": "/custom_in", "output_topic": "/custom_out"}
     node = wrapper.CmdVelSafetyGate()
     assert {item.topic for item in node.publishers} == {"/custom_out"}
     assert "/custom_in" in {item.topic for item in node.subscriptions}
+
+
+def test_alignment_commands_outrank_nav2_while_fresh(monkeypatch):
+    """After the handoff the velocity smoother still ramps down on /cmd_vel_nav;
+    those commands must not interleave with final alignment's."""
+    rclpy = SimpleNamespace(init=lambda **_: None, shutdown=lambda: None, spin=lambda _node: None)
+    GateNodeStub.overrides = {}
+    wrapper = load_wrapper(monkeypatch, rclpy, GateNodeStub)
+    node = wrapper.CmdVelSafetyGate()
+    clock = SimpleNamespace(now=0.0)
+    node._now = lambda: clock.now
+    callbacks = {item.topic: item.callback for item in node.subscriptions}
+    output = next(item for item in node.publishers if item.topic == "/cmd_vel").messages
+
+    def twist(vx=0.0, yaw=0.0):
+        message = sys.modules["geometry_msgs.msg"].Twist()
+        message.linear.x = vx
+        message.angular.z = yaw
+        return message
+
+    callbacks["/localization_supervisor/ready"](SimpleNamespace(data=True))
+    callbacks["/cmd_vel_nav"](twist(vx=0.2))
+    assert output[-1].linear.x == 0.2
+
+    clock.now = 0.1
+    callbacks["/localization_supervisor/ready"](SimpleNamespace(data=True))
+    callbacks["/cmd_vel_align"](twist(yaw=0.25))
+    callbacks["/cmd_vel_nav"](twist(vx=0.1))
+    assert (output[-1].linear.x, output[-1].angular.z) == (0.0, 0.25)
+
+    clock.now = 0.45  # alignment silent for longer than command_timeout
+    callbacks["/localization_supervisor/ready"](SimpleNamespace(data=True))
+    callbacks["/cmd_vel_nav"](twist(vx=0.1))
+    assert output[-1].linear.x == 0.1
+
+
+def test_alignment_commands_are_still_gated_on_localization(monkeypatch):
+    rclpy = SimpleNamespace(init=lambda **_: None, shutdown=lambda: None, spin=lambda _node: None)
+    GateNodeStub.overrides = {}
+    wrapper = load_wrapper(monkeypatch, rclpy, GateNodeStub)
+    node = wrapper.CmdVelSafetyGate()
+    node._now = lambda: 0.0
+    callbacks = {item.topic: item.callback for item in node.subscriptions}
+    output = next(item for item in node.publishers if item.topic == "/cmd_vel").messages
+    message = sys.modules["geometry_msgs.msg"].Twist()
+    message.angular.z = 0.3
+
+    callbacks["/cmd_vel_align"](message)
+
+    assert output[-1].angular.z == 0.0
 
 
 @pytest.mark.parametrize("value", ("", "   ", True, 7, None))

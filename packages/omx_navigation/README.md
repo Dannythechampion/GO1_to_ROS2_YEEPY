@@ -252,3 +252,30 @@ goal은 **0.3 m 이내**로 제한합니다. goal cancel, ready loss, watchdog �
 - 세션 bag에 `/goal_pose`, `/navigation/goal_status`, `/slam_localization/initialpose`,
   `/go1/*` 토픽이 추가로 기록됩니다. 분석은 `tools/session_report.py`와
   `tools/replay_localization.py`(ROS 없이 실행)로 합니다.
+
+## 마무리 정렬 (2026-09-18 / 10-25 bag 분석 반영)
+
+Nav2는 목표 근처까지만 데려가고, 마지막 정렬은 `rviz_goal_bridge`가 맡습니다
+(`final_alignment.py`, pose-graph launch에서 `final_alignment:=true`).
+
+1. **Nav2 근접**: 추적 자세가 목표 `alignment.handoff_radius`(0.35 m) 안에 들어오면 Nav2 목표를
+   취소하고 넘겨받습니다. Nav2의 `xy_goal_tolerance`(0.20 m)보다 바깥이라 DWB의
+   RotateToGoal/경로 critic 왕복 회전(10-25 27초, 09-18 86초)에 들어가지 않습니다.
+2. **yaw 정렬**: 제자리 회전으로 목표 방향 ±3°까지. 회전 속도는 0.20–0.35 rad/s입니다
+   (0.1 rad/s 근처 명령은 절반쯤 실행되지 않았고, 0.2 이상은 명령의 65–73%로 돌았습니다).
+3. **x/y 정렬**: 방향을 고정한 채 몸체 좌표 vx/vy로 ±5 cm까지 이동합니다. 제자리 회전만으로도
+   위치가 0.1–0.45 m 밀렸기 때문에 위치는 항상 마지막에 맞춥니다.
+4. **정합 확인**: 정지 후 supervisor의 스캔 정합(`drift_check_stamp`가 정지 이후인 것) 두 번이
+   서로 일치하고, overlap이 `alignment.min_overlap`(0.85) 이상이며, 스캔 기준 자세가
+   허용오차 안이면 `SUCCEEDED`입니다. 스캔 기준 자세가 어긋나 있으면 그 자세를 기준으로
+   다시 정렬하고, 0.30 m / 10° 넘게 어긋나면 localization 문제로 보고 멈춥니다.
+
+정렬 명령은 `/cmd_vel_align`으로 나가고, `cmd_vel_safety_gate`가 이 입력을 Nav2보다
+우선합니다. READY, 수동 조작, 실행 이상 감시는 그대로 적용됩니다. 진행 중에는
+`/navigation/goal_status`가 `ALIGNING`과 `alignment.phase`(TURN/SHIFT/SETTLE/VERIFY)를 보냅니다.
+회전·이동이 3초 동안 진척이 없거나, 8번 움직여도 수렴하지 않거나, 목표에서 0.60 m 넘게
+벗어나면 `ABORTED: final alignment: …`로 이유를 남기고 멈춥니다. 모든 값은
+`alignment.<이름>` 파라미터로 바꿀 수 있습니다.
+
+**아직 측정하지 않은 값**: Go1의 옆걸음(vy)과 0.05–0.10 m/s 이동 반응, 도착 지점별 정지
+상태 overlap. 09-18 도착 지점 주변은 overlap 0.5–0.7이라 0.85 기준으로는 실패합니다.

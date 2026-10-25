@@ -1489,6 +1489,27 @@ def test_drift_that_cannot_be_corrected_escalates_to_lost(supervisor_module, mon
     assert publisher(node, "~/ready").messages[-1].data is False
 
 
+def test_status_says_when_its_drift_offset_was_measured(supervisor_module, monkeypatch):
+    """Final alignment confirms an arrival only with scan checks taken after the
+    robot stopped, so the offset must carry the time its scan was matched."""
+    node = initialize_high_quality_search(supervisor_module, monkeypatch)
+    node._on_status_timer()
+    assert last_status(node)["drift_check_stamp"] == 0.0
+    advance_to_ready(node)
+
+    stub_refinement(supervisor_module, monkeypatch, [(0.03, -0.02, 0.0)])
+    keep_tracking(node, 3.5, 6.0)
+
+    status = last_status(node)
+    assert 3.5 <= status["drift_check_stamp"] <= 6.0
+    assert status["drift_check_stamp"] == pytest.approx(node._last_drift_check_stamp)
+    assert status["drift_offset_x"] == pytest.approx(0.03)
+
+    node._on_initial_pose(pose_message())
+    node._on_status_timer()
+    assert last_status(node)["drift_check_stamp"] == 0.0
+
+
 def test_new_click_forgets_drift_evidence(supervisor_module, monkeypatch):
     node = initialize_high_quality_search(supervisor_module, monkeypatch)
     advance_to_ready(node)

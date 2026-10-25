@@ -255,6 +255,7 @@ def prepare_recording_session(record_localization: bool, record_cloud: bool, dia
     topics = (
         "/scan", "/Odometry", "/tf", "/tf_static", "/initialpose", "/slam_localization/pose",
         "/localization_supervisor/status", "/localization_supervisor/ready", "/cmd_vel_nav", "/cmd_vel",
+        "/cmd_vel_align",
         # What the operator asked for and what the robot itself reported: the
         # 09-18 analysis had to reconstruct both from console logs.
         "/goal_pose", "/navigation/goal_status", "/slam_localization/initialpose",
@@ -437,13 +438,18 @@ def generate_launch_description() -> "LaunchDescription":
     )
     gate = Node(
         package="omx_navigation", executable="cmd_vel_safety_gate", name="cmd_vel_safety_gate", output="screen",
-        parameters=[{"input_topic": "/cmd_vel_nav", "output_topic": "/cmd_vel"}],
+        parameters=[{"input_topic": "/cmd_vel_nav", "output_topic": "/cmd_vel",
+                     "priority_input_topic": "/cmd_vel_align"}],
     )
+    # Nav2 brings the robot within alignment.handoff_radius; the bridge then
+    # turns, shifts and confirms the arrival against the scan (final_alignment.py).
     goal_bridge = Node(
         package="omx_navigation",
         executable="rviz_goal_bridge",
         name="rviz_goal_bridge",
         output="screen",
+        parameters=[{"final_alignment": True, "global_frame": "map", "base_frame": base_frame,
+                     "alignment_command_topic": "/cmd_vel_align"}],
     )
     rviz = Node(
         package="rviz2", executable="rviz2", name="rviz2", output="screen", arguments=["-d", LaunchConfiguration("rviz_config")],

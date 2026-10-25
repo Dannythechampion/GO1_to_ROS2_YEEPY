@@ -1,5 +1,6 @@
 import importlib
 import json
+import math
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -91,7 +92,29 @@ class Marker:
         self.text = ""
 
 
+class Twist:
+    def __init__(self):
+        self.linear = _namespace(x=0.0, y=0.0, z=0.0)
+        self.angular = _namespace(x=0.0, y=0.0, z=0.0)
+
+
+class Buffer:
+    """tf2 buffer stub: `transform` is what the next lookup returns."""
+
+    def __init__(self):
+        self.transform = None
+        self.lookups = []
+
+    def lookup_transform(self, target, source, _time):
+        self.lookups.append((target, source))
+        if self.transform is None:
+            raise LookupError("no transform")
+        return self.transform
+
+
 class Node:
+    overrides = {}
+
     def __init__(self, *_args):
         self.subscriptions = []
         self.publishers = []
@@ -99,8 +122,8 @@ class Node:
         self.clock = SimpleNamespace(seconds=0.0)
         self.logger = SimpleNamespace(info=lambda *_: None, error=lambda *_: None, warning=lambda *_: None)
 
-    def declare_parameter(self, _name, default):
-        return SimpleNamespace(value=default)
+    def declare_parameter(self, name, default):
+        return SimpleNamespace(value=self.overrides.get(name, default))
 
     def create_subscription(self, _type, topic, callback, _depth):
         result = SimpleNamespace(topic=topic, callback=callback)
@@ -133,6 +156,12 @@ class Node:
 def bridge_module(monkeypatch):
     geometry = ModuleType("geometry_msgs.msg")
     geometry.PoseStamped = object
+    geometry.Twist = Twist
+    tf2 = ModuleType("tf2_ros")
+    tf2.Buffer = Buffer
+    tf2.TransformListener = lambda buffer, node: SimpleNamespace(buffer=buffer, node=node)
+    rclpy_time = ModuleType("rclpy.time")
+    rclpy_time.Time = lambda: SimpleNamespace(nanoseconds=0)
     action_msgs = ModuleType("action_msgs.msg")
     action_msgs.GoalStatus = SimpleNamespace(STATUS_SUCCEEDED=0)
     nav2 = ModuleType("nav2_msgs.action")
@@ -154,20 +183,23 @@ def bridge_module(monkeypatch):
         "geometry_msgs.msg": geometry, "action_msgs.msg": action_msgs,
         "nav2_msgs.action": nav2, "std_msgs.msg": std, "rclpy": rclpy,
         "rclpy.action": action, "rclpy.node": node, "visualization_msgs.msg": visualization,
+        "rclpy.time": rclpy_time, "tf2_ros": tf2,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
     sys.modules.pop("omx_navigation.rviz_goal_bridge", None)
+    Node.overrides = {}
     module = importlib.import_module("omx_navigation.rviz_goal_bridge")
     yield module
+    Node.overrides = {}
     sys.modules.pop("omx_navigation.rviz_goal_bridge", None)
 
 
-def pose(x=1.0, y=2.0, frame_id="map"):
+def pose(x=1.0, y=2.0, frame_id="map", yaw=0.0):
     return SimpleNamespace(
         header=SimpleNamespace(frame_id=frame_id),
         pose=SimpleNamespace(
             position=SimpleNamespace(x=x, y=y),
-            orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+            orientation=SimpleNamespace(x=0.0, y=0.0, z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0)),
         ),
     )
 
@@ -436,3 +468,218 @@ def test_subscribes_to_every_input_that_can_withdraw_the_robot(bridge_module):
     }
     assert {item.topic for item in node.publishers} == {"/navigation/goal_status", "/navigation/goal_marker"}
 
+
+
+# -- final alignment ---------------------------------------------------------
+
+def aligning_bridge(bridge_module):
+    Node.overrides = {"final_alignment": True}
+    node = bridge_module.RvizGoalBridge()
+    node._on_ready(SimpleNamespace(data=True))
+    return node
+
+
+def robot_at(node, x, y, yaw=0.0, stamp=None):
+    seconds = node.clock.seconds if stamp is None else stamp
+    node._tf_buffer.transform = SimpleNamespace(
+        header=SimpleNamespace(stamp=SimpleNamespace(sec=int(seconds), nanosec=round((seconds - int(seconds)) * 1e9))),
+        transform=SimpleNamespace(
+            translation=SimpleNamespace(x=x, y=y, z=0.0),
+            rotation=SimpleNamespace(x=0.0, y=0.0, z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0)),
+        ),
+    )
+
+
+def localization_status(node, check_stamp, overlap=0.9, dx=0.0, dy=0.0, dyaw_deg=0.0):
+    callback = next(item for item in node.subscriptions if item.topic == "/localization_supervisor/status").callback
+    message = SimpleNamespace(data=json.dumps({
+        "state": "READY", "overlap": overlap, "drift_check_stamp": check_stamp,
+        "drift_offset_x": dx, "drift_offset_y": dy, "drift_offset_yaw_deg": dyaw_deg,
+    }))
+    callback(message)
+
+
+def align_commands(node):
+    return next(item for item in node.publishers if item.topic == "/cmd_vel_align").messages
+
+
+def tick(node, seconds=0.1):
+    node.clock.seconds = round(node.clock.seconds + seconds, 6)
+    node._on_ready(SimpleNamespace(data=True))
+    node._alignment_timer.callback()
+
+
+def hand_over(node, goal=None, robot=(1.2, -2.5, -math.pi / 2)):
+    """Send a goal, let Nav2 bring the robot inside the handoff radius, finish the cancel."""
+    node._on_goal_pose(goal or pose(1.0, -2.5))
+    handle = accept(node)
+    robot_at(node, *robot)
+    tick(node)
+    assert handle.cancelled is True
+    handle.cancel_future.complete()
+    handle.result_future.value = SimpleNamespace(status=5)  # CANCELED
+    handle.result_future.complete()
+    return handle
+
+
+def test_alignment_adds_its_topics_only_when_enabled(bridge_module):
+    node = aligning_bridge(bridge_module)
+    assert "/localization_supervisor/status" in {item.topic for item in node.subscriptions}
+    assert "/cmd_vel_align" in {item.topic for item in node.publishers}
+
+
+def test_nav2_is_cancelled_inside_the_handoff_radius_and_alignment_takes_over(bridge_module):
+    node = aligning_bridge(bridge_module)
+    node._on_goal_pose(pose(1.0, -2.5))
+    handle = accept(node)
+
+    robot_at(node, 1.0, -1.5)  # 1.0 m out: Nav2 keeps driving
+    tick(node)
+    assert handle.cancelled is False
+
+    robot_at(node, 1.2, -2.5, -math.pi / 2)  # 0.20 m off and facing 90 deg away
+    tick(node)
+    assert handle.cancelled is True
+    handle.cancel_future.complete()
+    handle.result_future.value = SimpleNamespace(status=5)
+    handle.result_future.complete()
+
+    status = statuses(node)[-1]
+    assert status["state"] == "ALIGNING"
+    assert status["alignment"]["phase"] == "TURN"
+    command = align_commands(node)[-1]
+    assert (command.linear.x, command.linear.y) == (0.0, 0.0)
+    assert command.angular.z > 0.0
+    assert node._goal_gate.accept_goal() is True
+
+
+def test_arrival_is_reported_only_after_scan_matches_taken_at_the_goal(bridge_module):
+    node = aligning_bridge(bridge_module)
+    hand_over(node, robot=(1.02, -2.5, 0.0))  # inside every tolerance already
+    assert statuses(node)[-1]["alignment"]["phase"] == "VERIFY"
+    started = node.clock.seconds
+
+    localization_status(node, started - 1.0)  # matched before the robot stopped
+    tick(node)
+    localization_status(node, started + 2.0)
+    tick(node)
+    assert statuses(node)[-1]["state"] == "ALIGNING"
+    localization_status(node, started + 4.0)
+    tick(node)
+
+    status = statuses(node)[-1]
+    assert status["state"] == "SUCCEEDED"
+    assert status["reason"] == "scan match 0.90"
+    text = [marker for marker in markers(node) if marker.type == 9][-1]
+    assert text.text == "ARRIVED"
+    last = align_commands(node)[-1]
+    assert (last.linear.x, last.linear.y, last.angular.z) == (0.0, 0.0, 0.0)
+    assert node._aligner is None
+
+
+def test_nav2_success_is_not_an_arrival_until_alignment_confirms_it(bridge_module):
+    node = aligning_bridge(bridge_module)
+    node._on_goal_pose(pose(1.0, -2.5))
+    handle = accept(node)
+    robot_at(node, 1.0, -2.6, 0.0)
+    handle.result_future.value = SimpleNamespace(status=0)  # SUCCEEDED in the stub
+    handle.result_future.complete()
+
+    assert [item["state"] for item in statuses(node)] == ["SENT", "ACCEPTED", "ALIGNING"]
+
+
+def test_failed_alignment_is_reported_as_aborted_with_its_reason(bridge_module):
+    node = aligning_bridge(bridge_module)
+    hand_over(node)
+    node._tf_buffer.transform = None
+    for _ in range(7):
+        tick(node)
+
+    status = statuses(node)[-1]
+    assert status["state"] == "ABORTED"
+    assert status["reason"] == "final alignment: robot pose is unavailable"
+    assert align_commands(node)[-1].angular.z == 0.0
+
+
+def test_stale_transform_counts_as_no_pose(bridge_module):
+    node = aligning_bridge(bridge_module)
+    node.clock.seconds = 10.0
+    robot_at(node, 1.0, -2.5, stamp=9.0)
+    assert node._robot_pose() is None
+    robot_at(node, 1.0, -2.5, stamp=9.8)
+    assert node._robot_pose() is not None
+
+
+@pytest.mark.parametrize(("topic", "reason"), (
+    ("/go1/manual_override", "manual override"),
+    ("/go1/execution_fault", "robot not following commands"),
+))
+def test_taking_the_robot_away_stops_alignment(bridge_module, topic, reason):
+    node = aligning_bridge(bridge_module)
+    hand_over(node)
+    assert align_commands(node)[-1].angular.z != 0.0
+
+    next(item for item in node.subscriptions if item.topic == topic).callback(SimpleNamespace(data=True))
+
+    assert statuses(node)[-1]["state"] == "CANCELED"
+    assert statuses(node)[-1]["reason"] == reason
+    assert align_commands(node)[-1].angular.z == 0.0
+    assert node._aligner is None
+    count = len(align_commands(node))
+    tick(node)
+    assert len(align_commands(node)) == count
+
+
+def test_localization_loss_stops_alignment(bridge_module):
+    node = aligning_bridge(bridge_module)
+    hand_over(node)
+
+    node._on_ready(SimpleNamespace(data=False))
+
+    assert statuses(node)[-1]["state"] == "CANCELED"
+    assert statuses(node)[-1]["reason"] == "localization not ready"
+    assert align_commands(node)[-1].angular.z == 0.0
+
+
+def test_new_goal_during_alignment_preempts_it(bridge_module):
+    node = aligning_bridge(bridge_module)
+    hand_over(node)
+    token = node._aligning_token
+
+    node._on_goal_pose(pose(3.0, 1.0))
+
+    preempted = [item for item in statuses(node) if item["state"] == "PREEMPTED"]
+    assert preempted[-1]["token"] == token
+    assert node._aligner is None
+    assert len(node._action_client.sent) == 2
+
+
+def test_handoff_cancel_overtaken_by_a_withdrawal_is_not_aligned(bridge_module):
+    node = aligning_bridge(bridge_module)
+    node._on_goal_pose(pose(1.0, -2.5))
+    handle = accept(node)
+    robot_at(node, 1.2, -2.5)
+    tick(node)
+    assert handle.cancelled is True
+
+    node._on_ready(SimpleNamespace(data=False))
+    handle.cancel_future.complete()
+    handle.result_future.value = SimpleNamespace(status=5)
+    handle.result_future.complete()
+
+    assert statuses(node)[-1]["state"] == "CANCELED"
+    assert statuses(node)[-1]["reason"] == "localization not ready"
+    assert "ALIGNING" not in [item["state"] for item in statuses(node)]
+
+
+def test_goal_in_another_frame_is_left_to_nav2(bridge_module):
+    node = aligning_bridge(bridge_module)
+    node._on_goal_pose(pose(1.0, -2.5, frame_id="camera_init"))
+    handle = accept(node)
+    robot_at(node, 1.0, -2.5)
+    tick(node)
+    assert handle.cancelled is False
+
+    handle.result_future.value = SimpleNamespace(status=0)
+    handle.result_future.complete()
+    assert statuses(node)[-1]["state"] == "SUCCEEDED"

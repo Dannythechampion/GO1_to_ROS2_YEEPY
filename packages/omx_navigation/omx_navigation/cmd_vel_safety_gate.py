@@ -5,7 +5,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
-from omx_navigation.cmd_vel_gate_core import VelocityCommand, VelocityGate
+from omx_navigation.cmd_vel_gate_core import PrioritySource, VelocityCommand, VelocityGate
 from omx_navigation.runtime_shutdown import (
     NORMAL_SHUTDOWN_EXCEPTIONS,
     shutdown_context,
@@ -21,7 +21,10 @@ class CmdVelSafetyGate(Node):
         command_timeout = self.declare_parameter("command_timeout", 0.30).value
         input_topic = self._topic_parameter("input_topic", "/cmd_vel_nav")
         output_topic = self._topic_parameter("output_topic", "/cmd_vel")
+        # rviz_goal_bridge's final alignment, which outranks Nav2 while it drives.
+        priority_topic = self._topic_parameter("priority_input_topic", "/cmd_vel_align")
         self._gate = VelocityGate(ready_timeout, command_timeout)
+        self._priority = PrioritySource(command_timeout)
         # `/cmd_vel` remains volatile: retaining a moving command could replay it
         # when the driver reconnects. Closed-state timer events publish fresh stops.
         self._publisher = self.create_publisher(Twist, output_topic, 10)
@@ -30,6 +33,9 @@ class CmdVelSafetyGate(Node):
         )
         self._command_subscription = self.create_subscription(
             Twist, input_topic, self._on_command, 10
+        )
+        self._priority_subscription = self.create_subscription(
+            Twist, priority_topic, self._on_priority_command, 10
         )
         self._watchdog = self.create_timer(0.05, self._on_watchdog)
 
@@ -45,12 +51,23 @@ class CmdVelSafetyGate(Node):
         self._publish_decision(self._gate.update_ready(message.data, self._now()))
 
     def _on_command(self, message: Twist) -> None:
+        now = self._now()
+        if not self._priority.allows_regular(now):
+            return
+        self._forward(message, now)
+
+    def _on_priority_command(self, message: Twist) -> None:
+        now = self._now()
+        self._priority.priority_command(now)
+        self._forward(message, now)
+
+    def _forward(self, message: Twist, now: float) -> None:
         command = VelocityCommand(
             vx=message.linear.x,
             vy=message.linear.y,
             yaw=message.angular.z,
         )
-        self._publish_decision(self._gate.filter(command, self._now()))
+        self._publish_decision(self._gate.filter(command, now))
 
     def _on_watchdog(self) -> None:
         self._publish_decision(self._gate.watchdog(self._now()))

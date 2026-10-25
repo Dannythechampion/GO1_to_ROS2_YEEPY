@@ -88,7 +88,7 @@ _SLAM_AGREEMENT_TRANSLATION = 0.05
 _SLAM_AGREEMENT_YAW = math.radians(1.0)
 _STATUS_FIELDS = (
     "state", "error", "message_ko", "attempt", "overlap", "ambiguity_margin", "stamp",
-    "consistency_gap", "drift_offset_x", "drift_offset_y", "drift_offset_yaw_deg",
+    "consistency_gap", "drift_offset_x", "drift_offset_y", "drift_offset_yaw_deg", "drift_check_stamp",
     "drift_corrections", "tf_corrections_explained", "missing_inputs",
 )
 
@@ -194,6 +194,9 @@ class LocalizationSupervisor(Node):
         self._drift_job = None
         self._last_drift_check_at = None
         self._last_drift_decision: DriftDecision | None = None
+        # When the scan behind `_last_drift_decision` was matched; final
+        # alignment only trusts checks taken after the robot stopped.
+        self._last_drift_check_stamp = 0.0
         self._last_transition = self._machine._transition()
         self._csv_file = None
         self._csv_writer = None
@@ -686,6 +689,7 @@ class LocalizationSupervisor(Node):
         except ValueError:
             return
         self._last_drift_decision = decision
+        self._last_drift_check_stamp = stamp
         if decision.action is DriftAction.CORRECT and decision.correction is not None:
             self._publish_drift_correction(decision.correction, decision)
         elif decision.action is DriftAction.ESCALATE:
@@ -716,6 +720,7 @@ class LocalizationSupervisor(Node):
         """
         self._drift_monitor.reset()
         self._last_drift_decision = None
+        self._last_drift_check_stamp = 0.0
         self._last_drift_check_at = None
 
     def _prepare_coarse_search_retry(self) -> None:
@@ -803,6 +808,7 @@ class LocalizationSupervisor(Node):
             "drift_offset_x": self._finite_or_zero(offset[0]),
             "drift_offset_y": self._finite_or_zero(offset[1]),
             "drift_offset_yaw_deg": self._finite_or_zero(math.degrees(offset[2])),
+            "drift_check_stamp": self._finite_or_zero(self._last_drift_check_stamp),
             "drift_corrections": self._drift_monitor.corrections,
             "tf_corrections_explained": self._tf_corrections_explained,
             "missing_inputs": self._missing_inputs(now),

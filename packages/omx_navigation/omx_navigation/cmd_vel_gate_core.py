@@ -111,6 +111,37 @@ class VelocityGate:
             raise ValueError("now must be finite")
 
 
+class PrioritySource:
+    """While the priority source is fresh, commands from the regular one are dropped.
+
+    Final alignment takes over from Nav2 by cancelling its goal, but the
+    velocity smoother keeps publishing its deceleration ramp for a few cycles
+    afterwards; without this the two would interleave on the robot.
+    """
+
+    def __init__(self, hold: float = 0.30) -> None:
+        if not _is_finite_number(hold) or hold <= 0.0:
+            raise ValueError("hold must be finite and positive")
+        self.hold = hold
+        self._last_priority_at: float | None = None
+
+    def priority_command(self, now: float) -> None:
+        if not _is_finite_number(now):
+            raise ValueError("now must be finite")
+        self._last_priority_at = now
+
+    def allows_regular(self, now: float) -> bool:
+        if not _is_finite_number(now):
+            raise ValueError("now must be finite")
+        if self._last_priority_at is None:
+            return True
+        if now < self._last_priority_at:
+            # Time moved backwards: nothing about freshness can be trusted.
+            self._last_priority_at = None
+            return True
+        return _expired(now, self._last_priority_at, self.hold)
+
+
 def _is_finite_command(command: VelocityCommand) -> bool:
     return all(_is_finite_number(value) for value in (command.vx, command.vy, command.yaw))
 
