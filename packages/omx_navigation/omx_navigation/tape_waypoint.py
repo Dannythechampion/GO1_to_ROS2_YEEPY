@@ -104,6 +104,11 @@ class _CloudListener:
         import rclpy
 
         self._frames = []
+        # A fresh process is still discovering the driver; count from the
+        # first frame rather than from now, or a slow match reads as no LiDAR.
+        first = time.monotonic() + 5.0
+        while not self._frames and time.monotonic() < first:
+            rclpy.spin_once(self.node, timeout_sec=0.05)
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             rclpy.spin_once(self.node, timeout_sec=0.05)
