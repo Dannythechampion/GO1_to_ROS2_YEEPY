@@ -243,6 +243,10 @@ def _init(listener, args, mission_path) -> int:
     if not _wait_for_subscriber(listener.node, publisher, 3.0):
         print("Nothing subscribes to /initialpose; is the localization supervisor running?")
         return 1
+    # The writer sees the reader before the reader has matched the writer;
+    # a message sent in that gap is dropped even on a reliable topic, which is
+    # what happened on the robot the first time. Give discovery a second.
+    _spin_for(listener.node, 1.0)
     message = PoseWithCovarianceStamped()
     message.header.frame_id = args.map_frame
     message.header.stamp = listener.node.get_clock().now().to_msg()
@@ -254,7 +258,8 @@ def _init(listener, args, mission_path) -> int:
     message.pose.covariance[7] = INITIAL_COVARIANCE_XY
     message.pose.covariance[35] = INITIAL_COVARIANCE_YAW
     publisher.publish(message)
-    _spin_for(listener.node, 0.3)
+    # Stay up long enough for the reliable writer to deliver it.
+    _spin_for(listener.node, 1.0)
     print(f"Published /initialpose x {x:.3f} y {y:.3f} yaw {math.degrees(yaw):.1f} deg from the {args.name} tape. "
           "Watch /localization_supervisor/status for READY.")
     return 0
