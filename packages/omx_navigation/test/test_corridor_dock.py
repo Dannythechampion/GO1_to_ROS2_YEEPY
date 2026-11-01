@@ -84,8 +84,9 @@ def test_large_yaw_is_reported_but_flagged():
 
 
 def test_ordinary_scene_alone_detects_nothing():
+    # Painted walls returned 20-34 on 2026-11-01; 100 is a generous ceiling.
     assert corridor_fix(clutter(n=2000, bright=60.0)) is None
-    assert corridor_fix(clutter(n=2000, bright=150.0)) is None
+    assert corridor_fix(clutter(n=2000, bright=100.0)) is None
 
 
 def test_one_wall_occluded_is_rejected():
@@ -98,8 +99,9 @@ def test_wrong_corridor_width_is_rejected():
 
 
 def test_dim_markers_are_ignored():
-    assert corridor_fix(corridor(bright=170.0)) is None
-    assert corridor_fix(corridor(bright=190.0)) is not None
+    assert corridor_fix(corridor(bright=110.0)) is None
+    # The real strips on 2026-11-01: median 150-164, never above 175.
+    assert corridor_fix(corridor(bright=155.0)) is not None
 
 
 def test_forward_clearance_sees_the_chair_and_ignores_the_walls():

@@ -46,6 +46,13 @@ from omx_navigation.reflector_detector import (
 def _corridor_markers() -> ReflectorPolicy:
     """Marker policy for strips facing each other across a corridor."""
     return ReflectorPolicy(
+        # Measured 2026-11-01 on the taped start spot with unit .135: the strips
+        # returned a median of 150-164 and never above 175, the painted walls
+        # beside them 20-34. The backrest dock's 180 assumed tape saturating
+        # near 255 and saw nothing here. At 120 the strips keep 99% of their
+        # points (~109 per frame in band) while non-tape returns within 2 m
+        # drop to ~3 per frame, far under min_points_per_strip.
+        reflectivity_threshold=120.0,
         # Walls measured at 0.97-1.04 m, so a marker at the LiDAR's height sits
         # near 0 deg elevation. The band stays narrow because nothing else
         # competes once the intensity threshold has run.
