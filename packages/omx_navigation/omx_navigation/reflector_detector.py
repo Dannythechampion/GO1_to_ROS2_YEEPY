@@ -79,29 +79,7 @@ def find_marker_pair(points, policy: ReflectorPolicy | None = None):
     is worse than no dock pose at all.
     """
     policy = policy or ReflectorPolicy()
-    bright = []
-    for x, y, z, reflectivity in points:
-        if reflectivity < policy.reflectivity_threshold:
-            continue
-        if not (policy.band_lo <= z <= policy.band_hi):
-            continue
-        distance = math.hypot(x, y)
-        if not (policy.range_min <= distance <= policy.range_max):
-            continue
-        bright.append((math.atan2(y, x), x, y))
-    if len(bright) < 2 * policy.min_points_per_strip:
-        return None
-
-    bright.sort()
-    clusters = []
-    current = [bright[0]]
-    for previous, item in zip(bright, bright[1:]):
-        if math.hypot(item[1] - previous[1], item[2] - previous[2]) > policy.cluster_gap:
-            clusters.append(current)
-            current = []
-        current.append(item)
-    clusters.append(current)
-
+    clusters = bright_clusters(points, policy)
     strips = [c for c in clusters if len(c) >= policy.min_points_per_strip]
     if len(strips) != 2:
         # One marker means the other is occluded; three or more means something
@@ -114,6 +92,39 @@ def find_marker_pair(points, policy: ReflectorPolicy | None = None):
     if abs(separation - policy.strip_separation) > policy.separation_tolerance:
         return None
     return first, second, len(strips[0]) + len(strips[1])
+
+
+def bright_clusters(points, policy: ReflectorPolicy, band=None):
+    """Group the tape-bright returns into clusters, ordered by bearing.
+
+    Each cluster is a list of `(bearing, x, y, z, reflectivity)`. `band`
+    overrides the policy's height band, which is how a survey sees a strip's
+    whole visible length rather than only the part the detector uses.
+    """
+    band_lo, band_hi = band if band is not None else (policy.band_lo, policy.band_hi)
+    bright = []
+    for x, y, z, reflectivity in points:
+        if reflectivity < policy.reflectivity_threshold:
+            continue
+        if not (band_lo <= z <= band_hi):
+            continue
+        distance = math.hypot(x, y)
+        if not (policy.range_min <= distance <= policy.range_max):
+            continue
+        bright.append((math.atan2(y, x), x, y, z, reflectivity))
+    if len(bright) < 2:
+        return [bright] if bright else []
+
+    bright.sort()
+    clusters = []
+    current = [bright[0]]
+    for previous, item in zip(bright, bright[1:]):
+        if math.hypot(item[1] - previous[1], item[2] - previous[2]) > policy.cluster_gap:
+            clusters.append(current)
+            current = []
+        current.append(item)
+    clusters.append(current)
+    return clusters
 
 
 def detect_dock(points, policy: ReflectorPolicy | None = None) -> DockDetection | None:

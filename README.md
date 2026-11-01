@@ -148,6 +148,8 @@ map ──(slam_toolbox)──▶ camera_init ──(FAST-LIO2)─────�
 | `rviz_goal_bridge` | `omx_navigation` | RViz 목표 → `NavigateToPose`의 **유일한** 경로, 상태·마커 발행 |
 | `cmd_vel_safety_gate` | `omx_navigation` | READY일 때만 `/cmd_vel_nav` → `/cmd_vel` |
 | `go1_driver` | `go1_driver` | 속도 제한·watchdog, Unitree UDP, 리모컨·명령 미실행 감시 |
+| `tape_mission` | `omx_navigation` | 기록된 출발·도착점으로 Nav2(브리지 경유) → 벽 테이프에 정렬, 별도 실행 |
+| `tape_waypoint` | `omx_navigation` | 테이프 점검(`check`), 지점 기록(`record`), 출발 테이프로 초기 자세(`init`) — CLI |
 
 주행 스택 전체는 [`go1_posegraph_navigation.launch.py`](packages/omx_navigation/launch/go1_posegraph_navigation.launch.py)
 하나로 뜨고(MID-360과 FAST-LIO2는 별도 터미널), 현장에서는 이것을 감싼
@@ -444,7 +446,33 @@ dry-run을 통과하고, Go1을 스탠드나 넓은 시험 공간에 두고, 물
 시험 반경을 늘리지 마십시오. **armed 중에는 리모컨을 만지지 마십시오.** 스틱을 움직이면
 driver가 사람 조종으로 보고 목표를 취소합니다.
 
-### 5.5 주행 후 분석 (ROS 없이, 노트북에서도)
+### 5.5 출발·도착 테이프 미션
+
+출발점과 도착점마다 **복도 양쪽 벽에 재귀반사(프리즘형) 테이프를 세로로 한 줄씩**,
+라이다가 멈출 자리 정횡에 서로 마주 보게 붙입니다. 길이는 **바닥에서 35~85 cm(50 cm)**,
+폭은 테이프 한 폭(4~5 cm), 두 지점 쌍은 3 m 이상 떨어뜨립니다. 근거와 계산은
+[설계 문서 10절](docs/superpowers/specs/2026-10-25-standoff-approach-design.md)에 있습니다.
+
+```bash
+# 1. 테이프를 붙인 자리에 로봇을 세우고 (Livox만 떠 있으면 됨)
+ros2 run omx_navigation tape_waypoint check
+# 2. 주행 스택을 띄워 READY가 된 뒤, 출발점에 세운 채로 / 도착점으로 옮겨서
+ros2 run omx_navigation tape_waypoint record start
+ros2 run omx_navigation tape_waypoint record goal
+# 3. 다음부터는 출발점에 (기록 때와 같은 방향으로) 세우고
+ros2 run omx_navigation tape_waypoint init         # 2D Pose Estimate 대신
+ros2 run omx_navigation tape_mission                # 별도 터미널
+ros2 service call /mission/start std_srvs/srv/Trigger
+ros2 topic echo /mission/status                     # 진행 상황
+ros2 service call /mission/cancel std_srvs/srv/Trigger
+```
+
+기록은 `~/.ros/go1_tape_mission.yaml`(또는 `$GO1_MISSION_FILE`)에 저장됩니다.
+지도에서 클릭하지 않는 이유는 위치 추정의 복도 축방향 편향이 기록과 주행에 똑같이
+들어가 상쇄되기 때문입니다. 한 번도 테이프 앞에서 기록되지 않은 지점이 있으면 미션은
+시작을 거부합니다.
+
+### 5.6 주행 후 분석 (ROS 없이, 노트북에서도)
 
 ```bash
 python3 tools/session_report.py /mnt/t500/localization_logs/<session>/rosbag/rosbag_0.db3

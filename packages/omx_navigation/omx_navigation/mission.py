@@ -25,6 +25,10 @@ class Waypoint:
     x: float
     y: float
     yaw: float
+    # Wall-to-wall gap between the spot's two tape strips, measured when the
+    # spot was recorded at its tape. None means it never was: the pose is a
+    # placeholder or was typed in, and nothing should dock there yet.
+    marker_separation: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -32,9 +36,20 @@ class Waypoint:
         for field_name in ("x", "y", "yaw"):
             if not _is_finite_number(getattr(self, field_name)):
                 raise ValueError(f"{self.name}.{field_name} must be a finite number")
+        if self.marker_separation is not None and (
+            not _is_finite_number(self.marker_separation) or self.marker_separation <= 0.0
+        ):
+            raise ValueError(f"{self.name}.marker_separation must be finite and positive")
+
+    @property
+    def recorded_at_tape(self) -> bool:
+        return self.marker_separation is not None
 
     def as_dict(self) -> dict:
-        return {"x": self.x, "y": self.y, "yaw": self.yaw}
+        out = {"x": self.x, "y": self.y, "yaw": self.yaw}
+        if self.marker_separation is not None:
+            out["marker_separation"] = self.marker_separation
+        return out
 
 
 @dataclass(frozen=True)
@@ -86,6 +101,24 @@ class Mission:
         except KeyError:
             raise ValueError(f"no recorded waypoint named {name!r}") from None
 
+    def dock_waypoint(self, index: int) -> Waypoint:
+        """The waypoint whose tape the dock step at `index` drives onto."""
+        step = self.sequence[index]
+        if step.kind != "dock":
+            raise ValueError(f"step {index} is a {step.kind} step, not a dock step")
+        # __post_init__ guarantees the step before a dock is a navigate step.
+        return self.waypoint(self.sequence[index - 1].waypoint)
+
+    def untaped_docks(self) -> list:
+        """Names of the waypoints a dock step needs but that lack a tape record."""
+        names = []
+        for index, step in enumerate(self.sequence):
+            if step.kind == "dock":
+                point = self.dock_waypoint(index)
+                if not point.recorded_at_tape and point.name not in names:
+                    names.append(point.name)
+        return names
+
 
 def mission_from_dict(data: dict) -> Mission:
     """Build a mission from parsed YAML.
@@ -105,7 +138,9 @@ def mission_from_dict(data: dict) -> Mission:
         missing = {"x", "y", "yaw"} - set(pose)
         if missing:
             raise ValueError(f"waypoint {name!r} is missing {sorted(missing)}")
-        waypoints[name] = Waypoint(name, pose["x"], pose["y"], pose["yaw"])
+        waypoints[name] = Waypoint(
+            name, pose["x"], pose["y"], pose["yaw"], pose.get("marker_separation")
+        )
 
     raw_sequence = data.get("sequence")
     if not isinstance(raw_sequence, list) or not raw_sequence:
@@ -133,14 +168,15 @@ def mission_to_dict(mission: Mission) -> dict:
     }
 
 
-def record_waypoint(mission: Mission, name: str, x: float, y: float, yaw: float) -> Mission:
+def record_waypoint(mission: Mission, name: str, x: float, y: float, yaw: float,
+                    marker_separation: float | None = None) -> Mission:
     """Return a mission with `name` replaced by the pose given.
 
     Re-recording is how the scenario adapts after the chair or the markers
     move: drive the robot to the spot, capture its pose, write the file back.
     """
     updated = dict(mission.waypoints)
-    updated[name] = Waypoint(name, x, y, _wrap(yaw))
+    updated[name] = Waypoint(name, x, y, _wrap(yaw), marker_separation)
     return Mission(updated, mission.sequence)
 
 

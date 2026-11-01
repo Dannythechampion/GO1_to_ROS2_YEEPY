@@ -69,7 +69,19 @@ class MissionRunner:
     def reset(self) -> None:
         self._state = MissionState.IDLE
         self._index = 0
+        self._active_dock_policy = self.dock_policy
         self._approach.reset()
+
+    @property
+    def active_dock_policy(self) -> CorridorDockPolicy:
+        """The policy for the dock in progress, held to that spot's tape.
+
+        A waypoint recorded at its tape carries the measured wall-to-wall gap,
+        and the detector is held to it; one without keeps the default. The
+        node detects with this so the runner and the detector agree on which
+        pair counts.
+        """
+        return self._active_dock_policy
 
     @property
     def state(self) -> MissionState:
@@ -82,6 +94,11 @@ class MissionRunner:
     def start(self, now: float) -> Action:
         self.reset()
         return self._enter(self._index, now)
+
+    def abort(self, reason: str) -> Action:
+        """Stop the mission from outside: an operator cancel, or a dead link."""
+        self._approach.reset()
+        return self._abort(reason)
 
     def on_navigation_result(self, succeeded: bool, now: float) -> Action:
         """Nav2 finished the current navigate step."""
@@ -107,6 +124,7 @@ class MissionRunner:
         manual_override: bool = False,
         execution_fault: bool = False,
         forward_clearance: float = float("inf"),
+        rear_clearance: float = float("inf"),
         minimum_clearance: float = 0.0,
     ) -> Action:
         """Advance a docking step by one control cycle.
@@ -118,13 +136,23 @@ class MissionRunner:
         `forward_clearance` is the net under the loop. The keep-out that guards
         a facing dock cannot work here, because the corridor markers' midpoint
         sits roughly at the robot rather than ahead of it, so the chair is
-        watched directly instead.
+        watched directly instead. `rear_clearance` does the same behind, since
+        the midpoint may lie behind a robot that overshot.
         """
         if self._state is not MissionState.DOCKING:
             return Action(ActionKind.NONE)
         if forward_clearance < minimum_clearance:
             self._approach.reset()
             return self._abort("forward clearance breached")
+        if rear_clearance < minimum_clearance:
+            self._approach.reset()
+            return self._abort("rear clearance breached")
+        if fix is not None and fix.correction(self._active_dock_policy) > self._active_dock_policy.max_correction:
+            self._approach.reset()
+            return self._abort(
+                f"markers {fix.correction(self._active_dock_policy):.2f} m away, beyond "
+                f"max_correction {self._active_dock_policy.max_correction:.2f} m"
+            )
         detection = None if fix is None else Detection(now, fix.mid_x, fix.mid_y)
         command = self._approach.update(
             now,
@@ -153,8 +181,13 @@ class MissionRunner:
             return Action(ActionKind.NAVIGATE, waypoint=self.mission.waypoint(step.waypoint))
         if step.kind == "dock":
             self._state = MissionState.DOCKING
+            spot = self.mission.dock_waypoint(index)
+            self._active_dock_policy = (
+                self.dock_policy.with_separation(spot.marker_separation)
+                if spot.recorded_at_tape else self.dock_policy
+            )
             self._approach.start(
-                now, self.dock_policy.stop_offset_x, self.dock_policy.stop_offset_y
+                now, self._active_dock_policy.stop_offset_x, self._active_dock_policy.stop_offset_y
             )
             # No velocity yet: the first real command waits for a detection.
             return Action(ActionKind.DRIVE)

@@ -1,0 +1,32 @@
+# Start and goal marked with tape, Nav2 between them, the tape closing the rest.
+#
+# Each spot has one vertical retroreflective strip on each corridor wall,
+# facing each other, abeam of where the LiDAR should stop. Nav2 carries the
+# robot to within xy_goal_tolerance (0.35 m) of the recorded spot; the dock
+# step then drives the strips' midpoint onto the LiDAR without turning.
+#
+# This file is the template. Spots are recorded into the live copy --
+# $GO1_MISSION_FILE, or ~/.ros/go1_tape_mission.yaml -- by standing the robot
+# at each tape and running
+#
+#   ros2 run omx_navigation tape_waypoint record start
+#   ros2 run omx_navigation tape_waypoint record goal
+#
+# The poses below are placeholders. Without `marker_separation` a spot was
+# never recorded at its tape, and tape_mission refuses to start.
+
+waypoints:
+  start:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  goal:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+
+sequence:
+  - navigate: goal
+  - dock
+  - navigate: start
+  - dock
