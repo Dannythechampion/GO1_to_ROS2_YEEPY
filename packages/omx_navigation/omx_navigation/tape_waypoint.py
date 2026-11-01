@@ -93,11 +93,15 @@ class _CloudListener:
         self.node = Node("tape_waypoint")
         self.window = window
         self._frames = []
-        self.node.create_subscription(CustomMsg, topic, self._on_frame, qos_profile_sensor_data)
+        self.node.create_subscription(CustomMsg, topic, self._on_frame, qos_profile_sensor_data, raw=True)
 
-    def _on_frame(self, message) -> None:
-        self._frames.append((time.monotonic(),
-                             [(p.x, p.y, p.z, p.reflectivity) for p in message.points]))
+    def _on_frame(self, message: bytes) -> None:
+        from omx_navigation.livox_cdr import points_view
+
+        points = points_view(message)
+        self._frames.append((time.monotonic(), list(zip(
+            points["x"].tolist(), points["y"].tolist(), points["z"].tolist(),
+            points["reflectivity"].tolist()))))
 
     def windows(self, seconds: float):
         """Spin for `seconds` and return the frames grouped into windows."""

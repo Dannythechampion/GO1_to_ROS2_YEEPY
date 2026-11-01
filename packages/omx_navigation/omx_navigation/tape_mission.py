@@ -55,12 +55,13 @@ from omx_navigation.mission import Mission, Step, Waypoint, record_waypoint
 from omx_navigation.mission_file import default_mission_path, load_mission, save_mission
 from omx_navigation.mission_runner import ActionKind, MissionRunner, MissionState
 from omx_navigation.runtime_shutdown import NORMAL_SHUTDOWN_EXCEPTIONS, shutdown_context
+from omx_navigation.livox_cdr import points_view, split_points
 from omx_navigation.tape_mission_core import (
     DecisionLog,
     FrameWindow,
     HandoffWatch,
     navigation_outcome,
-    split_frame,
+    tape_near_goal,
 )
 
 STATUS_TOPIC = "/mission/status"
@@ -140,7 +141,9 @@ class TapeMission(Node):
         # imported here rather than at module level, where tests import this.
         from livox_ros_driver2.msg import CustomMsg
 
-        self.create_subscription(CustomMsg, lidar_topic, self._on_lidar, qos_profile_sensor_data)
+        # Raw bytes: rclpy would build ~20,000 point objects per frame (130 ms
+        # each on the Jetson); the numpy view takes ~1.5 ms. See livox_cdr.
+        self.create_subscription(CustomMsg, lidar_topic, self._on_lidar, qos_profile_sensor_data, raw=True)
         self.create_subscription(String, "/navigation/goal_status", self._on_goal_status, 10)
         self.create_subscription(Bool, "/localization_supervisor/ready", self._on_ready, 10)
         self.create_subscription(Bool, "/go1/manual_override", self._on_override, 10)
@@ -168,12 +171,16 @@ class TapeMission(Node):
             return unmeasured_corridor()
         return self._runner.active_dock_policy
 
-    def _on_lidar(self, message) -> None:
+    def _on_lidar(self, message: bytes) -> None:
         if not self._watching_tape():
             return
-        bright, channel = split_frame(
-            ((p.x, p.y, p.z, p.reflectivity) for p in message.points),
-            self._detector_policy().markers.reflectivity_threshold, 0.20, -0.15, 0.25,
+        try:
+            points = points_view(message)
+        except ValueError as exc:
+            self.get_logger().warning(f"unreadable Livox frame: {exc}")
+            return
+        bright, channel = split_points(
+            points, self._detector_policy().markers.reflectivity_threshold, 0.20, -0.15, 0.25,
         )
         self._window.add(self._now(), bright, channel)
 
@@ -205,10 +212,15 @@ class TapeMission(Node):
         if outcome is None:
             return
         policy = self._runner.active_dock_policy
-        fix = self._last_fix
-        in_view = fix is not None and fix.correction(policy) <= policy.max_correction
+        pose = self._robot_pose()
+        target = self._runner.navigation_target
+        distance = None if pose is None else math.hypot(pose[0] - target.x, pose[1] - target.y)
+        in_view = tape_near_goal(distance, self._last_fix, policy, self._handoff.radius)
         if not outcome:
-            self._last_reason = f"navigation {state}: {status.get('reason') or 'no reason given'}"
+            self._event("nav_failed", state=state, reason=status.get("reason"), distance_to_goal=distance,
+                        tape_near_goal=in_view)
+            if not in_view:
+                self._last_reason = f"navigation {state}: {status.get('reason') or 'no reason given'}"
         self._handle(self._runner.on_navigation_result(outcome, self._now(), tape_in_view=in_view))
 
     def _on_ready(self, message: Bool) -> None:

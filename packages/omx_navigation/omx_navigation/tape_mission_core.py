@@ -132,10 +132,20 @@ class HandoffWatch:
         self.count = 0
 
     def update(self, distance_to_goal, fix, policy) -> bool:
-        close = distance_to_goal is not None and distance_to_goal <= self.radius
-        seen = fix is not None and fix.correction(policy) <= policy.max_correction
-        self.count = self.count + 1 if close and seen else 0
+        self.count = self.count + 1 if tape_near_goal(distance_to_goal, fix, policy, self.radius) else 0
         return self.count >= self.frames
+
+
+def tape_near_goal(distance_to_goal, fix, policy, radius: float) -> bool:
+    """The goal's pair is plausibly what is in view: close in the map, and in range.
+
+    Every rule that lets the tape take over from Nav2 must pass this. On
+    2026-11-01 a navigation cancelled 0.4 m out of the start was "rescued"
+    onto the start tape, because the rescue checked only that some pair was in
+    view, and the dock then tried to back the robot 0.46 m onto it.
+    """
+    close = distance_to_goal is not None and distance_to_goal <= radius
+    return close and fix is not None and fix.correction(policy) <= policy.max_correction
 
 
 class DecisionLog:

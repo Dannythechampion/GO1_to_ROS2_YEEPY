@@ -38,8 +38,10 @@ bag_topics=(
   /localization_supervisor/status /localization_supervisor/ready /slam_localization/pose
   /mission/status /mission/decision /gait/stability
 )
-# The raw cloud lets the tape detection be replayed offline; ~4 MB/s.
-[[ "${GO1_RECORD_LIDAR:-1}" == 1 ]] && bag_topics+=(/livox/lidar)
+# The raw cloud lets the tape detection be replayed offline, at ~4 MB/s and a
+# recorder busy at ~45% CPU. Off unless asked for: on 2026-11-01 the Jetson
+# ran at load 12 on 12 cores with it on and FAST-LIO stalled. GO1_RECORD_LIDAR=1.
+[[ "${GO1_RECORD_LIDAR:-0}" == 1 ]] && bag_topics+=(/livox/lidar)
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
