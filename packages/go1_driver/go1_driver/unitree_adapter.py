@@ -58,15 +58,17 @@ class UnitreeHighLevel:
         received = self._udp.Recv()
         self._udp.GetRecv(self._state)
         snapshot = read_robot_state(self._state)
-        # The SDK's Recv returns the byte count of a new packet; bindings that
-        # return nothing fall back to noticing that the reply changed. GetRecv
-        # alone cannot tell: it keeps handing back the last packet forever.
-        if isinstance(received, int) and not isinstance(received, bool):
-            fresh = received > 0
-        else:
-            fingerprint = _fingerprint(self._state)
-            fresh = fingerprint != self._last_fingerprint
-            self._last_fingerprint = fingerprint
+        # The SDK's Recv returns the byte count of a new packet, but a reply
+        # that changed is just as fresh. On the robot (2026-11-01, wrapper
+        # v3.8.6) Recv never returned a positive count while the IMU and foot
+        # forces kept moving, so trusting the count alone held the link "down"
+        # -- which also hid the remote, since override is only read on a live
+        # link. GetRecv alone cannot tell: it hands back the last packet forever.
+        fingerprint = _fingerprint(self._state)
+        changed = fingerprint != self._last_fingerprint
+        self._last_fingerprint = fingerprint
+        counted = isinstance(received, int) and not isinstance(received, bool) and received > 0
+        fresh = counted or changed
         self.last_reply_fresh = fresh and snapshot.live
 
         cmd = self._cmd
