@@ -108,6 +108,13 @@ class TapeMission(Node):
         # How long the bridge has to acknowledge a goal before the mission
         # assumes nothing is listening.
         self._goal_ack_timeout = float(self.declare_parameter("goal_ack_timeout", 3.0).value)
+        # The bridge cancels a goal the moment READY lapses -- right for
+        # safety, but on 2026-11-01 one FAST-LIO hiccup (input_max_age 0.5 s)
+        # cancelled a leg 4 s out. The robot stops either way; the mission
+        # resends the goal once READY has held again, a bounded number of times.
+        self._resume_after = float(self.declare_parameter("resume_after_ready", 1.0).value)
+        self._resume_give_up = float(self.declare_parameter("resume_give_up", 10.0).value)
+        self._max_resumes = int(self.declare_parameter("max_resumes", 3).value)
         log_dir = self.declare_parameter("log_dir", default_log_dir()).value
         self._log = DecisionLog(os.path.join(log_dir, "decisions.jsonl"))
 
@@ -122,7 +129,10 @@ class TapeMission(Node):
         self._last_fix = None
         self._last_reason = ""
         self._last_nav_state = None
+        self._resume = None          # {"since": t, "ready_since": t|None}
+        self._resumes = 0
         self._ready_at = None
+        self._ready_since = None
         self._manual_override = False
         self._execution_fault = False
 
@@ -216,6 +226,15 @@ class TapeMission(Node):
         target = self._runner.navigation_target
         distance = None if pose is None else math.hypot(pose[0] - target.x, pose[1] - target.y)
         in_view = tape_near_goal(distance, self._last_fix, policy, self._handoff.radius)
+        if (not outcome and state == "CANCELED" and "localization not ready" in (status.get("reason") or "")
+                and not in_view and self._resumes < self._max_resumes):
+            self._resume = {"since": self._now()}
+            self._resumes += 1
+            self._event("nav_paused", reason=status.get("reason"), resume=self._resumes,
+                        max_resumes=self._max_resumes, distance_to_goal=distance)
+            self.get_logger().warning(
+                f"Navigation cancelled by READY loss; resending once READY holds ({self._resumes}/{self._max_resumes})")
+            return
         if not outcome:
             self._event("nav_failed", state=state, reason=status.get("reason"), distance_to_goal=distance,
                         tape_near_goal=in_view)
@@ -224,7 +243,14 @@ class TapeMission(Node):
         self._handle(self._runner.on_navigation_result(outcome, self._now(), tape_in_view=in_view))
 
     def _on_ready(self, message: Bool) -> None:
-        self._ready_at = self._now() if message.data else None
+        now = self._now()
+        if message.data:
+            if self._ready_since is None or self._ready_at is None or now - self._ready_at > self._ready_timeout:
+                self._ready_since = now
+            self._ready_at = now
+        else:
+            self._ready_at = None
+            self._ready_since = None
 
     def _on_override(self, message: Bool) -> None:
         self._manual_override = bool(message.data)
@@ -409,6 +435,18 @@ class TapeMission(Node):
             self._step_dock(now)
 
     def _step_navigation(self, now: float) -> None:
+        if self._resume is not None:
+            held = self._localization_ready() and self._ready_since is not None and now - self._ready_since >= self._resume_after
+            if held:
+                self._resume = None
+                self._event("nav_resumed", resume=self._resumes)
+                self._track_goal(self._runner.navigation_target, published=True, keep_resumes=True)
+                return
+            if now - self._resume["since"] > self._resume_give_up:
+                self._resume = None
+                self._last_reason = f"localization not READY for {self._resume_give_up:.0f} s after a cancel"
+                self._handle(self._runner.abort(self._last_reason))
+                return
         if (not self._goal_acknowledged and self._goal_sent_at is not None
                 and now - self._goal_sent_at > self._goal_ack_timeout):
             self._last_reason = "rviz_goal_bridge never acknowledged the goal"
@@ -495,7 +533,10 @@ class TapeMission(Node):
             self._last_reason = "grasp step reached, but this node has no arm"
             self._abort_now()
 
-    def _track_goal(self, waypoint, published: bool) -> None:
+    def _track_goal(self, waypoint, published: bool, keep_resumes: bool = False) -> None:
+        if not keep_resumes:
+            self._resumes = 0
+            self._resume = None
         self._goal = waypoint
         self._goal_sent_at = self._now()
         self._goal_acknowledged = not published

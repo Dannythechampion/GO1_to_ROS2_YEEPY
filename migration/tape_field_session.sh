@@ -102,9 +102,15 @@ start() {
   echo "gait_monitor $!" >> "$dir/pids"
   "$lib/tape_mission" --ros-args -p log_dir:="$dir" -p mission_file:="$mission_file" > "$dir/tape_mission.log" 2>&1 &
   echo "tape_mission $!" >> "$dir/pids"
-  ros2 bag record --output "$dir/bag" --storage sqlite3 --storage-preset-profile resilient \
-    --max-bag-duration 60 "${bag_topics[@]}" > "$dir/bag.log" 2>&1 &
-  echo "bag $!" >> "$dir/pids"
+  # The launch's localization bag already records these topics (resilient,
+  # split every 60 s); a second recorder of the same topics cost another 45%
+  # CPU on 2026-11-01, when the Jetson was already saturated. GO1_SESSION_BAG=1
+  # for a session run without the launch's recorder.
+  if [[ "${GO1_SESSION_BAG:-0}" == 1 ]]; then
+    ros2 bag record --output "$dir/bag" --storage sqlite3 --storage-preset-profile resilient \
+      --max-bag-duration 60 "${bag_topics[@]}" > "$dir/bag.log" 2>&1 &
+    echo "bag $!" >> "$dir/pids"
+  fi
   set +m
   sleep 3
   local failed=0
