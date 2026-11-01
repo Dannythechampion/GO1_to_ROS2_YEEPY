@@ -147,25 +147,33 @@ def _check(listener, args) -> int:
         print("No tape-bright returns within 2 m. Is the tape retroreflective (prismatic)?")
         return 1
     problems = 0
+    candidates = 0
     for strip in widest:
         same = [s for survey in surveys for s in survey
                 if math.hypot(s.x - strip.x, s.y - strip.y) < 0.15]
         in_band = sum(s.in_band for s in same) / len(windows)
         z_lo = min(s.z_lo for s in same)
         z_hi = max(s.z_hi for s in same)
+        head = (f"  strip at bearing {math.degrees(strip.bearing):+6.1f} deg, {strip.range:.2f} m: "
+                f"{in_band:5.1f} pts/window in band, seen z {z_lo:+.2f}..{z_hi:+.2f}, "
+                f"peak {max(s.peak for s in same):.0f}")
+        if in_band < policy.markers.min_points_per_strip:
+            # Lights, signs, anything shiny above or below the band: the
+            # detector never counts it, so it is no reason to worry.
+            print(head + "  (outside the band, ignored by the detector)")
+            continue
+        candidates += 1
+        # Coverage is advice; only a thin strip is a problem. The bottom of
+        # what can be seen is the -7 deg FOV edge, not the tape's end.
         notes = []
-        if z_lo > band[0] + 0.02:
-            notes.append(f"bottom too high by {100 * (z_lo - band[0]):.0f} cm")
-        if z_hi < band[1] + 0.03:
-            notes.append(f"top too low by {100 * (band[1] + 0.03 - z_hi):.0f} cm")
         if in_band < COMFORTABLE_POINTS:
             notes.append(f"only {in_band:.0f} points in band (want {COMFORTABLE_POINTS})")
+            if z_hi < band[1]:
+                notes.append(f"top {100 * (band[1] - z_hi):.0f} cm short of the band")
         problems += bool(notes)
-        print(f"  strip at bearing {math.degrees(strip.bearing):+6.1f} deg, {strip.range:.2f} m: "
-              f"{in_band:5.1f} pts/window in band, seen z {z_lo:+.2f}..{z_hi:+.2f}, peak {max(s.peak for s in same):.0f}"
-              + ("  <- " + "; ".join(notes) if notes else "  ok"))
-    if len(widest) != 2:
-        print(f"Saw {len(widest)} strips; the dock needs exactly two within 2 m.")
+        print(head + ("  <- " + "; ".join(notes) if notes else "  ok"))
+    if candidates != 2:
+        print(f"{candidates} strips in the band; the dock needs exactly two within 2 m.")
         problems += 1
     if fix is None:
         print("Pair NOT detected: the dock would refuse here.")
