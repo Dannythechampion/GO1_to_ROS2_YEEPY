@@ -121,3 +121,14 @@ def test_link_is_down_until_a_live_reply_and_after_replies_stop():
 def test_monitors_reject_invalid_timing(factory):
     with pytest.raises(ValueError):
         factory()
+
+
+def test_body_imu_is_read_and_a_partial_one_is_absent():
+    state = read_robot_state(live_state(imu=SimpleNamespace(
+        quaternion=[1.0, 0.0, 0.0, 0.0], rpy=[0.01, -0.02, 0.3],
+        gyroscope=[0.1, 0.2, 0.3], accelerometer=[0.0, 0.1, 9.8]), footForce=[60, 58, 61, 59]))
+    assert state.imu.rpy == pytest.approx((0.01, -0.02, 0.3))
+    assert state.imu.accelerometer == pytest.approx((0.0, 0.1, 9.8))
+    assert state.foot_force == pytest.approx((60, 58, 61, 59))
+    broken = read_robot_state(live_state(imu=SimpleNamespace(quaternion=[1, 0, 0, 0], rpy=[float("nan"), 0, 0])))
+    assert broken.imu is None

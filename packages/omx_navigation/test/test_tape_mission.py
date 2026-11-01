@@ -47,7 +47,7 @@ def recorded(start_sep=2.0, goal_sep=1.6):
 
 def settle(item, t, fix):
     action = None
-    for _ in range(20):
+    for _ in range(60):
         t += 0.1
         action = item.update(t, fix)
         if action.kind is not ActionKind.DRIVE:
@@ -210,8 +210,11 @@ def test_something_close_behind_stops_the_dock():
     item = MissionRunner(recorded())
     item.start(0.0)
     item.on_navigation_result(True, 1.0)
-    action = item.update(1.1, CorridorFix(-0.2, 0.0, 0.0, 1.6, 80),
-                         rear_clearance=0.05, minimum_clearance=0.10)
+    t, action = 1.0, None
+    while item.state is MissionState.DOCKING and t < 5.0:
+        t += 0.1
+        action = item.update(t, CorridorFix(-0.2, 0.0, 0.0, 1.6, 80),
+                             rear_clearance=0.05, minimum_clearance=0.10)
     assert action.kind is ActionKind.ABORT
     assert "rear" in action.reason
 

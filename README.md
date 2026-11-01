@@ -148,7 +148,8 @@ map ──(slam_toolbox)──▶ camera_init ──(FAST-LIO2)─────�
 | `rviz_goal_bridge` | `omx_navigation` | RViz 목표 → `NavigateToPose`의 **유일한** 경로, 상태·마커 발행 |
 | `cmd_vel_safety_gate` | `omx_navigation` | READY일 때만 `/cmd_vel_nav` → `/cmd_vel` |
 | `go1_driver` | `go1_driver` | 속도 제한·watchdog, Unitree UDP, 리모컨·명령 미실행 감시 |
-| `tape_mission` | `omx_navigation` | 기록된 출발·도착점으로 Nav2(브리지 경유) → 벽 테이프에 정렬, 별도 실행 |
+| `tape_mission` | `omx_navigation` | 출발점 기록, 도착점 가르치기, 미션: Nav2(브리지 경유) → 테이프 보이면 인계 → 정지 측정 기반 정렬 |
+| `gait_monitor` | `omx_navigation` | 라이다·Go1 IMU 0.5 s 창별 흔들림 지표와 판정을 CSV·토픽으로 |
 | `tape_waypoint` | `omx_navigation` | 테이프 점검(`check`), 지점 기록(`record`), 출발 테이프로 초기 자세(`init`) — CLI |
 
 주행 스택 전체는 [`go1_posegraph_navigation.launch.py`](packages/omx_navigation/launch/go1_posegraph_navigation.launch.py)
@@ -454,23 +455,30 @@ driver가 사람 조종으로 보고 목표를 취소합니다.
 [설계 문서 10절](docs/superpowers/specs/2026-10-25-standoff-approach-design.md)에 있습니다.
 
 ```bash
-# 1. 테이프를 붙인 자리에 로봇을 세우고 (Livox만 떠 있으면 됨)
-ros2 run omx_navigation tape_waypoint check
-# 2. 주행 스택을 띄워 READY가 된 뒤, 출발점에 세운 채로 / 도착점으로 옮겨서
-ros2 run omx_navigation tape_waypoint record start
-ros2 run omx_navigation tape_waypoint record goal
-# 3. 다음부터는 출발점에 (기록 때와 같은 방향으로) 세우고
-ros2 run omx_navigation tape_waypoint init         # 2D Pose Estimate 대신
-ros2 run omx_navigation tape_mission                # 별도 터미널
+# 0. 센서·주행 스택(5.2, 5.3/5.4) 위에서, 세션 프로세스와 로그를 한 번에 시작
+./migration/tape_field_session.sh start            # tape_mission, gait_monitor, 복구 가능한 bag
+# 1. RViz 2D Pose Estimate로 초기 위치 (처음 한 번)
+# 2. 출발점 테이프 기록 — 로봇은 출발점에 서 있는 상태
+ros2 service call /mission/record_start std_srvs/srv/Trigger
+# 3+4. 도착점 가르치기 — 호출 후 RViz 2D Goal Pose를 도착 테이프 근처에 클릭
+ros2 service call /mission/teach_goal std_srvs/srv/Trigger
+#      → Nav2 주행 → 테이프가 보이면 Nav2 취소, 테이프 정렬 → 정지 → 도착점 기록
+# 이후: 기록된 미션 (도착점 → 정렬 → 출발점 → 정렬)
 ros2 service call /mission/start std_srvs/srv/Trigger
-ros2 topic echo /mission/status                     # 진행 상황
 ros2 service call /mission/cancel std_srvs/srv/Trigger
+./migration/tape_field_session.sh stop             # 정상 종료, bag 복구, report.md 생성
 ```
 
-기록은 `~/.ros/go1_tape_mission.yaml`(또는 `$GO1_MISSION_FILE`)에 저장됩니다.
-지도에서 클릭하지 않는 이유는 위치 추정의 복도 축방향 편향이 기록과 주행에 똑같이
-들어가 상쇄되기 때문입니다. 한 번도 테이프 앞에서 기록되지 않은 지점이 있으면 미션은
-시작을 거부합니다.
+- **도착 판정은 멈춰 선 상태에서만** 합니다. 정지 → 1 s 안정 → 정지 상태 테이프 측정의 중앙값 →
+  복도 방향 ±1.5 cm, 가로 ±5 cm 안이면 도착. 밖이면 다시 이동(6 cm 밖은 폐루프, 안쪽은 시간 펄스),
+  최대 8라운드. 걸으면서 흔들리는 값으로 판정하지 않으므로 2026-10-25처럼 경계에서 들락날락하며 헤매지 않습니다.
+- **Nav2는 끝까지 기다리지 않습니다.** 목표 1 m 이내 + 해당 지점 테이프 쌍이 3사이클 연속 보이면 Nav2 목표를
+  취소하고 테이프 정렬로 넘깁니다. Nav2가 실패해도 테이프가 보이면 정렬합니다.
+- 모든 중단(리모컨, 명령 미실행, READY 5 s 상실, 테이프 3 s 상실, 90 s 초과)은 0 속도를 내고 끝납니다.
+- 로그: `/mnt/t500/go1_field_logs/tape_<UTC>/` — `decisions.jsonl`(매 사이클 판단 근거),
+  `stability.csv`(라이다 IMU vs Go1 몸통 IMU 흔들림), `bag/`(sqlite3 resilient, 60 s 분할), `report.md/png`.
+  강제 종료·전원 차단 뒤에는 `./migration/tape_field_session.sh recover`.
+- 출발 테이프로 초기 자세 잡기(`tape_waypoint init`), 테이프 점검(`tape_waypoint check`)은 그대로 쓸 수 있습니다.
 
 ### 5.6 주행 후 분석 (ROS 없이, 노트북에서도)
 

@@ -42,6 +42,8 @@ setup(
             "rviz_goal_bridge = omx_navigation.rviz_goal_bridge:main",
             "tape_mission = omx_navigation.tape_mission:main",
             "tape_waypoint = omx_navigation.tape_waypoint:main",
+            "gait_monitor = omx_navigation.gait_monitor:main",
+            "tape_report = omx_navigation.tape_report:main",
         ],
     },
 )

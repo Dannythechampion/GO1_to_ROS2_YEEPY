@@ -7,7 +7,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from go1_driver.robot_state import RemoteState, RobotState
+from go1_driver.robot_state import ImuState, RemoteState, RobotState
 
 
 class Publisher:
@@ -88,11 +88,13 @@ class FakeRobot:
         self.live = True
         self.remote = RemoteState(True)
         self.last_reply_fresh = False
+        self.imu = None
 
     def send(self, command):
         self.sent.append(command)
         self.last_reply_fresh = self.live
-        return RobotState(self.live, 2, (0.0, 0.0), 0.0, 0.29, (0.0, 0.6, 0.5, 2.0), 80, self.remote)
+        return RobotState(self.live, 2, (0.0, 0.0), 0.0, 0.29, (0.0, 0.6, 0.5, 2.0), 80, self.remote,
+                          imu=self.imu, foot_force=(60.0, 58.0, 61.0, 59.0))
 
     def stand(self, repeats=30, period=0.01):
         self.sent.append("shutdown")
@@ -113,6 +115,13 @@ def driver(monkeypatch):
     geometry.Twist = lambda: twist()
     nav = ModuleType("nav_msgs.msg")
     nav.Odometry = object
+    sensor = ModuleType("sensor_msgs.msg")
+    sensor.Imu = lambda: SimpleNamespace(
+        header=SimpleNamespace(stamp=None, frame_id=""),
+        orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=0.0),
+        angular_velocity=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        linear_acceleration=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+    )
     std = ModuleType("std_msgs.msg")
     std.String = type("String", (), {"__init__": lambda self: setattr(self, "data", "")})
     std.Bool = type("Bool", (), {"__init__": lambda self: setattr(self, "data", False)})
@@ -127,7 +136,7 @@ def driver(monkeypatch):
     qos.qos_profile_sensor_data = "sensor_data"
     modules.update({
         "geometry_msgs.msg": geometry, "nav_msgs.msg": nav, "std_msgs.msg": std,
-        "rclpy": rclpy, "rclpy.node": node_module, "rclpy.qos": qos,
+        "sensor_msgs.msg": sensor, "rclpy": rclpy, "rclpy.node": node_module, "rclpy.qos": qos,
     })
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
@@ -250,3 +259,20 @@ def test_non_finite_cmd_vel_cannot_break_the_state_report(driver):
     report = robot_report(node)
     assert report["requested"]["vx"] == 0.0
     assert report["applied"]["mode"] == 0
+
+
+def test_trunk_imu_and_foot_forces_are_published_when_the_robot_reports_them(driver):
+    node = armed(driver)
+    node.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(to_msg=lambda: "stamp"))
+    run(driver, node, 0.05, command=twist())
+    assert node.publishers["/go1/imu"].messages == []      # no IMU in the reply yet
+
+    driver.robot.imu = ImuState((1.0, 0.0, 0.0, 0.0), (0.01, -0.02, 0.3), (0.1, 0.2, 0.3), (0.0, 0.1, 9.8))
+    run(driver, node, 0.15, command=twist())  # robot_state goes out every 0.1 s
+    imu = last(node, "/go1/imu")
+    assert imu.orientation.w == 1.0
+    assert (imu.angular_velocity.x, imu.angular_velocity.z) == (0.1, 0.3)
+    assert imu.linear_acceleration.z == 9.8
+    report = robot_report(node)["robot"]
+    assert report["imu_rpy"] == [0.01, -0.02, 0.3]
+    assert report["foot_force"] == [60.0, 58.0, 61.0, 59.0]

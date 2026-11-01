@@ -72,6 +72,21 @@ def decode_remote(raw) -> RemoteState:
 
 
 @dataclass(frozen=True)
+class ImuState:
+    """The body IMU in the HighState reply: what the gait itself feels.
+
+    The MID-360's own IMU sits 0.13 m up on the riser and adds the riser's
+    sway; this one is in the trunk, so the two together separate a wobbling
+    mount from a wobbling gait.
+    """
+
+    quaternion: tuple[float, ...]
+    rpy: tuple[float, ...]
+    gyroscope: tuple[float, ...]
+    accelerometer: tuple[float, ...]
+
+
+@dataclass(frozen=True)
 class RobotState:
     """What the robot reported about itself in one HighState reply."""
 
@@ -83,6 +98,8 @@ class RobotState:
     range_obstacle: tuple[float, ...]
     battery_soc: Optional[int]
     remote: RemoteState
+    imu: Optional[ImuState] = None
+    foot_force: tuple[float, ...] = ()
 
 
 def _floats(values, count: int) -> tuple[float, ...]:
@@ -149,7 +166,22 @@ def read_robot_state(state) -> RobotState:
         range_obstacle=ranges,
         battery_soc=battery,
         remote=decode_remote(getattr(state, "wirelessRemote", None)),
+        imu=read_imu(getattr(state, "imu", None)),
+        foot_force=_floats(getattr(state, "footForce", ()) or (), 4),
     )
+
+
+def read_imu(imu) -> Optional[ImuState]:
+    """Decode the body IMU, or None when any part of it is missing or odd."""
+    if imu is None:
+        return None
+    quaternion = _floats(getattr(imu, "quaternion", ()) or (), 4)
+    rpy = _floats(getattr(imu, "rpy", ()) or (), 3)
+    gyroscope = _floats(getattr(imu, "gyroscope", ()) or (), 3)
+    accelerometer = _floats(getattr(imu, "accelerometer", ()) or (), 3)
+    if len(quaternion) != 4 or len(rpy) != 3 or len(gyroscope) != 3 or len(accelerometer) != 3:
+        return None
+    return ImuState(quaternion, rpy, gyroscope, accelerometer)
 
 
 class OverrideLatch:

@@ -20,6 +20,8 @@ def driver_module(monkeypatch):
     geometry.Twist = object
     nav = ModuleType("nav_msgs.msg")
     nav.Odometry = object
+    sensor = ModuleType("sensor_msgs.msg")
+    sensor.Imu = object
     std = ModuleType("std_msgs.msg")
     std.String = object
     std.Bool = object
@@ -36,6 +38,7 @@ def driver_module(monkeypatch):
     for name, module in {
         "geometry_msgs.msg": geometry,
         "nav_msgs.msg": nav,
+        "sensor_msgs.msg": sensor,
         "std_msgs.msg": std,
         "rclpy": rclpy,
         "rclpy.node": rclpy_node,

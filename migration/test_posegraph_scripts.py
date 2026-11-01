@@ -39,6 +39,7 @@ BAG_TOPICS = (
     "/localization_supervisor/status", "/localization_supervisor/ready", "/cmd_vel_nav", "/cmd_vel",
     "/goal_pose", "/navigation/goal_status", "/slam_localization/initialpose",
     "/go1/cmd_vel_applied", "/go1/robot_state", "/go1/manual_override", "/go1/execution_fault",
+    "/livox/imu", "/go1/imu", "/gait/stability", "/mission/status", "/mission/decision",
 )
 
 

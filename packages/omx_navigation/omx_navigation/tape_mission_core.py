@@ -100,3 +100,106 @@ def navigation_outcome(status: dict, waypoint) -> bool | None:
     if state in FAILED_STATES:
         return False
     return None
+
+
+class HandoffWatch:
+    """When to stop navigating and let the tape take over.
+
+    Three conditions, each for a reason:
+
+    - **Close to the goal in the map** (`radius`). The start pair is in view
+      when the robot sets off; without this the mission would "arrive" before
+      leaving.
+    - **The spot's pair in view, within `max_correction`.** That is the dock's
+      own test for the right pair, so the hand-over can never start a dock the
+      dock would refuse.
+    - **For `frames` consecutive cycles.** One frame can catch anything shiny.
+
+    A missing distance (no map->body_nav transform) never hands over; Nav2
+    keeps going and its own result decides.
+    """
+
+    def __init__(self, radius: float = 1.0, frames: int = 3) -> None:
+        if not isinstance(radius, (int, float)) or not math.isfinite(radius) or radius <= 0.0:
+            raise ValueError("radius must be finite and positive")
+        if not isinstance(frames, int) or frames < 1:
+            raise ValueError("frames must be a positive integer")
+        self.radius = float(radius)
+        self.frames = frames
+        self.count = 0
+
+    def reset(self) -> None:
+        self.count = 0
+
+    def update(self, distance_to_goal, fix, policy) -> bool:
+        close = distance_to_goal is not None and distance_to_goal <= self.radius
+        seen = fix is not None and fix.correction(policy) <= policy.max_correction
+        self.count = self.count + 1 if close and seen else 0
+        return self.count >= self.frames
+
+
+class DecisionLog:
+    """Append-only JSON lines that survive the process being killed.
+
+    Each record is one line written and flushed at once, so a SIGKILL or a
+    power cut loses at most the line being written -- the 2026-10-25 bag lost
+    everything because its index lived at the end of the file. The OS buffer
+    is forced to disk at most every `sync_period` seconds, and immediately for
+    events, which are the lines an investigation starts from.
+    """
+
+    def __init__(self, path, sync_period: float = 1.0, clock=None) -> None:
+        import os
+        import time
+
+        self._os = os
+        self._clock = clock or time.monotonic
+        self.path = str(path)
+        directory = os.path.dirname(self.path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        self._file = open(self.path, "a", encoding="utf-8", buffering=1)
+        self._sync_period = sync_period
+        self._synced_at = self._clock()
+
+    def write(self, record: dict, event: bool = False) -> None:
+        import json
+
+        if self._file is None:
+            return
+        line = json.dumps(record, ensure_ascii=False, separators=(",", ":"), default=_jsonable)
+        self._file.write(line + "\n")
+        self._file.flush()
+        now = self._clock()
+        if event or now - self._synced_at >= self._sync_period:
+            self._os.fsync(self._file.fileno())
+            self._synced_at = now
+
+    def close(self) -> None:
+        if self._file is not None:
+            self._file.flush()
+            self._os.fsync(self._file.fileno())
+            self._file.close()
+            self._file = None
+
+
+def read_decision_log(path) -> list:
+    """Every complete record; a line cut off by a crash is skipped, not fatal."""
+    import json
+
+    records = []
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                continue
+    return records
+
+
+def _jsonable(value):
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if hasattr(value, "value"):
+        return value.value
+    return str(value)

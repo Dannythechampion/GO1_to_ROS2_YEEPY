@@ -259,6 +259,9 @@ def prepare_recording_session(record_localization: bool, record_cloud: bool, dia
         # 09-18 analysis had to reconstruct both from console logs.
         "/goal_pose", "/navigation/goal_status", "/slam_localization/initialpose",
         "/go1/cmd_vel_applied", "/go1/robot_state", "/go1/manual_override", "/go1/execution_fault",
+        # How steadily the gait carried the sensors, and what the tape mission
+        # decided, beside the scans they explain.
+        "/livox/imu", "/go1/imu", "/gait/stability", "/mission/status", "/mission/decision",
     )
     if record_cloud:
         topics += ("/cloud_registered_body",)
@@ -293,8 +296,13 @@ def _setup_diagnostics(context, *_args, **_kwargs):
         return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic, "",
                                    search_translation_radius, drift_auto_correct)]
     session_dir, topics = recording
+    # sqlite3's "resilient" preset journals with WAL, and a new file every
+    # 60 s bounds what a power cut can take: on 2026-10-25 the Go1 lost power
+    # mid-recording and the single unfinalised bag was unreadable.
     bag = ExecuteProcess(
-        cmd=["ros2", "bag", "record", "--output", str(session_dir / "rosbag"), *topics],
+        cmd=["ros2", "bag", "record", "--output", str(session_dir / "rosbag"),
+             "--storage", "sqlite3", "--storage-preset-profile", "resilient", "--max-bag-duration", "60",
+             *topics],
         output="screen",
     )
     return [_supervisor_action(odom_frame, source_base_frame, base_frame, scan_topic, odom_topic,

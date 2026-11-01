@@ -11,6 +11,7 @@ from typing import Optional
 import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Bool, String
@@ -57,6 +58,7 @@ class Go1Driver(Node):
         self.declare_parameter("applied_topic", "/go1/cmd_vel_applied")
         self.declare_parameter("state_topic", "/go1/control_state")
         self.declare_parameter("robot_state_topic", "/go1/robot_state")
+        self.declare_parameter("imu_topic", "/go1/imu")
         self.declare_parameter("manual_override_topic", "/go1/manual_override")
         self.declare_parameter("execution_fault_topic", "/go1/execution_fault")
         # Odometry for the commanded-vs-executed check; empty disables it.
@@ -151,6 +153,11 @@ class Go1Driver(Node):
         self._fault_pub = self.create_publisher(
             Bool, str(self.get_parameter("execution_fault_topic").value), 10
         )
+        # The trunk IMU at the loop rate, for judging how steadily the gait
+        # carries the sensor; robot_state's 10 Hz snapshot is too coarse.
+        self._imu_pub = self.create_publisher(
+            Imu, str(self.get_parameter("imu_topic").value), qos_profile_sensor_data
+        )
         self._subscription = self.create_subscription(
             Twist, cmd_vel_topic, self._cmd_vel_callback, 1
         )
@@ -237,6 +244,8 @@ class Go1Driver(Node):
         if self._robot is not None:
             self._robot_state = self._robot.send(command)
             self._link.update(now, self._robot.last_reply_fresh)
+            if self._robot.last_reply_fresh:
+                self._publish_imu(self._robot_state)
             remote = self._robot_state.remote if self._link.up(now) else NO_REMOTE
             # Takes effect from the next cycle, 10 ms later.
             self._override.update(now, remote.active(self._stick_deadband))
@@ -331,6 +340,8 @@ class Go1Driver(Node):
                 "body_height": robot.body_height,
                 "range_obstacle": list(robot.range_obstacle),
                 "battery_soc": robot.battery_soc,
+                "foot_force": list(robot.foot_force),
+                "imu_rpy": None if robot.imu is None else list(robot.imu.rpy),
                 "remote": {
                     "present": robot.remote.present,
                     "active": robot.remote.active(self._stick_deadband),
@@ -343,6 +354,22 @@ class Go1Driver(Node):
         message = String()
         message.data = json.dumps(report, separators=(",", ":"), allow_nan=False, default=str)
         self._robot_state_pub.publish(message)
+
+    def _publish_imu(self, robot: Optional[RobotState]) -> None:
+        if robot is None or robot.imu is None:
+            return
+        message = Imu()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = "go1_trunk"
+        # Unitree orders the quaternion w, x, y, z.
+        w, x, y, z = robot.imu.quaternion
+        message.orientation.w, message.orientation.x = w, x
+        message.orientation.y, message.orientation.z = y, z
+        (message.angular_velocity.x, message.angular_velocity.y,
+         message.angular_velocity.z) = robot.imu.gyroscope
+        (message.linear_acceleration.x, message.linear_acceleration.y,
+         message.linear_acceleration.z) = robot.imu.accelerometer
+        self._imu_pub.publish(message)
 
     def _should_log_periodically(self, now: float, command: MotionCommand, requested: MotionCommand) -> bool:
         if self._last_log_at is not None and now - self._last_log_at < self._log_period:

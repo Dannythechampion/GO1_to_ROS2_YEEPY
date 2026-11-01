@@ -36,9 +36,9 @@ def test_the_scenario_runs_end_to_end():
     assert action.kind is ActionKind.DRIVE
     assert item.state is MissionState.DOCKING
 
-    # Settle on the markers.
+    # Settle, measure standing, arrive.
     t = 1.0
-    for _ in range(10):
+    for _ in range(40):
         t += 0.1
         action = item.update(t, fix())
         if action.kind is not ActionKind.DRIVE:
@@ -58,9 +58,16 @@ def test_docking_drives_toward_the_markers():
     item = runner()
     item.start(0.0)
     item.on_navigation_result(True, 1.0)
-    action = item.update(1.1, fix(mid_x=0.30))
+    action = None
+    t = 1.0
+    while t < 5.0:
+        t += 0.1
+        action = item.update(t, fix(mid_x=0.30))
+        if action.vx:
+            break
     assert action.kind is ActionKind.DRIVE
     assert action.vx > 0.0
+    assert action.detail["phase"] == "DRIVE"
 
 
 def test_failed_navigation_stops_the_mission():
@@ -89,17 +96,21 @@ def test_losing_the_markers_stops_the_mission():
     item = runner()
     item.start(0.0)
     item.on_navigation_result(True, 1.0)
-    action = item.update(1.1, None)
+    t, action = 1.0, None
+    while item.state is MissionState.DOCKING:
+        t += 0.1
+        action = item.update(t, None)
+        assert (action.vx, action.vy) == (0.0, 0.0)
     assert action.kind is ActionKind.ABORT
-    assert "no detection" in action.reason
+    assert "never seen" in action.reason
+    assert t < 1.0 + 4.0
 
 
 @pytest.mark.parametrize(
     "kwargs, fragment",
     [
         ({"manual_override": True}, "manual override"),
-        ({"execution_fault": True}, "execution fault"),
-        ({"localization_ready": False}, "localization not ready"),
+        ({"execution_fault": True}, "not following"),
     ],
 )
 def test_safety_inputs_stop_the_mission(kwargs, fragment):
@@ -111,16 +122,69 @@ def test_safety_inputs_stop_the_mission(kwargs, fragment):
     assert fragment in action.reason
 
 
-def test_forward_clearance_stops_the_mission_before_the_control_law():
+def test_losing_localization_pauses_then_gives_up():
+    item = runner()
+    item.start(0.0)
+    item.on_navigation_result(True, 1.0)
+    t, action = 1.0, None
+    while item.state is MissionState.DOCKING:
+        t += 0.1
+        action = item.update(t, fix(mid_x=0.30), localization_ready=False)
+        assert (action.vx, action.vy) == (0.0, 0.0)
+    assert "READY" in action.reason
+    assert t < 1.0 + 7.0
+
+
+def test_forward_clearance_stops_a_dock_about_to_move_into_it():
     """The net under the loop: the chair is watched directly."""
     item = runner()
     item.start(0.0)
     item.on_navigation_result(True, 1.0)
-    action = item.update(
-        1.1, fix(mid_x=0.30), forward_clearance=0.30, minimum_clearance=0.35
-    )
+    t, action = 1.0, None
+    while item.state is MissionState.DOCKING and t < 5.0:
+        t += 0.1
+        action = item.update(t, fix(mid_x=0.30), forward_clearance=0.30, minimum_clearance=0.35)
     assert action.kind is ActionKind.ABORT
     assert action.reason == "forward clearance breached"
+
+
+def test_something_close_while_standing_does_not_abort():
+    """Measuring is standing still; a passer-by behind is no reason to stop."""
+    item = runner()
+    item.start(0.0)
+    item.on_navigation_result(True, 1.0)
+    action = item.update(1.1, fix(), rear_clearance=0.05, minimum_clearance=0.10)
+    assert action.kind is ActionKind.DRIVE and action.detail["phase"] == "SETTLE"
+
+
+def test_tape_handoff_replaces_waiting_for_nav2():
+    item = runner()
+    item.start(0.0)
+    assert item.docks_next and item.navigation_target.name == "chair"
+    action = item.on_tape_handoff(2.0)
+    assert action.kind is ActionKind.DRIVE
+    assert item.state is MissionState.DOCKING
+    assert "handed" in action.reason
+
+
+def test_failed_navigation_with_the_tape_in_view_still_docks():
+    item = runner()
+    item.start(0.0)
+    action = item.on_navigation_result(False, 1.0, tape_in_view=True)
+    assert action.kind is ActionKind.DRIVE and item.state is MissionState.DOCKING
+
+
+def test_handoff_where_no_dock_follows_is_refused():
+    item = runner()
+    item.start(0.0)
+    item.on_tape_handoff(1.0)
+    t = 1.0
+    while item.state is MissionState.DOCKING:
+        t += 0.1
+        item.update(t, fix())
+    item.on_grasp_result(True, t)
+    assert item.navigation_target.name == "start" and not item.docks_next
+    assert item.on_tape_handoff(t).kind is ActionKind.ABORT
 
 
 def test_results_arriving_in_the_wrong_state_abort():
